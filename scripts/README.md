@@ -33,6 +33,7 @@ cd /home/lc/luckee_dao/baby
 ./scripts/deploy.sh build
 
 # 接口冒烟（建议使用网关令牌）
+# 默认探测本地 http://127.0.0.1:9000 ，远端时显式覆盖
 BABY_API_BASE_URL=https://api.example.com \
 BABY_GATEWAY_TOKEN=your_token \
 ./scripts/deploy.sh smoke
@@ -62,5 +63,6 @@ BABY_DEPLOY_VERCEL=false ./scripts/deploy.sh all preview "feat: preview release"
 ## 安全建议
 
 - 网关令牌不要放到 `VITE_` 前缀变量（会暴露到浏览器）。
+- `BABY_API_BASE_URL/BABY_COZE_API_URI` 属于脚本运行参数，不建议写入前端 `.env.local`。
 - 优先使用 `BABY_TOKEN_FILE=~/.baby_gateway_token`，避免命令行明文传参。
 - 本仓库不会提交 `app/.env.local`，令牌仅本机可见。

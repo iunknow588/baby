@@ -35,8 +35,8 @@ if [ -f "$APP_ENV_FILE" ]; then
   source "$APP_ENV_FILE"
 fi
 
-API_BASE_RAW="${BABY_API_BASE_URL:-${VITE_API_BASE_URL:-}}"
-COZE_BASE_RAW="${BABY_COZE_API_URI:-${VITE_COZE_API_URI:-}}"
+API_BASE_RAW="${BABY_API_BASE_URL:-http://127.0.0.1:9000}"
+COZE_BASE_RAW="${BABY_COZE_API_URI:-}"
 TOKEN="${BABY_GATEWAY_TOKEN:-${BABY_TOKEN:-}}"
 TOKEN_FILE="${BABY_TOKEN_FILE:-}"
 SMOKE_TIMEOUT="${BABY_SMOKE_TIMEOUT:-10}"
@@ -54,11 +54,6 @@ join_url() {
     echo "${base}/${path}"
   fi
 }
-
-if [ -z "$API_BASE_RAW" ]; then
-  log_error "缺少 API 基础地址，请设置 BABY_API_BASE_URL"
-  exit 1
-fi
 
 if [[ "$API_BASE_RAW" != http* ]]; then
   log_error "BABY_API_BASE_URL 必须是绝对地址（当前: $API_BASE_RAW）"
