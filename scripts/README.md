@@ -9,6 +9,7 @@
 - `upload_to_github.sh`：提交并推送到 GitHub
 - `deploy_vercel.sh`：部署到 Vercel
 - `smoke_api.sh`：接口冒烟检查（chat/sse/coze/social）
+- `check_remote_backend.sh`：检查远程后端可达性与 Baby 接口缺口
 
 ## 远端仓库
 
@@ -31,10 +32,14 @@ cd /home/lc/luckee_dao/baby
 ./scripts/deploy.sh test
 ./scripts/deploy.sh build
 
-# 接口冒烟（需配置 BABY_API_BASE_URL，可选 BABY_TOKEN）
+# 接口冒烟（建议使用网关令牌）
 BABY_API_BASE_URL=https://api.example.com \
-BABY_TOKEN=your_token \
+BABY_GATEWAY_TOKEN=your_token \
 ./scripts/deploy.sh smoke
+
+# 远程后端探测（检查 student 已有接口 + Baby 关键接口缺口）
+BABY_REMOTE_BASE_URL=http://115.190.127.72:9000 \
+./scripts/deploy.sh probe
 
 # 完整流程（默认: test + build + github）
 ./scripts/deploy.sh all production "feat: release"
@@ -53,3 +58,9 @@ BABY_DEPLOY_VERCEL=true ./scripts/deploy.sh all preview "feat: preview release"
 - `BABY_DEPLOY_VERCEL`：`true|false`，默认 `false`
 - `BABY_VERCEL_SCOPE`：Vercel scope，默认 `iunknow588s-projects`
 - `BABY_VERCEL_PROJECT`：Vercel project name，默认 `app`
+
+## 安全建议
+
+- 网关令牌不要放到 `VITE_` 前缀变量（会暴露到浏览器）。
+- 优先使用 `BABY_TOKEN_FILE=~/.baby_gateway_token`，避免命令行明文传参。
+- 本仓库不会提交 `app/.env.local`，令牌仅本机可见。
