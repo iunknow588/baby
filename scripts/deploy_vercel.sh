@@ -27,6 +27,8 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 APP_DIR="$PROJECT_ROOT/app"
 
 ENVIRONMENT="${1:-preview}"
+BABY_VERCEL_SCOPE="${BABY_VERCEL_SCOPE:-iunknow588s-projects}"
+BABY_VERCEL_PROJECT="${BABY_VERCEL_PROJECT:-app}"
 
 if [ ! -d "$APP_DIR" ]; then
   log_error "错误: 未找到 app 目录: $APP_DIR"
@@ -41,11 +43,20 @@ fi
 cd "$APP_DIR"
 
 log_info "开始部署 Baby 前端到 Vercel ($ENVIRONMENT)"
+log_info "Vercel Scope: $BABY_VERCEL_SCOPE"
+log_info "Vercel Project: $BABY_VERCEL_PROJECT"
 
+log_info "步骤 1: 链接 Vercel 项目（无交互）"
+vercel link --yes --scope "$BABY_VERCEL_SCOPE" --project "$BABY_VERCEL_PROJECT"
+
+log_info "步骤 2: 执行部署"
 if [ "$ENVIRONMENT" = "production" ]; then
-  vercel --prod
+  vercel deploy --prod --yes --scope "$BABY_VERCEL_SCOPE" --logs
 else
-  vercel
+  vercel deploy --yes --scope "$BABY_VERCEL_SCOPE" --logs
 fi
+
+log_info "步骤 3: 查询最新部署状态"
+vercel list --yes --scope "$BABY_VERCEL_SCOPE"
 
 log_info "Vercel 部署完成"

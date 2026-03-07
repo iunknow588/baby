@@ -45,3 +45,5 @@ BABY_DEPLOY_VERCEL=true ./scripts/deploy.sh all preview "feat: preview release"
 - `BABY_RUN_TEST`：`true|false`，默认 `true`
 - `BABY_RUN_BUILD`：`true|false`，默认 `true`
 - `BABY_DEPLOY_VERCEL`：`true|false`，默认 `false`
+- `BABY_VERCEL_SCOPE`：Vercel scope，默认 `iunknow588s-projects`
+- `BABY_VERCEL_PROJECT`：Vercel project name，默认 `app`
