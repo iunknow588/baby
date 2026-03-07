@@ -13,6 +13,7 @@ yarn-error.log*
 # env files
 .env
 .env.*
+!app/.env.local.example
 
 # tooling cache
 app/.vite/
