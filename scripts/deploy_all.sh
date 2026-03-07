@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # Baby 项目一键部署脚本
-# 默认流程：测试 -> 构建 -> GitHub
-# 可选流程：Vercel 部署
+# 默认流程：测试 -> 构建 -> GitHub -> Vercel
+# 可选流程：通过环境变量关闭某一步
 
 set -e
 
@@ -38,7 +38,7 @@ COMMIT_MSG="${2:-}"
 
 BABY_RUN_TEST="${BABY_RUN_TEST:-true}"
 BABY_RUN_BUILD="${BABY_RUN_BUILD:-true}"
-BABY_DEPLOY_VERCEL="${BABY_DEPLOY_VERCEL:-false}"
+BABY_DEPLOY_VERCEL="${BABY_DEPLOY_VERCEL:-true}"
 
 log_section "Baby 项目一键部署"
 log_info "项目路径: $PROJECT_ROOT"
@@ -48,7 +48,7 @@ log_info "执行测试: $BABY_RUN_TEST"
 log_info "执行构建: $BABY_RUN_BUILD"
 log_info "部署 Vercel: $BABY_DEPLOY_VERCEL"
 if [ "$BABY_DEPLOY_VERCEL" != "true" ]; then
-  log_info "提示: 当前未启用 Vercel 部署。如需部署请设置 BABY_DEPLOY_VERCEL=true 或使用 ./scripts/deploy.sh all-vercel"
+  log_info "提示: 当前已关闭 Vercel 部署（BABY_DEPLOY_VERCEL=false）"
 fi
 
 if [ "$BABY_RUN_TEST" = "true" ]; then

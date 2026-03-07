@@ -5,7 +5,7 @@
 ## 核心脚本
 
 - `deploy.sh`：统一入口
-- `deploy_all.sh`：一键流程（测试/构建/GitHub，可选 Vercel）
+- `deploy_all.sh`：一键流程（测试/构建/GitHub + Vercel）
 - `upload_to_github.sh`：提交并推送到 GitHub
 - `deploy_vercel.sh`：部署到 Vercel
 - `smoke_api.sh`：接口冒烟检查（chat/sse/coze/social）
@@ -41,13 +41,13 @@ BABY_GATEWAY_TOKEN=your_token \
 BABY_REMOTE_BASE_URL=http://115.190.127.72:9000 \
 ./scripts/deploy.sh probe
 
-# 完整流程（默认: test + build + github）
+# 完整流程（默认: test + build + github + vercel）
 ./scripts/deploy.sh all production "feat: release"
 
-# 完整流程并部署 Vercel
-BABY_DEPLOY_VERCEL=true ./scripts/deploy.sh all preview "feat: preview release"
+# 如需仅执行到 GitHub（跳过 Vercel）
+BABY_DEPLOY_VERCEL=false ./scripts/deploy.sh all preview "feat: preview release"
 
-# 推荐: 使用 all-vercel 一步到位
+# all-vercel 为 all 的兼容别名
 ./scripts/deploy.sh all-vercel production "feat: release"
 ```
 
@@ -55,7 +55,7 @@ BABY_DEPLOY_VERCEL=true ./scripts/deploy.sh all preview "feat: preview release"
 
 - `BABY_RUN_TEST`：`true|false`，默认 `true`
 - `BABY_RUN_BUILD`：`true|false`，默认 `true`
-- `BABY_DEPLOY_VERCEL`：`true|false`，默认 `false`
+- `BABY_DEPLOY_VERCEL`：`true|false`，默认 `true`
 - `BABY_VERCEL_SCOPE`：Vercel scope，默认 `iunknow588s-projects`
 - `BABY_VERCEL_PROJECT`：Vercel project name，默认 `app`
 

@@ -38,8 +38,8 @@ show_help() {
   echo "  probe                              检查远程后端可达性与接口缺口"
   echo "  test                               仅执行 app 单元测试"
   echo "  build                              仅执行 app 构建"
-  echo "  all [环境] [提交信息]               完整流程（测试/构建/GitHub，可选Vercel）"
-  echo "  all-vercel [环境] [提交信息]        完整流程（测试/构建/GitHub + Vercel）"
+  echo "  all [环境] [提交信息]               完整流程（测试/构建/GitHub + Vercel）"
+  echo "  all-vercel [环境] [提交信息]        同 all（兼容旧命令）"
   echo "  help                               显示帮助"
   echo ""
   echo "示例:"
@@ -108,13 +108,13 @@ case "$ACTION" in
     ;;
 
   all-vercel)
-    log_section "完整部署流程（含 Vercel）"
+    log_section "完整部署流程（兼容别名）"
     ENVIRONMENT=${2:-"production"}
     COMMIT_MSG=${3:-""}
     if [ -n "$COMMIT_MSG" ]; then
-      BABY_DEPLOY_VERCEL=true "$SCRIPT_DIR/deploy_all.sh" "$ENVIRONMENT" "$COMMIT_MSG"
+      "$SCRIPT_DIR/deploy_all.sh" "$ENVIRONMENT" "$COMMIT_MSG"
     else
-      BABY_DEPLOY_VERCEL=true "$SCRIPT_DIR/deploy_all.sh" "$ENVIRONMENT"
+      "$SCRIPT_DIR/deploy_all.sh" "$ENVIRONMENT"
     fi
     ;;
 
