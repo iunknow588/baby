@@ -15,13 +15,21 @@ function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, '')
 }
 
+function upgradeInsecureHttpIfHttpsPage(value: string): string {
+  if (typeof window === 'undefined') return value
+  if (window.location.protocol !== 'https:') return value
+  if (!value.startsWith('http://')) return value
+  return `https://${value.slice('http://'.length)}`
+}
+
 export function getApiBaseUrl(): string {
-  return toNonEmptyString(import.meta.env.VITE_API_BASE_URL, '/api')
+  const raw = toNonEmptyString(import.meta.env.VITE_API_BASE_URL, '/api')
+  return trimTrailingSlash(upgradeInsecureHttpIfHttpsPage(raw))
 }
 
 export function getCozeApiUri(): string {
   const raw = toNonEmptyString(import.meta.env.VITE_COZE_API_URI, '/api/coze')
-  return trimTrailingSlash(raw)
+  return trimTrailingSlash(upgradeInsecureHttpIfHttpsPage(raw))
 }
 
 export function getSseReconnectMs(): number {

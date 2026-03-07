@@ -91,18 +91,32 @@ onBeforeUnmount(() => {
   chat.stopTts()
 })
 
-async function onFetchMessages({
-  room,
-  options
-}: {
-  room: { roomId: string }
+type VacFetchPayload = {
+  room?: { roomId?: string }
   options?: { reset?: boolean }
-}) {
-  const reset = options?.reset !== false
+}
+
+function normalizeVacPayload(payload: unknown): VacFetchPayload {
+  if (!payload || typeof payload !== 'object') return {}
+  const eventLike = payload as { detail?: unknown }
+  if (eventLike.detail && typeof eventLike.detail === 'object') {
+    return eventLike.detail as VacFetchPayload
+  }
+  return payload as VacFetchPayload
+}
+
+async function onFetchMessages(payload: unknown) {
+  const normalized = normalizeVacPayload(payload)
+  const roomId = normalized.room?.roomId
+  if (!roomId) {
+    chat.lastError = '聊天房间信息缺失，请刷新后重试。'
+    return
+  }
+  const reset = normalized.options?.reset !== false
   if (reset) {
-    await chat.fetchMessages(room.roomId, true)
+    await chat.fetchMessages(roomId, true)
   } else {
-    await chat.fetchMoreMessages(room.roomId)
+    await chat.fetchMoreMessages(roomId)
   }
   await chat.ensureSession()
 }
@@ -111,7 +125,11 @@ async function onFetchMoreRooms() {
   await chat.fetchMoreRooms()
 }
 
-async function onSendMessage({ content }: { content: string }) {
+async function onSendMessage(payload: unknown) {
+  const normalized = normalizeVacPayload(payload)
+  const content = typeof (normalized as { content?: unknown }).content === 'string'
+    ? ((normalized as { content?: string }).content ?? '')
+    : ''
   await chat.sendText(content)
 }
 

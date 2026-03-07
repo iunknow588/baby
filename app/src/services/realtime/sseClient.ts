@@ -1,3 +1,5 @@
+import { getApiBaseUrl } from '../../platform/env'
+
 export interface SseEventPayload {
   type: string
   data: unknown
@@ -23,7 +25,8 @@ export class ChatSseClient {
 
     const token = localStorage.getItem('baby_token') || ''
     const qs = new URLSearchParams({ sessionId, token })
-    this.es = new EventSource(`/api/chat/stream?${qs.toString()}`)
+    const base = getApiBaseUrl().replace(/\/+$/, '')
+    this.es = new EventSource(`${base}/chat/stream?${qs.toString()}`)
 
     this.es.onopen = () => {
       callbacks.onOpen?.()
