@@ -3,7 +3,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 const router = createRouter({
   history: createWebHistory(),
   routes: [
-    { path: '/', redirect: '/chat' },
+    { path: '/', component: () => import('../pages/HomePage.vue') },
     { path: '/chat', component: () => import('../pages/ChatPage.vue') },
     { path: '/contacts', component: () => import('../pages/ContactsPage.vue') },
     { path: '/social', component: () => import('../pages/SocialPage.vue') },
