@@ -108,12 +108,23 @@ export const useChatStore = defineStore('chat', {
     streamRecovering: false,
     streamLastRecoverAt: '',
     streamWatchdogTimerId: 0,
+    sessionError: '',
+    streamError: '',
     ttsLoading: false,
     ttsPlaying: false,
     ttsAudioUrl: '',
     streamDrafts: {} as Record<string, string>,
     lastError: ''
   }),
+  getters: {
+    connectionHint(state): string {
+      if (state.streamConnected) return ''
+      if (state.streamConnecting) return '正在建立实时连接...'
+      if (state.sessionError) return `会话创建失败: ${state.sessionError}`
+      if (state.streamError) return `实时通道异常: ${state.streamError}`
+      return state.roomId ? '实时连接未建立，可点击“立即重连”。' : '当前没有可用聊天房间。'
+    }
+  },
   actions: {
     async fetchRooms(reset = true) {
       this.loadingRooms = true
@@ -194,9 +205,11 @@ export const useChatStore = defineStore('chat', {
         if (!room) return
         const created = await chatApi.createSession({ roomType: room.roomType })
         this.sessionId = created.sessionId
+        this.sessionError = ''
         this.openStream()
-      } catch {
-        // mock 模式跳过
+      } catch (error) {
+        this.sessionError = toUserError(error)
+        this.lastError = this.sessionError
       }
     },
 
@@ -204,18 +217,21 @@ export const useChatStore = defineStore('chat', {
       if (!this.sessionId) return
       this.streamConnecting = true
       this.streamStale = false
+      this.streamError = ''
       this.startStreamWatchdog()
       sseClient.connect(this.sessionId, payload => this.onSseEvent(payload), {
         reconnectDelayMs: getSseReconnectMs(),
         onOpen: () => {
           this.streamConnecting = false
           this.streamConnected = true
+          this.streamError = ''
           const nowAt = new Date().toISOString()
           this.streamLastConnectedAt = nowAt
           this.streamLastEventAt = nowAt
         },
         onError: () => {
           this.streamConnected = false
+          this.streamError = 'SSE 建连失败或连接中断'
         },
         onReconnect: () => {
           this.streamReconnectCount += 1
@@ -227,6 +243,8 @@ export const useChatStore = defineStore('chat', {
     async reconnectStream() {
       if (this.streamRecovering) return
       this.streamRecovering = true
+      this.sessionError = ''
+      this.streamError = ''
       this.closeStream()
       if (!this.sessionId) {
         await this.ensureSession()

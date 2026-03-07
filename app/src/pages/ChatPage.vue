@@ -9,6 +9,7 @@
     <button style="margin-left: 8px" :disabled="chat.streamConnecting" @click="chat.reconnectStream">
       立即重连
     </button>
+    <p v-if="chat.connectionHint" style="margin-top: 8px; color: #b42318">{{ chat.connectionHint }}</p>
   </section>
 
   <section v-if="chatUiReady" class="panel" style="padding: 0; overflow: hidden">
