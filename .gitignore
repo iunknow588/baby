@@ -16,6 +16,7 @@ yarn-error.log*
 
 # tooling cache
 app/.vite/
+app/.vercel/
 app/tsconfig.tsbuildinfo
 
 # OS / editor

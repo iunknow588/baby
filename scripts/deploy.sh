@@ -37,12 +37,13 @@ show_help() {
   echo "  test                               仅执行 app 单元测试"
   echo "  build                              仅执行 app 构建"
   echo "  all [环境] [提交信息]               完整流程（测试/构建/GitHub，可选Vercel）"
+  echo "  all-vercel [环境] [提交信息]        完整流程（测试/构建/GitHub + Vercel）"
   echo "  help                               显示帮助"
   echo ""
   echo "示例:"
   echo "  ./scripts/deploy.sh github \"chore: update scripts\""
   echo "  ./scripts/deploy.sh all production \"feat: release\""
-  echo "  BABY_DEPLOY_VERCEL=true ./scripts/deploy.sh all preview"
+  echo "  ./scripts/deploy.sh all-vercel production \"feat: release\""
   echo ""
 }
 
@@ -91,6 +92,17 @@ case "$ACTION" in
       "$SCRIPT_DIR/deploy_all.sh" "$ENVIRONMENT" "$COMMIT_MSG"
     else
       "$SCRIPT_DIR/deploy_all.sh" "$ENVIRONMENT"
+    fi
+    ;;
+
+  all-vercel)
+    log_section "完整部署流程（含 Vercel）"
+    ENVIRONMENT=${2:-"production"}
+    COMMIT_MSG=${3:-""}
+    if [ -n "$COMMIT_MSG" ]; then
+      BABY_DEPLOY_VERCEL=true "$SCRIPT_DIR/deploy_all.sh" "$ENVIRONMENT" "$COMMIT_MSG"
+    else
+      BABY_DEPLOY_VERCEL=true "$SCRIPT_DIR/deploy_all.sh" "$ENVIRONMENT"
     fi
     ;;
 

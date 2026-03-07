@@ -47,6 +47,9 @@ log_info "环境: $ENVIRONMENT"
 log_info "执行测试: $BABY_RUN_TEST"
 log_info "执行构建: $BABY_RUN_BUILD"
 log_info "部署 Vercel: $BABY_DEPLOY_VERCEL"
+if [ "$BABY_DEPLOY_VERCEL" != "true" ]; then
+  log_info "提示: 当前未启用 Vercel 部署。如需部署请设置 BABY_DEPLOY_VERCEL=true 或使用 ./scripts/deploy.sh all-vercel"
+fi
 
 if [ "$BABY_RUN_TEST" = "true" ]; then
   log_section "步骤 1: 执行测试"

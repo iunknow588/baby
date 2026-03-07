@@ -35,6 +35,9 @@ cd /home/lc/luckee_dao/baby
 
 # 完整流程并部署 Vercel
 BABY_DEPLOY_VERCEL=true ./scripts/deploy.sh all preview "feat: preview release"
+
+# 推荐: 使用 all-vercel 一步到位
+./scripts/deploy.sh all-vercel production "feat: release"
 ```
 
 ## 环境变量
@@ -42,4 +45,3 @@ BABY_DEPLOY_VERCEL=true ./scripts/deploy.sh all preview "feat: preview release"
 - `BABY_RUN_TEST`：`true|false`，默认 `true`
 - `BABY_RUN_BUILD`：`true|false`，默认 `true`
 - `BABY_DEPLOY_VERCEL`：`true|false`，默认 `false`
-
