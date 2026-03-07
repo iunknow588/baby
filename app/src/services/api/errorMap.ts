@@ -1,0 +1,26 @@
+import { ApiError } from '../../types/api'
+
+const MESSAGE_MAP: Record<string, string> = {
+  INVALID_PARAMS: '请求参数不正确，请检查输入。',
+  UNAUTHORIZED: '登录已过期，请重新登录。',
+  FORBIDDEN: '当前账号无权限执行该操作。',
+  ROOM_NOT_FOUND: '会话不存在或已被删除。',
+  MESSAGE_NOT_FOUND: '消息不存在。',
+  REQUEST_IN_PROGRESS: '请求处理中，请稍后重试。',
+  RATE_LIMITED: '请求过于频繁，请稍后再试。',
+  ASR_FAILED: '语音识别失败，请重新录音。',
+  TTS_FAILED: '语音合成失败，请稍后重试。',
+  INVALID_RESPONSE: '服务响应格式异常。',
+  NETWORK_ERROR: '网络异常，请检查网络连接。',
+  INTERNAL_ERROR: '服务暂时不可用，请稍后重试。'
+}
+
+export function toUserError(error: unknown): string {
+  if (error instanceof ApiError) {
+    return MESSAGE_MAP[error.code] || error.message || MESSAGE_MAP.INTERNAL_ERROR
+  }
+  if (error instanceof Error) {
+    return error.message
+  }
+  return MESSAGE_MAP.INTERNAL_ERROR
+}

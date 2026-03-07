@@ -1,0 +1,1 @@
+import{_ as o}from"./index-CDilDTdF.js";import{A as s,q as a,v as t}from"./vendor-CMx2ZM_4.js";import"./vue-core-snqlBWHR.js";const r={},c={class:"panel"};function n(l,e){return s(),a("div",c,[...e[0]||(e[0]=[t("h2",{class:"page-title"},"社交发现",-1),t("p",null,"展示推荐用户、推荐群和话题流。当前为占位页面。",-1)])])}const f=o(r,[["render",n]]);export{f as default};

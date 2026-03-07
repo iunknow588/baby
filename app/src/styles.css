@@ -1,0 +1,66 @@
+:root {
+  --bg: #f3f6fb;
+  --panel: #ffffff;
+  --text: #182230;
+  --muted: #6a778b;
+  --line: #d6deeb;
+  --brand: #0f766e;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Noto Sans SC", "PingFang SC", sans-serif;
+  color: var(--text);
+  background: radial-gradient(circle at top, #e6f2ff 0, var(--bg) 45%);
+}
+
+a {
+  color: var(--brand);
+  text-decoration: none;
+}
+
+.app-shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-rows: auto 1fr;
+}
+
+.topbar {
+  border-bottom: 1px solid var(--line);
+  background: #fff;
+  padding: 12px 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.topbar h1 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.topbar nav {
+  display: flex;
+  gap: 12px;
+  font-size: 14px;
+}
+
+.page-container {
+  padding: 12px;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.page-title {
+  margin: 0 0 10px;
+  font-size: 18px;
+}
