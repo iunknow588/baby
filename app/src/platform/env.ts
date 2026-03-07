@@ -24,10 +24,6 @@ export function getCozeApiUri(): string {
   return trimTrailingSlash(raw)
 }
 
-export function getCozeBotId(): string {
-  return toNonEmptyString(import.meta.env.VITE_COZE_BOT_ID, '')
-}
-
 export function getCozeUserId(): string {
   return toNonEmptyString(import.meta.env.VITE_COZE_USER_ID, '')
 }

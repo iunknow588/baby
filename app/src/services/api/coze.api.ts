@@ -1,11 +1,10 @@
 import axios from 'axios'
-import { getCozeApiUri, getCozeBotId, getCozeUserId } from '../../platform/env'
+import { getCozeApiUri, getCozeUserId } from '../../platform/env'
 import { ensureObject, ensureString, parseApiEnvelope } from './guard'
 
 export interface CozeChatRequest {
   message: string
   conversationId?: string
-  botId?: string
   userId?: string
   extra?: Record<string, unknown>
 }
@@ -28,7 +27,6 @@ export const cozeApi = {
     const body = {
       message: payload.message,
       conversationId: payload.conversationId,
-      botId: payload.botId || getCozeBotId(),
       userId: payload.userId || getCozeUserId(),
       extra: payload.extra
     }

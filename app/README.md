@@ -25,7 +25,6 @@ npm test
 
 - `VITE_API_BASE_URL`: API 网关地址，默认 `/api`
 - `VITE_COZE_API_URI`: Coze BFF URI，默认 `/api/coze`
-- `VITE_COZE_BOT_ID`: 默认 Coze Bot ID（可在请求体覆盖）
 - `VITE_COZE_USER_ID`: 默认 Coze User ID（可在请求体覆盖）
 - `VITE_SSE_RECONNECT_MS`: SSE 自动重连间隔（毫秒），默认 `5000`
 - `VITE_SSE_STALE_MS`: SSE 连接陈旧阈值（毫秒），默认 `15000`
@@ -52,7 +51,6 @@ cp .env.local.example .env.local
 {
   "message": "用户输入文本",
   "conversationId": "可选",
-  "botId": "可选，未传则走 VITE_COZE_BOT_ID",
   "userId": "可选，未传则走 VITE_COZE_USER_ID",
   "extra": {}
 }

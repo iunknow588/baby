@@ -8,7 +8,6 @@
   <div class="panel" style="margin-top: 12px">
     <h3 class="page-title">Coze 连接信息</h3>
     <p>API URI: {{ mentor.coze.apiUri || '(未配置)' }}</p>
-    <p>Bot ID: {{ mentor.coze.botId || '(未配置)' }}</p>
     <p>User ID: {{ mentor.coze.userId || '(未配置)' }}</p>
   </div>
 

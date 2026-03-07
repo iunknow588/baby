@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { toUserError } from '../services/api/errorMap'
 import { cozeApi } from '../services/api/coze.api'
-import { getCozeApiUri, getCozeBotId, getCozeUserId } from '../platform/env'
+import { getCozeApiUri, getCozeUserId } from '../platform/env'
 
 export const useMentorStore = defineStore('mentor', {
   state: () => ({
@@ -12,7 +12,6 @@ export const useMentorStore = defineStore('mentor', {
     },
     coze: {
       apiUri: getCozeApiUri(),
-      botId: getCozeBotId(),
       userId: getCozeUserId()
     },
     conversationId: '',

@@ -11,7 +11,6 @@ vi.mock('../../services/api/coze.api', () => ({
 
 vi.mock('../../platform/env', () => ({
   getCozeApiUri: () => '/api/coze',
-  getCozeBotId: () => 'bot_demo',
   getCozeUserId: () => 'user_demo'
 }))
 

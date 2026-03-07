@@ -37,7 +37,6 @@ fi
 
 API_BASE_RAW="${BABY_API_BASE_URL:-${VITE_API_BASE_URL:-}}"
 COZE_BASE_RAW="${BABY_COZE_API_URI:-${VITE_COZE_API_URI:-}}"
-BOT_ID="${BABY_COZE_BOT_ID:-${VITE_COZE_BOT_ID:-}}"
 USER_ID="${BABY_COZE_USER_ID:-${VITE_COZE_USER_ID:-}}"
 TOKEN="${BABY_GATEWAY_TOKEN:-${BABY_TOKEN:-}}"
 TOKEN_FILE="${BABY_TOKEN_FILE:-}"
@@ -187,7 +186,7 @@ else
 fi
 
 print_title "Day4 Coze"
-request "coze-chat" "POST" "$(join_url "$COZE_BASE" "/chat")" "{\"message\":\"你好，请做一次联调自检\",\"botId\":\"${BOT_ID:-bot_smoke}\",\"userId\":\"${USER_ID:-user_smoke}\"}"
+request "coze-chat" "POST" "$(join_url "$COZE_BASE" "/chat")" "{\"message\":\"你好，请做一次联调自检\",\"userId\":\"${USER_ID:-user_smoke}\"}"
 
 print_title "Day5 Social"
 request "contacts" "GET" "$(join_url "$API_BASE" "/api/social/contacts?limit=1")"
