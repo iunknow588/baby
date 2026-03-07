@@ -57,7 +57,7 @@ cp .env.local.example .env.local
 响应体沿用统一 envelope：`{ success, data, error, traceId }`。
 
 联调入口：
-- 页面 `我的`（`/profile`）提供 Coze 配置展示与“发送给 Coze”测试按钮。
+- 页面 `我的`（`/profile`）提供 AI 老师提问入口与 Coze 联调发送按钮。
 
 ## Notes
 

@@ -39,7 +39,7 @@ BABY_GATEWAY_TOKEN=your_token \
 ./scripts/deploy.sh smoke
 
 # 远程后端探测（检查 student 已有接口 + Baby 关键接口缺口）
-BABY_REMOTE_BASE_URL=http://115.190.127.72:9000 \
+BABY_REMOTE_BASE_URL=https://your-backend-domain \
 ./scripts/deploy.sh probe
 
 # 完整流程（默认: test + build + github + vercel）
