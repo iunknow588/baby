@@ -1,18 +1,10 @@
 import { defineStore } from 'pinia'
 import { toUserError } from '../services/api/errorMap'
 import { cozeApi } from '../services/api/coze.api'
-import { getCozeApiUri } from '../platform/env'
 
 export const useMentorStore = defineStore('mentor', {
   state: () => ({
     enabled: true,
-    profile: {
-      mode: 'social_mentor',
-      goal: 'improve-communication'
-    },
-    coze: {
-      apiUri: getCozeApiUri()
-    },
     conversationId: '',
     asking: false,
     lastReply: '',

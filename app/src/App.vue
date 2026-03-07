@@ -1,7 +1,7 @@
 <template>
   <div class="app-shell">
     <header class="topbar">
-      <h1>Baby</h1>
+      <h1>Lumen Social</h1>
       <nav>
         <RouterLink to="/">首页</RouterLink>
         <RouterLink to="/chat">聊天</RouterLink>

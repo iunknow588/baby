@@ -1,6 +1,6 @@
 <template>
   <section class="panel">
-    <h2 class="page-title">Baby 跨平台 H5</h2>
+    <h2 class="page-title">Lumen Social</h2>
     <p>支持聊天、语音交互与社交关系管理。请选择下方入口继续。</p>
   </section>
 
