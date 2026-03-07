@@ -10,8 +10,7 @@ vi.mock('../../services/api/coze.api', () => ({
 }))
 
 vi.mock('../../platform/env', () => ({
-  getCozeApiUri: () => '/api/coze',
-  getCozeUserId: () => 'user_demo'
+  getCozeApiUri: () => '/api/coze'
 }))
 
 describe('mentor store', () => {

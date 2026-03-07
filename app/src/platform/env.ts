@@ -24,10 +24,6 @@ export function getCozeApiUri(): string {
   return trimTrailingSlash(raw)
 }
 
-export function getCozeUserId(): string {
-  return toNonEmptyString(import.meta.env.VITE_COZE_USER_ID, '')
-}
-
 export function getSseReconnectMs(): number {
   return toPositiveInt(import.meta.env.VITE_SSE_RECONNECT_MS, 5000)
 }
