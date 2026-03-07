@@ -11,6 +11,14 @@ export default defineConfig({
       }
     })
   ],
+  server: {
+    proxy: {
+      '/api': {
+        target: 'http://127.0.0.1:9000',
+        changeOrigin: true
+      }
+    }
+  },
   build: {
     // vue-advanced-chat 本身是较大的 web component 包，且仅在 /chat 路由懒加载
     // 适当提高 warning 阈值，避免将预期行为误判为发布阻塞项

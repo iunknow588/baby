@@ -3,7 +3,7 @@
 # 检查远程后端可达性与 Baby 必需接口缺口
 # 用法:
 #   ./scripts/check_remote_backend.sh
-#   BABY_REMOTE_BASE_URL=http://115.190.127.72:9000 ./scripts/check_remote_backend.sh
+#   BABY_REMOTE_BASE_URL=http://127.0.0.1:9000 ./scripts/check_remote_backend.sh
 
 set -u
 
@@ -32,7 +32,16 @@ print_title() {
   echo -e "${CYAN}════════════════════════════════════${NC}"
 }
 
-BASE_URL="${BABY_REMOTE_BASE_URL:-http://115.190.127.72:9000}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+APP_ENV_FILE="$PROJECT_ROOT/app/.env.local"
+
+if [ -f "$APP_ENV_FILE" ]; then
+  # shellcheck disable=SC1090
+  source "$APP_ENV_FILE"
+fi
+
+BASE_URL="${BABY_REMOTE_BASE_URL:-${BABY_API_BASE_URL:-http://127.0.0.1:9000}}"
 TIMEOUT="${BABY_REMOTE_TIMEOUT:-8}"
 TOKEN="${BABY_GATEWAY_TOKEN:-${BABY_TOKEN:-}}"
 TOKEN_FILE="${BABY_TOKEN_FILE:-}"
