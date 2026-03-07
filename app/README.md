@@ -60,6 +60,9 @@ cp .env.local.example .env.local
 
 响应体沿用统一 envelope：`{ success, data, error, traceId }`。
 
+联调入口：
+- 页面 `我的`（`/profile`）提供 Coze 配置展示与“发送给 Coze”测试按钮。
+
 ## Notes
 
 - 当前已接入 `vue-advanced-chat` 基础聊天壳。
