@@ -34,6 +34,7 @@ show_help() {
   echo "选项:"
   echo "  github [提交信息]                  仅提交到 GitHub"
   echo "  vercel [production|preview]        仅部署前端到 Vercel"
+  echo "  smoke                              执行后端接口冒烟检查"
   echo "  test                               仅执行 app 单元测试"
   echo "  build                              仅执行 app 构建"
   echo "  all [环境] [提交信息]               完整流程（测试/构建/GitHub，可选Vercel）"
@@ -70,6 +71,11 @@ case "$ACTION" in
     log_section "部署到 Vercel"
     ENVIRONMENT=${2:-"preview"}
     "$SCRIPT_DIR/deploy_vercel.sh" "$ENVIRONMENT"
+    ;;
+
+  smoke)
+    log_section "执行接口冒烟检查"
+    "$SCRIPT_DIR/smoke_api.sh"
     ;;
 
   test)

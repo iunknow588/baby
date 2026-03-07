@@ -8,6 +8,7 @@
 - `deploy_all.sh`：一键流程（测试/构建/GitHub，可选 Vercel）
 - `upload_to_github.sh`：提交并推送到 GitHub
 - `deploy_vercel.sh`：部署到 Vercel
+- `smoke_api.sh`：接口冒烟检查（chat/sse/coze/social）
 
 ## 远端仓库
 
@@ -29,6 +30,11 @@ cd /home/lc/luckee_dao/baby
 # 仅测试/构建
 ./scripts/deploy.sh test
 ./scripts/deploy.sh build
+
+# 接口冒烟（需配置 BABY_API_BASE_URL，可选 BABY_TOKEN）
+BABY_API_BASE_URL=https://api.example.com \
+BABY_TOKEN=your_token \
+./scripts/deploy.sh smoke
 
 # 完整流程（默认: test + build + github）
 ./scripts/deploy.sh all production "feat: release"
