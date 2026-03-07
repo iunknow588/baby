@@ -12,6 +12,9 @@ export default defineConfig({
     })
   ],
   build: {
+    // vue-advanced-chat 本身是较大的 web component 包，且仅在 /chat 路由懒加载
+    // 适当提高 warning 阈值，避免将预期行为误判为发布阻塞项
+    chunkSizeWarningLimit: 650,
     rollupOptions: {
       output: {
         manualChunks(id) {

@@ -49,6 +49,11 @@ log_info "Vercel Project: $BABY_VERCEL_PROJECT"
 log_info "步骤 1: 链接 Vercel 项目（无交互）"
 vercel link --yes --scope "$BABY_VERCEL_SCOPE" --project "$BABY_VERCEL_PROJECT"
 
+# vercel link 会在当前目录生成仅含 ".vercel" 的 .gitignore，避免污染仓库工作区
+if [ -f "$APP_DIR/.gitignore" ] && grep -q '^[[:space:]]*\.vercel[[:space:]]*$' "$APP_DIR/.gitignore"; then
+  rm -f "$APP_DIR/.gitignore"
+fi
+
 log_info "步骤 2: 执行部署"
 if [ "$ENVIRONMENT" = "production" ]; then
   vercel deploy --prod --yes --scope "$BABY_VERCEL_SCOPE" --logs
