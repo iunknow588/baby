@@ -3,7 +3,12 @@ import { chatApi } from '../services/api/chat.api'
 import { voiceApi } from '../services/api/voice.api'
 import { ChatSseClient, type SseEventPayload } from '../services/realtime/sseClient'
 import { toUserError } from '../services/api/errorMap'
-import { getSseReconnectMs, getSseStaleMs, getSseWatchdogMs } from '../platform/env'
+import {
+  getSseAutoRecoverCooldownMs,
+  getSseReconnectMs,
+  getSseStaleMs,
+  getSseWatchdogMs
+} from '../platform/env'
 import type { MessageEntity, RoomEntity } from '../types/domain'
 
 const now = new Date().toISOString()
@@ -59,6 +64,13 @@ function upsertMessage(list: MessageEntity[], message: MessageEntity): MessageEn
   return next
 }
 
+function mergeUniqueByKey<T>(base: T[], incoming: T[], keyGetter: (item: T) => string): T[] {
+  const map = new Map<string, T>()
+  base.forEach(item => map.set(keyGetter(item), item))
+  incoming.forEach(item => map.set(keyGetter(item), item))
+  return [...map.values()]
+}
+
 function resolveEventData(input: unknown): Record<string, unknown> {
   if (!input || typeof input !== 'object') return {}
   const obj = input as Record<string, unknown>
@@ -93,6 +105,8 @@ export const useChatStore = defineStore('chat', {
     streamLastEventAt: '',
     streamReconnectCount: 0,
     streamStale: false,
+    streamRecovering: false,
+    streamLastRecoverAt: '',
     streamWatchdogTimerId: 0,
     voiceProcessing: false,
     voiceDraftText: '',
@@ -110,7 +124,9 @@ export const useChatStore = defineStore('chat', {
       this.loadingRooms = true
       try {
         const result = await chatApi.listRooms(reset ? undefined : this.roomsCursor)
-        this.rooms = reset ? result.list : [...this.rooms, ...result.list]
+        this.rooms = reset
+          ? result.list
+          : mergeUniqueByKey(this.rooms, result.list, item => item.roomId)
         this.roomsCursor = result.nextCursor
         this.roomsLoaded = !result.hasMore
       } catch {
@@ -151,7 +167,9 @@ export const useChatStore = defineStore('chat', {
       try {
         const cursor = reset ? undefined : this.messagesCursorByRoom[roomId]
         const result = await chatApi.listMessages(roomId, cursor)
-        this.messages = reset ? result.list : [...result.list, ...this.messages]
+        this.messages = reset
+          ? result.list
+          : mergeUniqueByKey([...result.list, ...this.messages], [], item => item._id)
         this.messagesCursorByRoom[roomId] = result.nextCursor
         this.messagesLoaded = !result.hasMore
       } catch {
@@ -212,12 +230,16 @@ export const useChatStore = defineStore('chat', {
     },
 
     async reconnectStream() {
+      if (this.streamRecovering) return
+      this.streamRecovering = true
       this.closeStream()
       if (!this.sessionId) {
         await this.ensureSession()
-        return
+      } else {
+        this.openStream()
       }
-      this.openStream()
+      this.streamLastRecoverAt = new Date().toISOString()
+      this.streamRecovering = false
     },
 
     closeStream() {
@@ -225,6 +247,7 @@ export const useChatStore = defineStore('chat', {
       this.streamConnecting = false
       this.streamConnected = false
       this.streamStale = false
+      this.streamRecovering = false
       this.stopStreamWatchdog()
     },
 
@@ -451,6 +474,13 @@ export const useChatStore = defineStore('chat', {
         if (staleMs > getSseStaleMs()) {
           this.streamStale = true
           this.streamConnected = false
+          const lastRecoverTs = this.streamLastRecoverAt
+            ? new Date(this.streamLastRecoverAt).getTime()
+            : 0
+          const nowTs = Date.now()
+          if (nowTs - lastRecoverTs >= getSseAutoRecoverCooldownMs()) {
+            this.reconnectStream()
+          }
         }
       }, getSseWatchdogMs())
     },

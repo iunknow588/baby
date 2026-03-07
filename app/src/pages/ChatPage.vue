@@ -11,7 +11,7 @@
     </button>
   </section>
 
-  <section class="panel" style="padding: 0; overflow: hidden">
+  <section v-if="chatUiReady" class="panel" style="padding: 0; overflow: hidden">
     <vue-advanced-chat
       :current-user-id.prop="auth.userId"
       :rooms.prop="vacRooms"
@@ -28,6 +28,7 @@
       @send-message="onSendMessage"
     />
   </section>
+  <section v-else class="panel">聊天组件加载中...</section>
 
   <VoiceRecordPanel style="margin-top: 12px" :busy="chat.voiceProcessing" @recorded="onVoiceRecorded" />
 
@@ -69,16 +70,15 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted } from 'vue'
-import { register } from 'vue-advanced-chat'
+import { ref } from 'vue'
 import { useAuthStore } from '../stores/auth'
 import { useChatStore } from '../stores/chat'
 import { chatAdapter } from '../adapters/chatAdapter'
 import VoiceRecordPanel from '../components/chat/VoiceRecordPanel.vue'
 
-register()
-
 const auth = useAuthStore()
 const chat = useChatStore()
+const chatUiReady = ref(false)
 
 const vacRooms = computed(() => chatAdapter.toVacRooms(chat.rooms))
 const vacMessages = computed(() => chatAdapter.toVacMessages(chat.messages))
@@ -91,6 +91,7 @@ const lastAiText = computed(() => {
 })
 
 onMounted(async () => {
+  await ensureChatUiReady()
   await chat.fetchRooms()
   if (chat.roomId) {
     await chat.fetchMessages(chat.roomId)
@@ -134,5 +135,12 @@ async function onVoiceRecorded(blob: Blob) {
 async function playLastAiText() {
   if (!lastAiText.value) return
   await chat.requestTtsAndPlay(lastAiText.value)
+}
+
+async function ensureChatUiReady() {
+  if (chatUiReady.value) return
+  const module = await import('vue-advanced-chat')
+  module.register()
+  chatUiReady.value = true
 }
 </script>

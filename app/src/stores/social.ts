@@ -2,6 +2,13 @@ import { defineStore } from 'pinia'
 import { socialApi, type ContactItem, type FriendRequestItem } from '../services/api/social.api'
 import { toUserError } from '../services/api/errorMap'
 
+function mergeContacts(base: ContactItem[], incoming: ContactItem[]): ContactItem[] {
+  const map = new Map<string, ContactItem>()
+  base.forEach(item => map.set(item.userId, item))
+  incoming.forEach(item => map.set(item.userId, item))
+  return [...map.values()]
+}
+
 export const useSocialStore = defineStore('social', {
   state: () => ({
     contacts: [] as ContactItem[],
@@ -22,7 +29,9 @@ export const useSocialStore = defineStore('social', {
           socialApi.listContacts(reset ? undefined : this.contactsCursor),
           socialApi.listFriendRequests()
         ])
-        this.contacts = reset ? contactsPaged.list : [...this.contacts, ...contactsPaged.list]
+        this.contacts = reset
+          ? contactsPaged.list
+          : mergeContacts(this.contacts, contactsPaged.list)
         this.contactsCursor = contactsPaged.nextCursor
         this.contactsLoaded = !contactsPaged.hasMore
         this.friendRequests = requests
@@ -52,7 +61,7 @@ export const useSocialStore = defineStore('social', {
       this.lastError = ''
       try {
         const result = await socialApi.listContacts(this.contactsCursor)
-        this.contacts = [...this.contacts, ...result.list]
+        this.contacts = mergeContacts(this.contacts, result.list)
         this.contactsCursor = result.nextCursor
         this.contactsLoaded = !result.hasMore
       } catch (error) {

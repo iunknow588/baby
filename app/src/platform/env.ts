@@ -18,3 +18,7 @@ export function getSseStaleMs(): number {
 export function getSseWatchdogMs(): number {
   return toPositiveInt(import.meta.env.VITE_SSE_WATCHDOG_MS, 3000)
 }
+
+export function getSseAutoRecoverCooldownMs(): number {
+  return toPositiveInt(import.meta.env.VITE_SSE_AUTO_RECOVER_COOLDOWN_MS, 8000)
+}

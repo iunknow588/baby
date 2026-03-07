@@ -27,7 +27,8 @@ vi.mock('../../services/api/voice.api', () => ({
 vi.mock('../../platform/env', () => ({
   getSseReconnectMs: () => 5000,
   getSseStaleMs: () => 15000,
-  getSseWatchdogMs: () => 3000
+  getSseWatchdogMs: () => 3000,
+  getSseAutoRecoverCooldownMs: () => 8000
 }))
 
 describe('chat store state machine', () => {
@@ -103,5 +104,54 @@ describe('chat store state machine', () => {
     const message = store.messages.find(item => item._id === 'm_stream_1')
     expect(message?.content).toBe('Hello World')
     expect(message?.status).toBe('delivered')
+  })
+
+  it('deduplicates rooms when loading more pages', async () => {
+    const { useChatStore } = await import('../chat')
+    const store = useChatStore()
+
+    listRoomsMock.mockResolvedValueOnce({
+      list: [
+        {
+          roomId: 'r_1',
+          roomName: 'Room 1',
+          roomType: 'dm',
+          users: [],
+          unreadCount: 0,
+          lastActiveAt: '2026-03-07T00:00:00.000Z'
+        }
+      ],
+      nextCursor: 'cursor_1',
+      hasMore: true
+    })
+
+    listRoomsMock.mockResolvedValueOnce({
+      list: [
+        {
+          roomId: 'r_1',
+          roomName: 'Room 1 updated',
+          roomType: 'dm',
+          users: [],
+          unreadCount: 1,
+          lastActiveAt: '2026-03-07T00:00:00.000Z'
+        },
+        {
+          roomId: 'r_2',
+          roomName: 'Room 2',
+          roomType: 'group',
+          users: [],
+          unreadCount: 0,
+          lastActiveAt: '2026-03-07T00:00:00.000Z'
+        }
+      ],
+      nextCursor: undefined,
+      hasMore: false
+    })
+
+    await store.fetchRooms(true)
+    await store.fetchMoreRooms()
+
+    expect(store.rooms).toHaveLength(2)
+    expect(store.rooms.find(item => item.roomId === 'r_1')?.roomName).toBe('Room 1 updated')
   })
 })

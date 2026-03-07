@@ -27,10 +27,10 @@ npm test
 - `VITE_SSE_RECONNECT_MS`: SSE 自动重连间隔（毫秒），默认 `5000`
 - `VITE_SSE_STALE_MS`: SSE 连接陈旧阈值（毫秒），默认 `15000`
 - `VITE_SSE_WATCHDOG_MS`: SSE 健康检查周期（毫秒），默认 `3000`
+- `VITE_SSE_AUTO_RECOVER_COOLDOWN_MS`: SSE 自动恢复最小间隔（毫秒），默认 `8000`
 
 ## Notes
 
 - 当前已接入 `vue-advanced-chat` 基础聊天壳。
 - 聊天/联系人页面已具备 mock 回退能力，便于先跑通界面。
 - 联调阶段按 `works-docs/baby/03-接口联调清单_v1.md` 对接后端。
-
