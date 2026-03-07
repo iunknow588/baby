@@ -1,0 +1,28 @@
+# dependencies
+app/node_modules/
+
+# build outputs
+app/dist/
+
+# logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# env files
+.env
+.env.*
+
+# tooling cache
+app/.vite/
+app/tsconfig.tsbuildinfo
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# local cloned references (not source-of-truth)
+vue-advanced-chat-main/
