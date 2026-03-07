@@ -172,6 +172,9 @@ if [ -n "$TOKEN" ]; then
   if [[ "$stream_head_code" == "200" || "$stream_head_code" == "204" ]]; then
     PASS_COUNT=$((PASS_COUNT + 1))
     log_info "sse-stream => HTTP $stream_head_code"
+  elif [ "$stream_head_code" = "000" ] && [ -f /tmp/baby_sse_head.out ] && rg -q "event:[[:space:]]*heartbeat" /tmp/baby_sse_head.out; then
+    PASS_COUNT=$((PASS_COUNT + 1))
+    log_info "sse-stream => 收到 heartbeat（按通过处理）"
   else
     FAIL_COUNT=$((FAIL_COUNT + 1))
     log_error "sse-stream => HTTP $stream_head_code"

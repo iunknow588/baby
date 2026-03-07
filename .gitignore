@@ -1,8 +1,10 @@
 # dependencies
 app/node_modules/
+local-platform/node_modules/
 
 # build outputs
 app/dist/
+local-platform/data/*.db
 
 # logs
 *.log
