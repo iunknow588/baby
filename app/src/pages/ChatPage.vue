@@ -30,28 +30,15 @@
   </section>
   <section v-else class="panel">聊天组件加载中...</section>
 
-  <VoiceRecordPanel style="margin-top: 12px" :busy="chat.voiceProcessing" @recorded="onVoiceRecorded" />
-
-  <section v-if="chat.voiceDraftFileId" class="panel" style="margin-top: 12px">
-    <h3 class="page-title">语音识别草稿</h3>
-    <textarea v-model="chat.voiceDraftText" rows="3" style="width: 100%" />
-    <div style="display: flex; gap: 8px; margin-top: 8px">
-      <button @click="chat.confirmSendVoiceDraft">确认发送语音</button>
-      <button @click="chat.clearVoiceDraft">取消</button>
-    </div>
-  </section>
-
-  <section class="panel" style="margin-top: 12px">
-    <h3 class="page-title">AI 语音播报</h3>
-    <p v-if="!lastAiText">当前没有可播报的 AI 文本。</p>
-    <p v-else>{{ lastAiText }}</p>
-    <div style="display: flex; gap: 8px; margin-top: 8px">
-      <button :disabled="!lastAiText || chat.ttsLoading" @click="playLastAiText">
-        {{ chat.ttsLoading ? '生成中...' : '播报最近 AI 回复' }}
-      </button>
-      <button :disabled="!chat.ttsPlaying" @click="chat.stopTts">停止播放</button>
-    </div>
-  </section>
+  <UnifiedComposer
+    :disabled="!chat.roomId"
+    :can-play-tts="!!lastAiText"
+    :tts-loading="chat.ttsLoading"
+    :tts-playing="chat.ttsPlaying"
+    @send="onUnifiedSend"
+    @play-tts="playLastAiText"
+    @stop-tts="chat.stopTts"
+  />
 
   <section v-if="failedMessages.length" class="panel" style="margin-top: 12px">
     <h3 class="page-title">发送失败消息</h3>
@@ -74,7 +61,7 @@ import { ref } from 'vue'
 import { useAuthStore } from '../stores/auth'
 import { useChatStore } from '../stores/chat'
 import { chatAdapter } from '../adapters/chatAdapter'
-import VoiceRecordPanel from '../components/chat/VoiceRecordPanel.vue'
+import UnifiedComposer from '../components/chat/UnifiedComposer.vue'
 
 const auth = useAuthStore()
 const chat = useChatStore()
@@ -128,8 +115,8 @@ async function onSendMessage({ content }: { content: string }) {
   await chat.sendText(content)
 }
 
-async function onVoiceRecorded(blob: Blob) {
-  await chat.processVoiceBlob(blob)
+async function onUnifiedSend(content: string) {
+  await chat.sendText(content)
 }
 
 async function playLastAiText() {
@@ -144,3 +131,10 @@ async function ensureChatUiReady() {
   chatUiReady.value = true
 }
 </script>
+
+<style scoped>
+:deep(.vac-box-footer),
+:deep(.vac-room-footer) {
+  display: none !important;
+}
+</style>

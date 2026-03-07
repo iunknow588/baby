@@ -108,11 +108,6 @@ export const useChatStore = defineStore('chat', {
     streamRecovering: false,
     streamLastRecoverAt: '',
     streamWatchdogTimerId: 0,
-    voiceProcessing: false,
-    voiceDraftText: '',
-    voiceDraftFileId: '',
-    voiceDraftDuration: 0,
-    voiceDraftLocalUrl: '',
     ttsLoading: false,
     ttsPlaying: false,
     ttsAudioUrl: '',
@@ -360,59 +355,6 @@ export const useChatStore = defineStore('chat', {
       }
     },
 
-    async processVoiceBlob(blob: Blob) {
-      if (!this.roomId) return
-      this.voiceProcessing = true
-      this.lastError = ''
-      try {
-        const upload = await voiceApi.uploadAudio(blob)
-        const asr = await voiceApi.asr(upload.fileId, this.roomId)
-        this.voiceDraftFileId = upload.fileId
-        this.voiceDraftDuration = upload.duration
-        this.voiceDraftText = asr.text
-        this.voiceDraftLocalUrl = URL.createObjectURL(blob)
-      } catch (error) {
-        this.lastError = toUserError(error)
-      } finally {
-        this.voiceProcessing = false
-      }
-    },
-
-    async confirmSendVoiceDraft() {
-      if (!this.roomId || !this.voiceDraftFileId) return
-
-      const clientMessageId = `cm_voice_${Date.now()}`
-      const localMessage: MessageEntity = {
-        _id: clientMessageId,
-        roomId: this.roomId,
-        senderId: 'u_current',
-        senderType: 'user',
-        messageType: 'audio',
-        content: this.voiceDraftText,
-        createdAt: new Date().toISOString(),
-        status: 'sending',
-        files: [
-          {
-            audio: true,
-            duration: this.voiceDraftDuration,
-            url: this.voiceDraftLocalUrl,
-            name: this.voiceDraftFileId,
-            extension: 'webm',
-            type: 'audio/webm'
-          }
-        ],
-        meta: {
-          asrText: this.voiceDraftText
-        }
-      }
-
-      this.messages = [...this.messages, localMessage]
-      await this.persistMessage(localMessage)
-      if (this.messages.find(item => item._id === clientMessageId)?.status !== 'failed') {
-        this.clearVoiceDraft()
-      }
-    },
-
     async requestTtsAndPlay(text: string) {
       if (!text.trim()) return
       this.lastError = ''
@@ -454,16 +396,6 @@ export const useChatStore = defineStore('chat', {
       ttsAudio.pause()
       ttsAudio.currentTime = 0
       this.ttsPlaying = false
-    },
-
-    clearVoiceDraft() {
-      if (this.voiceDraftLocalUrl) {
-        URL.revokeObjectURL(this.voiceDraftLocalUrl)
-      }
-      this.voiceDraftText = ''
-      this.voiceDraftFileId = ''
-      this.voiceDraftDuration = 0
-      this.voiceDraftLocalUrl = ''
     },
 
     startStreamWatchdog() {
