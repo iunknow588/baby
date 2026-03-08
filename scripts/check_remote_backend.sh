@@ -3,7 +3,7 @@
 # 检查远程后端可达性与 Baby 必需接口缺口
 # 用法:
 #   ./scripts/check_remote_backend.sh
-#   BABY_REMOTE_BASE_URL=http://127.0.0.1:9000 ./scripts/check_remote_backend.sh
+#   BABY_REMOTE_BASE_URL=https://your-backend-domain ./scripts/check_remote_backend.sh
 
 set -u
 
@@ -41,10 +41,15 @@ if [ -f "$APP_ENV_FILE" ]; then
   source "$APP_ENV_FILE"
 fi
 
-BASE_URL="${BABY_REMOTE_BASE_URL:-${BABY_API_BASE_URL:-http://127.0.0.1:9000}}"
+BASE_URL="${BABY_REMOTE_BASE_URL:-${BABY_API_BASE_URL:-}}"
 TIMEOUT="${BABY_REMOTE_TIMEOUT:-8}"
 TOKEN="${BABY_GATEWAY_TOKEN:-${BABY_TOKEN:-}}"
 TOKEN_FILE="${BABY_TOKEN_FILE:-}"
+
+if [ -z "$BASE_URL" ]; then
+  log_error "缺少后端地址，请设置 BABY_REMOTE_BASE_URL 或 BABY_API_BASE_URL"
+  exit 1
+fi
 
 trim_trailing_slash() {
   echo "$1" | sed 's:/*$::'
@@ -131,14 +136,7 @@ print_title "远程后端检查"
 log_info "Base URL: $BASE_URL"
 log_info "Timeout: ${TIMEOUT}s"
 
-print_title "A. 你已声明的 student 接口"
-check_endpoint "root" "GET" "/" || true
-check_endpoint "index.html" "GET" "/index.html" || true
-check_endpoint "students" "GET" "/api/students" || true
-check_endpoint "student-by-id" "GET" "/api/student/smoke" || true
-check_endpoint "student-register" "POST" "/api/student/register" '{"name":"smoke","age":10}' || true
-
-print_title "B. Baby 前端必需接口（差异识别）"
+print_title "Baby 前端必需接口（差异识别）"
 MISSING=0
 check_endpoint "chat-sessions" "POST" "/api/chat/sessions" '{"roomType":"dm","targetId":"u_smoke"}' || MISSING=$((MISSING + 1))
 check_endpoint "chat-rooms" "GET" "/api/chat/rooms?limit=1" || MISSING=$((MISSING + 1))

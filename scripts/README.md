@@ -33,7 +33,6 @@ cd /home/lc/luckee_dao/baby
 ./scripts/deploy.sh build
 
 # 接口冒烟（建议使用网关令牌）
-# 默认探测本地 http://127.0.0.1:9000 ，远端时显式覆盖
 BABY_API_BASE_URL=https://api.example.com \
 BABY_GATEWAY_TOKEN=your_token \
 ./scripts/deploy.sh smoke
