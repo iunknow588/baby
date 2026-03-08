@@ -4,6 +4,25 @@ const express = require('express')
 const cors = require('cors')
 const sqlite3 = require('sqlite3').verbose()
 
+const ROOT_DIR = __dirname
+
+function loadLocalEnv(filePath) {
+  if (!fs.existsSync(filePath)) return
+  const raw = fs.readFileSync(filePath, 'utf8')
+  raw.split('\n').forEach(line => {
+    const text = line.trim()
+    if (!text || text.startsWith('#')) return
+    const idx = text.indexOf('=')
+    if (idx <= 0) return
+    const key = text.slice(0, idx).trim()
+    const value = text.slice(idx + 1).trim()
+    if (!key || Object.prototype.hasOwnProperty.call(process.env, key)) return
+    process.env[key] = value
+  })
+}
+
+loadLocalEnv(path.join(ROOT_DIR, '.env.local'))
+
 const app = express()
 const PORT = Number(process.env.PORT || 9000)
 const OPENCLAW_BASE_URL = process.env.OPENCLAW_BASE_URL || 'http://127.0.0.1:5000'
@@ -12,7 +31,6 @@ const OPENCLAW_TOKEN = process.env.OPENCLAW_TOKEN || process.env.BABY_GATEWAY_TO
 const OPENCLAW_AGENT_ID = process.env.OPENCLAW_AGENT_ID || 'math-doctor'
 const OPENCLAW_MODEL = process.env.OPENCLAW_MODEL || 'openclaw:math-doctor'
 
-const ROOT_DIR = __dirname
 const DATA_DIR = path.join(ROOT_DIR, 'data')
 const DB_PATH = path.join(DATA_DIR, 'students.db')
 
