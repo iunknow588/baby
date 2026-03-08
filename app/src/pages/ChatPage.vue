@@ -6,7 +6,11 @@
     <span v-else style="color: #b42318"> 未连接 </span>
     <span v-if="chat.streamReconnectCount > 0">（重连 {{ chat.streamReconnectCount }} 次）</span>
     <span v-if="chat.streamStale" style="color: #b42318">（连接超时，等待自动恢复）</span>
-    <button style="margin-left: 8px" :disabled="chat.streamConnecting" @click="chat.reconnectStream">
+    <button
+      style="margin-left: 8px"
+      :disabled="chat.streamConnecting || chat.realtimeUnsupported"
+      @click="chat.reconnectStream"
+    >
       立即重连
     </button>
     <p v-if="chat.connectionHint" style="margin-top: 8px; color: #b42318">{{ chat.connectionHint }}</p>

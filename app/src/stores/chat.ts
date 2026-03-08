@@ -110,6 +110,7 @@ export const useChatStore = defineStore('chat', {
     streamWatchdogTimerId: 0,
     sessionError: '',
     streamError: '',
+    realtimeUnsupported: false,
     ttsLoading: false,
     ttsPlaying: false,
     ttsAudioUrl: '',
@@ -120,6 +121,7 @@ export const useChatStore = defineStore('chat', {
     connectionHint(state): string {
       if (state.streamConnected) return ''
       if (state.streamConnecting) return '正在建立实时连接...'
+      if (state.realtimeUnsupported) return '后端未提供实时接口（/api/chat/sessions 或 /api/chat/stream）。'
       if (state.sessionError) return `会话创建失败: ${state.sessionError}`
       if (state.streamError) return `实时通道异常: ${state.streamError}`
       return state.roomId ? '实时连接未建立，可点击“立即重连”。' : '当前没有可用聊天房间。'
@@ -199,7 +201,7 @@ export const useChatStore = defineStore('chat', {
     },
 
     async ensureSession() {
-      if (this.sessionId || !this.roomId) return
+      if (this.sessionId || !this.roomId || this.realtimeUnsupported) return
       try {
         const room = this.rooms.find(item => item.roomId === this.roomId)
         if (!room) return
@@ -210,6 +212,11 @@ export const useChatStore = defineStore('chat', {
       } catch (error) {
         this.sessionError = toUserError(error)
         this.lastError = this.sessionError
+        if (this.sessionError.includes('404')) {
+          this.realtimeUnsupported = true
+          this.streamConnecting = false
+          this.streamConnected = false
+        }
       }
     },
 
@@ -241,7 +248,7 @@ export const useChatStore = defineStore('chat', {
     },
 
     async reconnectStream() {
-      if (this.streamRecovering) return
+      if (this.streamRecovering || this.realtimeUnsupported) return
       this.streamRecovering = true
       this.sessionError = ''
       this.streamError = ''
