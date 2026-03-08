@@ -21,14 +21,8 @@ function loadLocalEnv(filePath) {
   })
 }
 
-const LOCAL_PLATFORM_ENV = path.join(ROOT_DIR, '.env.local')
 const APP_ENV = path.join(ROOT_DIR, '../app/.env.local')
-
-if (fs.existsSync(LOCAL_PLATFORM_ENV)) {
-  loadLocalEnv(LOCAL_PLATFORM_ENV)
-} else {
-  loadLocalEnv(APP_ENV)
-}
+loadLocalEnv(APP_ENV)
 
 const app = express()
 const PORT = Number(process.env.PORT || 9000)
