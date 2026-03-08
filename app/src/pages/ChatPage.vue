@@ -128,9 +128,13 @@ async function onFetchMoreRooms() {
 
 async function onSendMessage(payload: unknown) {
   const normalized = normalizeVacPayload(payload)
-  const content = typeof (normalized as { content?: unknown }).content === 'string'
-    ? ((normalized as { content?: string }).content ?? '')
-    : ''
+  const directContent = (normalized as { content?: unknown }).content
+  const messageContent = (normalized as { message?: { content?: unknown } }).message?.content
+  const content = typeof directContent === 'string'
+    ? directContent
+    : typeof messageContent === 'string'
+      ? messageContent
+      : ''
   await chat.sendText(content)
 }
 

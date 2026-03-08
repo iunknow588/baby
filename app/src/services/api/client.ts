@@ -1,6 +1,6 @@
 import axios from 'axios'
 import { ApiError } from '../../types/api'
-import { getApiBaseUrl } from '../../platform/env'
+import { getApiBaseUrl, getMixedContentRiskHint } from '../../platform/env'
 
 export const apiClient = axios.create({
   baseURL: getApiBaseUrl(),
@@ -18,6 +18,10 @@ apiClient.interceptors.request.use(config => {
 apiClient.interceptors.response.use(
   response => response,
   error => {
+    const mixedContentRisk = getMixedContentRiskHint()
+    if (mixedContentRisk && (error?.code === 'ERR_NETWORK' || !error?.response)) {
+      return Promise.reject(new ApiError('MIXED_CONTENT', mixedContentRisk))
+    }
     const code = error?.response?.data?.error?.code || error?.code || 'NETWORK_ERROR'
     const message = error?.response?.data?.error?.message || error?.message || '网络请求失败'
     const traceId = error?.response?.data?.traceId

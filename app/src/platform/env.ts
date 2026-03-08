@@ -22,6 +22,11 @@ function upgradeInsecureHttpIfHttpsPage(value: string): string {
   return `https://${value.slice('http://'.length)}`
 }
 
+function readRawEnv(name: string): string {
+  const value = import.meta.env[name]
+  return typeof value === 'string' ? value.trim() : ''
+}
+
 export function getApiBaseUrl(): string {
   const raw = toNonEmptyString(import.meta.env.VITE_API_BASE_URL, '/api')
   return trimTrailingSlash(upgradeInsecureHttpIfHttpsPage(raw))
@@ -30,6 +35,17 @@ export function getApiBaseUrl(): string {
 export function getCozeApiUri(): string {
   const raw = toNonEmptyString(import.meta.env.VITE_COZE_API_URI, '/api/coze')
   return trimTrailingSlash(upgradeInsecureHttpIfHttpsPage(raw))
+}
+
+export function getMixedContentRiskHint(): string {
+  if (typeof window === 'undefined') return ''
+  if (window.location.protocol !== 'https:') return ''
+  const rawApi = readRawEnv('VITE_API_BASE_URL')
+  const rawCoze = readRawEnv('VITE_COZE_API_URI')
+  if (rawApi.startsWith('http://') || rawCoze.startsWith('http://')) {
+    return '检测到 HTTP 接口配置，HTTPS 页面下会被浏览器拦截，请改为 HTTPS 或相对路径 /api。'
+  }
+  return ''
 }
 
 export function getSseReconnectMs(): number {

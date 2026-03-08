@@ -11,6 +11,7 @@ const MESSAGE_MAP: Record<string, string> = {
   ASR_FAILED: '语音识别失败，请重新录音。',
   TTS_FAILED: '语音合成失败，请稍后重试。',
   INVALID_RESPONSE: '服务响应格式异常。',
+  MIXED_CONTENT: 'HTTPS 页面禁止请求 HTTP 接口，请改用 HTTPS 或相对路径 /api。',
   NETWORK_ERROR: '网络异常，请检查网络连接。',
   INTERNAL_ERROR: '服务暂时不可用，请稍后重试。'
 }
