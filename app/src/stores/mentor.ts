@@ -6,12 +6,19 @@ export const useMentorStore = defineStore('mentor', {
   state: () => ({
     enabled: true,
     conversationId: '',
+    selectedAgent: 'math-doctor',
     asking: false,
     lastReply: '',
     lastError: ''
   }),
   actions: {
-    async askTeacher(message: string) {
+    async askTeacher(
+      message: string,
+      options?: {
+        agentId?: string
+        model?: string
+      }
+    ) {
       const content = message.trim()
       if (!content) return ''
 
@@ -20,7 +27,11 @@ export const useMentorStore = defineStore('mentor', {
       try {
         const result = await cozeApi.chat({
           message: content,
-          conversationId: this.conversationId || undefined
+          conversationId: this.conversationId || undefined,
+          extra: {
+            agentId: options?.agentId || this.selectedAgent,
+            model: options?.model || `openclaw:${options?.agentId || this.selectedAgent}`
+          }
         })
         this.conversationId = result.conversationId
         this.lastReply = result.answer
