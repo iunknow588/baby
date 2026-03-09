@@ -1,35 +1,41 @@
 # Baby API (Vercel Functions)
 
+## 部署模式
+
+1. Vercel 运行入口：`api/index.js`（单函数网关）
+2. 业务处理器目录：`api_handlers/**`
+3. `vercel.json` 通过 rewrite 将 `/api/*` 统一转发到 `/api/index`
+
 ## 路由状态
 
 当前启用:
-- `api/health.js`
-- `api/diagnostics.js`
-- `api/user.js`
-- `api/chat.js`
-- `api/history.js`
-- `api/coze/chat.js`
-- `api/chat/sessions.js`
-- `api/chat/stream.js`
-- `api/v1/groups.js`
-- `api/v1/groups/[groupId]/members.js`
-- `api/v1/groups/[groupId]/members/[memberId].js`
-- `api/v1/conversations.js`
-- `api/v1/conversations/[conversationId]/messages.js`
-- `api/v1/assets/upload.js`
-- `api/v1/capabilities/execute.js`
-- `api/social/contacts.js`
-- `api/social/friend-requests.js`
-- `api/social/friend-requests/[requestId]/accept.js`
-- `api/social/friend-requests/[requestId]/reject.js`
-- `api/voice/upload.js`
-- `api/voice/asr.js`
-- `api/voice/tts.js`
+- `GET /api/health`
+- `GET /api/diagnostics`
+- `POST /api/user`
+- `POST /api/chat`
+- `GET /api/history`
+- `POST /api/coze/chat`
+- `POST /api/chat/sessions`
+- `GET /api/chat/stream`
+- `POST|GET /api/v1/groups`
+- `POST|DELETE /api/v1/groups/{groupId}/members`
+- `DELETE /api/v1/groups/{groupId}/members/{memberId}`
+- `POST|GET /api/v1/conversations`
+- `POST|GET /api/v1/conversations/{conversationId}/messages`
+- `POST /api/v1/assets/upload`
+- `POST /api/v1/capabilities/execute`
+- `GET /api/social/contacts`
+- `GET|POST /api/social/friend-requests`
+- `POST /api/social/friend-requests/{requestId}/accept`
+- `POST /api/social/friend-requests/{requestId}/reject`
+- `POST /api/voice/upload`
+- `POST /api/voice/asr`
+- `POST /api/voice/tts`
 
 历史占位（保留文件，仅返回 `410 LEGACY_API_DEPRECATED`）:
-- `api/chat/rooms.js`
-- `api/chat/rooms/[roomId]/messages.js`
-- `api/chat/messages.js`
+- `/api/chat/rooms`
+- `/api/chat/rooms/{roomId}/messages`
+- `/api/chat/messages`
 
 ## 环境变量
 

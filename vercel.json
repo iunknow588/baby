@@ -2,8 +2,14 @@
   "installCommand": "cd app && npm install",
   "buildCommand": "cd app && npm run build",
   "outputDirectory": "app/dist",
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "/api/index"
+    }
+  ],
   "functions": {
-    "api/**/*.js": {
+    "api/index.js": {
       "maxDuration": 30
     }
   }
