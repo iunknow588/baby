@@ -11,6 +11,16 @@ function toPositiveInt(value: unknown, fallback: number): number {
   return Number.isFinite(num) && num > 0 ? Math.floor(num) : fallback
 }
 
+function toBoolean(value: unknown, fallback: boolean): boolean {
+  if (typeof value === 'boolean') return value
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase()
+    if (normalized === 'true' || normalized === '1') return true
+    if (normalized === 'false' || normalized === '0') return false
+  }
+  return fallback
+}
+
 function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, '')
 }
@@ -62,4 +72,8 @@ export function getSseWatchdogMs(): number {
 
 export function getSseAutoRecoverCooldownMs(): number {
   return toPositiveInt(import.meta.env.VITE_SSE_AUTO_RECOVER_COOLDOWN_MS, 8000)
+}
+
+export function getRealtimeEnabled(): boolean {
+  return toBoolean(import.meta.env.VITE_CHAT_REALTIME_ENABLED, false)
 }

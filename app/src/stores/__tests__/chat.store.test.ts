@@ -25,6 +25,7 @@ vi.mock('../../services/api/voice.api', () => ({
 }))
 
 vi.mock('../../platform/env', () => ({
+  getRealtimeEnabled: () => false,
   getSseReconnectMs: () => 5000,
   getSseStaleMs: () => 15000,
   getSseWatchdogMs: () => 3000,

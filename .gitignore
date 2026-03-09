@@ -16,6 +16,8 @@ yarn-error.log*
 .env
 .env.*
 !app/.env.local.example
+/app/.env.local
+/.env.local
 
 # tooling cache
 app/.vite/
@@ -30,3 +32,4 @@ Thumbs.db
 
 # local cloned references (not source-of-truth)
 vue-advanced-chat-main/
+.vercel

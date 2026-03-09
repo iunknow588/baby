@@ -32,6 +32,7 @@ export interface MessageEntity {
   meta?: {
     asrText?: string
     ttsUrl?: string
+    aiAnswer?: string
     cardType?: 'advice' | 'task' | 'summary'
     taskId?: string
     traceId?: string

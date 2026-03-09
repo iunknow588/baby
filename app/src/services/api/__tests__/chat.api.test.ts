@@ -8,23 +8,65 @@ afterEach(() => {
 })
 
 describe('chatApi', () => {
-  it('parses listRooms success payload', async () => {
+  it('returns single MVP room from history', async () => {
+    vi.spyOn(apiClient, 'post').mockResolvedValueOnce({
+      data: {
+        success: true,
+        data: {
+          id: 'u_1',
+          deviceId: 'dev_1',
+          createdAt: '2026-03-09T00:00:00.000Z',
+          lastActive: '2026-03-09T00:00:00.000Z'
+        },
+        error: null,
+        traceId: 'trc_0'
+      }
+    } as never)
     vi.spyOn(apiClient, 'get').mockResolvedValueOnce({
       data: {
         success: true,
         data: {
-          list: [
+          items: [
             {
-              roomId: 'r_1',
-              roomName: 'Room 1',
-              roomType: 'dm',
-              users: [],
-              unreadCount: 0,
-              lastActiveAt: '2026-03-07T00:00:00.000Z'
+              id: 1,
+              question: 'Q1',
+              answer: 'A1',
+              createdAt: '2026-03-09T00:00:00.000Z'
             }
           ],
-          hasMore: false,
-          nextCursor: ''
+          nextCursor: null
+        },
+        error: null,
+        traceId: 'trc_1'
+      }
+    } as never)
+
+    const result = await chatApi.listRooms()
+    expect(result.list).toHaveLength(1)
+    expect(result.list[0].roomId).toBe('r_mvp_main')
+    expect(result.hasMore).toBe(false)
+  })
+
+  it('parses listRooms success payload', async () => {
+    vi.spyOn(apiClient, 'post').mockResolvedValueOnce({
+      data: {
+        success: true,
+        data: {
+          id: 'u_1',
+          deviceId: 'dev_1',
+          createdAt: '2026-03-09T00:00:00.000Z',
+          lastActive: '2026-03-09T00:00:00.000Z'
+        },
+        error: null,
+        traceId: 'trc_0'
+      }
+    } as never)
+    vi.spyOn(apiClient, 'get').mockResolvedValueOnce({
+      data: {
+        success: true,
+        data: {
+          items: [],
+          nextCursor: null
         },
         error: null,
         traceId: 'trc_1'
@@ -37,11 +79,31 @@ describe('chatApi', () => {
   })
 
   it('throws INVALID_RESPONSE when hasMore is missing', async () => {
+    vi.spyOn(apiClient, 'post').mockResolvedValueOnce({
+      data: {
+        success: true,
+        data: {
+          id: 'u_1',
+          deviceId: 'dev_1',
+          createdAt: '2026-03-09T00:00:00.000Z',
+          lastActive: '2026-03-09T00:00:00.000Z'
+        },
+        error: null,
+        traceId: 'trc_0'
+      }
+    } as never)
     vi.spyOn(apiClient, 'get').mockResolvedValueOnce({
       data: {
         success: true,
         data: {
-          list: []
+          items: [
+            {
+              id: 'bad',
+              question: 'x',
+              answer: 'y',
+              createdAt: '2026-03-09T00:00:00.000Z'
+            }
+          ]
         },
         error: null,
         traceId: 'trc_2'

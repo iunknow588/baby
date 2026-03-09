@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Baby API 冒烟脚本（Day1/Day2/Day4/Day5）
+# Baby API 冒烟脚本（MVP Core）
 # 用法:
 #   BABY_API_BASE_URL=https://xxx ./scripts/smoke_api.sh
 #   BABY_API_BASE_URL=https://xxx BABY_GATEWAY_TOKEN=... ./scripts/smoke_api.sh
@@ -28,18 +28,18 @@ log_error() {
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-APP_ENV_FILE="$PROJECT_ROOT/app/.env.local"
+ROOT_ENV_FILE="$PROJECT_ROOT/.env.local"
 
-if [ -f "$APP_ENV_FILE" ]; then
+if [ -f "$ROOT_ENV_FILE" ]; then
   # shellcheck disable=SC1090
-  source "$APP_ENV_FILE"
+  source "$ROOT_ENV_FILE"
 fi
 
 API_BASE_RAW="${BABY_API_BASE_URL:-}"
 COZE_BASE_RAW="${BABY_COZE_API_URI:-}"
 TOKEN="${BABY_GATEWAY_TOKEN:-${BABY_TOKEN:-}}"
 TOKEN_FILE="${BABY_TOKEN_FILE:-}"
-SMOKE_TIMEOUT="${BABY_SMOKE_TIMEOUT:-10}"
+SMOKE_TIMEOUT="${BABY_SMOKE_TIMEOUT:-80}"
 
 trim_trailing_slash() {
   echo "$1" | sed 's:/*$::'
@@ -154,43 +154,12 @@ log_info "API Base: $API_BASE"
 log_info "Coze Base: $COZE_BASE"
 log_info "Timeout: ${SMOKE_TIMEOUT}s"
 
-print_title "Day1 Chat"
-request "create-session" "POST" "$(join_url "$API_BASE" "/api/chat/sessions")" '{"roomType":"dm","targetId":"u_smoke"}'
-request "list-rooms" "GET" "$(join_url "$API_BASE" "/api/chat/rooms?limit=1")"
-
-print_title "Day2 SSE"
-if [ -n "$TOKEN" ]; then
-  local_stream_url="$(join_url "$API_BASE" "/api/chat/stream?sessionId=s_smoke")"
-  stream_args=(-sS -m 8 -o /tmp/baby_sse_head.out -w "%{http_code}" -N)
-  if [ -n "$auth_config_file" ]; then
-    stream_args+=(--config "$auth_config_file")
-  fi
-  if ! stream_head_code="$(curl "${stream_args[@]}" "$local_stream_url")"; then
-    stream_head_code="000"
-  fi
-  if [[ "$stream_head_code" == "200" || "$stream_head_code" == "204" ]]; then
-    PASS_COUNT=$((PASS_COUNT + 1))
-    log_info "sse-stream => HTTP $stream_head_code"
-  elif [ "$stream_head_code" = "000" ] && [ -f /tmp/baby_sse_head.out ] && rg -q "event:[[:space:]]*heartbeat" /tmp/baby_sse_head.out; then
-    PASS_COUNT=$((PASS_COUNT + 1))
-    log_info "sse-stream => 收到 heartbeat（按通过处理）"
-  else
-    FAIL_COUNT=$((FAIL_COUNT + 1))
-    log_error "sse-stream => HTTP $stream_head_code"
-    head -c 200 /tmp/baby_sse_head.out || true
-    echo ""
-  fi
-  rm -f /tmp/baby_sse_head.out
-else
-  log_warn "跳过 sse-stream（缺少网关令牌）"
-fi
-
-print_title "Day4 Coze"
+print_title "MVP Core"
+DEVICE_ID="dev_smoke_001"
+request "user-upsert" "POST" "$(join_url "$API_BASE" "/api/user")" "{\"deviceId\":\"$DEVICE_ID\"}"
+request "chat-send" "POST" "$(join_url "$API_BASE" "/api/chat")" "{\"deviceId\":\"$DEVICE_ID\",\"message\":\"你好，请做一次联调自检\"}"
+request "history-list" "GET" "$(join_url "$API_BASE" "/api/history?deviceId=$DEVICE_ID&limit=1")"
 request "coze-chat" "POST" "$(join_url "$COZE_BASE" "/chat")" "{\"message\":\"你好，请做一次联调自检\"}"
-
-print_title "Day5 Social"
-request "contacts" "GET" "$(join_url "$API_BASE" "/api/social/contacts?limit=1")"
-request "friend-requests" "GET" "$(join_url "$API_BASE" "/api/social/friend-requests?limit=1")"
 
 print_title "结果汇总"
 log_info "通过: $PASS_COUNT"

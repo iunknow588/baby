@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# 检查远程后端可达性与 Baby 必需接口缺口
+# 检查远程后端可达性与 Baby MVP 接口状态
 # 用法:
 #   ./scripts/check_remote_backend.sh
 #   BABY_REMOTE_BASE_URL=https://your-backend-domain ./scripts/check_remote_backend.sh
@@ -34,15 +34,15 @@ print_title() {
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-APP_ENV_FILE="$PROJECT_ROOT/app/.env.local"
+ROOT_ENV_FILE="$PROJECT_ROOT/.env.local"
 
-if [ -f "$APP_ENV_FILE" ]; then
+if [ -f "$ROOT_ENV_FILE" ]; then
   # shellcheck disable=SC1090
-  source "$APP_ENV_FILE"
+  source "$ROOT_ENV_FILE"
 fi
 
 BASE_URL="${BABY_REMOTE_BASE_URL:-${BABY_API_BASE_URL:-}}"
-TIMEOUT="${BABY_REMOTE_TIMEOUT:-8}"
+TIMEOUT="${BABY_REMOTE_TIMEOUT:-80}"
 TOKEN="${BABY_GATEWAY_TOKEN:-${BABY_TOKEN:-}}"
 TOKEN_FILE="${BABY_TOKEN_FILE:-}"
 
@@ -136,18 +136,17 @@ print_title "远程后端检查"
 log_info "Base URL: $BASE_URL"
 log_info "Timeout: ${TIMEOUT}s"
 
-print_title "Baby 前端必需接口（差异识别）"
+print_title "Baby MVP 接口检查"
 MISSING=0
-check_endpoint "chat-sessions" "POST" "/api/chat/sessions" '{"roomType":"dm","targetId":"u_smoke"}' || MISSING=$((MISSING + 1))
-check_endpoint "chat-rooms" "GET" "/api/chat/rooms?limit=1" || MISSING=$((MISSING + 1))
-check_endpoint "voice-upload" "POST" "/api/voice/upload" '{}' || MISSING=$((MISSING + 1))
-check_endpoint "social-contacts" "GET" "/api/social/contacts?limit=1" || MISSING=$((MISSING + 1))
+check_endpoint "user-upsert" "POST" "/api/user" '{"deviceId":"dev_probe_001"}' || MISSING=$((MISSING + 1))
+check_endpoint "chat-send" "POST" "/api/chat" '{"deviceId":"dev_probe_001","message":"hello"}' || MISSING=$((MISSING + 1))
+check_endpoint "history-list" "GET" "/api/history?deviceId=dev_probe_001&limit=1" || MISSING=$((MISSING + 1))
 check_endpoint "coze-chat" "POST" "/api/coze/chat" '{"message":"hello"}' || MISSING=$((MISSING + 1))
 
 print_title "结论"
 if [ "$MISSING" -eq 0 ]; then
-  log_info "Baby 关键接口已可联调（或仅缺鉴权）"
+  log_info "Baby MVP 接口已可联调（或仅缺鉴权）"
 else
-  log_warn "Baby 关键接口存在缺口数量: $MISSING"
-  log_warn "说明: 这通常表示后端尚未补齐 chat/voice/social/coze 路由或前缀不一致"
+  log_warn "Baby MVP 接口存在缺口数量: $MISSING"
+  log_warn "说明: 这通常表示后端未按当前 MVP 路由部署或环境变量缺失"
 fi

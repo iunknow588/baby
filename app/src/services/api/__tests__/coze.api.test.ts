@@ -11,14 +11,14 @@ afterEach(() => {
 })
 
 describe('cozeApi', () => {
-  it('parses coze chat response', async () => {
+  it('parses /chat envelope payload', async () => {
     mockedAxios.post.mockResolvedValueOnce({
       data: {
         success: true,
         data: {
           chatId: 'chat_1',
           conversationId: 'conv_1',
-          answer: '你好，我是AI老师'
+          answer: 'legacy ok'
         },
         error: null,
         traceId: 'trc_1'
@@ -28,10 +28,15 @@ describe('cozeApi', () => {
     const result = await cozeApi.chat({ message: '你好' })
     expect(result.chatId).toBe('chat_1')
     expect(result.conversationId).toBe('conv_1')
-    expect(result.answer).toContain('AI老师')
+    expect(result.answer).toBe('legacy ok')
+    expect(mockedAxios.post).toHaveBeenCalledWith(
+      expect.stringContaining('/chat'),
+      expect.objectContaining({ message: '你好' }),
+      expect.objectContaining({ timeout: 20000 })
+    )
   })
 
-  it('throws INVALID_RESPONSE when answer is missing', async () => {
+  it('throws INVALID_RESPONSE when /chat envelope answer is missing', async () => {
     mockedAxios.post.mockResolvedValueOnce({
       data: {
         success: true,

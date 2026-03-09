@@ -5,7 +5,6 @@ import { ensureObject, ensureString, parseApiEnvelope } from './guard'
 export interface CozeChatRequest {
   message: string
   conversationId?: string
-  extra?: Record<string, unknown>
 }
 
 export interface CozeChatReply {
@@ -23,14 +22,13 @@ function resolveEndpoint(path: string): string {
 
 export const cozeApi = {
   async chat(payload: CozeChatRequest): Promise<CozeChatReply> {
-    const body = {
+    const legacyBody = {
       message: payload.message,
-      conversationId: payload.conversationId,
-      extra: payload.extra
+      conversationId: payload.conversationId
     }
 
-    const res = await axios.post(resolveEndpoint('/chat'), body, { timeout: 20000 })
-    const envelope = parseApiEnvelope<unknown>(res.data)
+    const legacyRes = await axios.post(resolveEndpoint('/chat'), legacyBody, { timeout: 20000 })
+    const envelope = parseApiEnvelope<unknown>(legacyRes.data)
     const data = ensureObject(envelope.data, 'coze.chat.data')
 
     return {

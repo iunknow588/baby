@@ -8,8 +8,8 @@
 - `deploy_all.sh`：一键流程（测试/构建/GitHub + Vercel）
 - `upload_to_github.sh`：提交并推送到 GitHub
 - `deploy_vercel.sh`：部署到 Vercel
-- `smoke_api.sh`：接口冒烟检查（chat/sse/coze/social）
-- `check_remote_backend.sh`：检查远程后端可达性与 Baby 接口缺口
+- `smoke_api.sh`：MVP 接口冒烟检查（`/api/user`、`/api/chat`、`/api/history`、`/api/coze/chat`）
+- `check_remote_backend.sh`：检查远程后端 MVP 接口可达性
 
 ## 远端仓库
 
@@ -37,7 +37,7 @@ BABY_API_BASE_URL=https://api.example.com \
 BABY_GATEWAY_TOKEN=your_token \
 ./scripts/deploy.sh smoke
 
-# 远程后端探测（检查 student 已有接口 + Baby 关键接口缺口）
+# 远程后端探测（检查 Baby MVP 接口可达性）
 BABY_REMOTE_BASE_URL=https://your-backend-domain \
 ./scripts/deploy.sh probe
 
@@ -53,15 +53,18 @@ BABY_DEPLOY_VERCEL=false ./scripts/deploy.sh all preview "feat: preview release"
 
 ## 环境变量
 
+- 脚本默认读取 `baby/.env.local`（后端配置源）。
 - `BABY_RUN_TEST`：`true|false`，默认 `true`
 - `BABY_RUN_BUILD`：`true|false`，默认 `true`
 - `BABY_DEPLOY_VERCEL`：`true|false`，默认 `true`
 - `BABY_VERCEL_SCOPE`：Vercel scope，默认 `iunknow588s-projects`
 - `BABY_VERCEL_PROJECT`：Vercel project name，默认 `app`
+- `BABY_SMOKE_TIMEOUT`：`smoke_api.sh` 超时秒数，默认 `80`
+- `BABY_REMOTE_TIMEOUT`：`check_remote_backend.sh` 超时秒数，默认 `80`
 
 ## 安全建议
 
 - 网关令牌不要放到 `VITE_` 前缀变量（会暴露到浏览器）。
-- `BABY_API_BASE_URL/BABY_COZE_API_URI` 属于脚本运行参数，不建议写入前端 `.env.local`。
+- `BABY_API_BASE_URL/BABY_COZE_API_URI` 属于脚本运行参数，建议通过命令行环境变量传入。
 - 优先使用 `BABY_TOKEN_FILE=~/.baby_gateway_token`，避免命令行明文传参。
-- 本仓库不会提交 `app/.env.local`，令牌仅本机可见。
+- 后端必需配置放在 `baby/.env.local`（如 `SUPABASE_*`、`COZE_*`），不要放前端 `app/.env.local`。

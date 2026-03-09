@@ -3,58 +3,20 @@ import { chatApi } from '../services/api/chat.api'
 import { voiceApi } from '../services/api/voice.api'
 import { ChatSseClient, type SseEventPayload } from '../services/realtime/sseClient'
 import { toUserError } from '../services/api/errorMap'
+import { ApiError } from '../types/api'
 import {
   getSseAutoRecoverCooldownMs,
+  getRealtimeEnabled,
   getSseReconnectMs,
   getSseStaleMs,
   getSseWatchdogMs
 } from '../platform/env'
 import type { MessageEntity, RoomEntity } from '../types/domain'
 
-const now = new Date().toISOString()
 const sseClient = new ChatSseClient()
 const ttsAudio = typeof Audio !== 'undefined' ? new Audio() : null
 
 const STATUS_SET = new Set<MessageEntity['status']>(['local', 'sending', 'delivered', 'seen', 'failed'])
-
-const mockRooms: RoomEntity[] = [
-  {
-    roomId: 'r_demo_1',
-    roomName: 'AI 社交导师',
-    roomType: 'mentor_room',
-    users: [
-      { _id: 'u_current', username: '我' },
-      { _id: 'u_ai', username: '导师AI', status: { state: 'online' } }
-    ],
-    unreadCount: 0,
-    lastActiveAt: now,
-    lastMessage: {
-      _id: 'm_welcome',
-      roomId: 'r_demo_1',
-      senderId: 'u_ai',
-      senderType: 'ai',
-      messageType: 'text',
-      content: '你好，我会作为你的社交导师，先从今天的沟通目标开始。',
-      createdAt: now,
-      status: 'delivered'
-    }
-  }
-]
-
-const mockMessages: Record<string, MessageEntity[]> = {
-  r_demo_1: [
-    {
-      _id: 'm_welcome',
-      roomId: 'r_demo_1',
-      senderId: 'u_ai',
-      senderType: 'ai',
-      messageType: 'text',
-      content: '你好，我会作为你的社交导师，先从今天的沟通目标开始。',
-      createdAt: now,
-      status: 'delivered'
-    }
-  ]
-}
 
 function upsertMessage(list: MessageEntity[], message: MessageEntity): MessageEntity[] {
   const index = list.findIndex(item => item._id === message._id)
@@ -85,6 +47,24 @@ function resolveStatus(value: unknown): MessageEntity['status'] | undefined {
   return STATUS_SET.has(value as MessageEntity['status']) ? (value as MessageEntity['status']) : undefined
 }
 
+function withFeatureError(feature: string, error: unknown): string {
+  if (error instanceof ApiError && error.meta) {
+    const parts: string[] = []
+    if (error.meta.method && error.meta.path) {
+      parts.push(`${error.meta.method} ${error.meta.path}`)
+    } else if (error.meta.path) {
+      parts.push(error.meta.path)
+    }
+    if (typeof error.meta.status === 'number') {
+      parts.push(`HTTP ${error.meta.status}`)
+    }
+    if (parts.length) {
+      return `[${feature}] (${parts.join(' | ')}) ${toUserError(error)}`
+    }
+  }
+  return `[${feature}] ${toUserError(error)}`
+}
+
 export const useChatStore = defineStore('chat', {
   state: () => ({
     rooms: [] as RoomEntity[],
@@ -110,7 +90,7 @@ export const useChatStore = defineStore('chat', {
     streamWatchdogTimerId: 0,
     sessionError: '',
     streamError: '',
-    realtimeUnsupported: false,
+    realtimeUnsupported: !getRealtimeEnabled(),
     ttsLoading: false,
     ttsPlaying: false,
     ttsAudioUrl: '',
@@ -137,10 +117,13 @@ export const useChatStore = defineStore('chat', {
           : mergeUniqueByKey(this.rooms, result.list, item => item.roomId)
         this.roomsCursor = result.nextCursor
         this.roomsLoaded = !result.hasMore
-      } catch {
-        this.rooms = mockRooms
-        this.roomsCursor = undefined
-        this.roomsLoaded = true
+      } catch (error) {
+        this.lastError = withFeatureError('聊天房间加载', error)
+        if (reset) {
+          this.rooms = []
+          this.roomsCursor = undefined
+          this.roomsLoaded = true
+        }
       } finally {
         this.loadingRooms = false
         if (!this.roomId && this.rooms.length) {
@@ -180,9 +163,10 @@ export const useChatStore = defineStore('chat', {
           : mergeUniqueByKey([...result.list, ...this.messages], [], item => item._id)
         this.messagesCursorByRoom[roomId] = result.nextCursor
         this.messagesLoaded = !result.hasMore
-      } catch {
+      } catch (error) {
+        this.lastError = withFeatureError('聊天消息加载', error)
         if (reset) {
-          this.messages = mockMessages[roomId] || []
+          this.messages = []
         }
         this.messagesCursorByRoom[roomId] = undefined
         this.messagesLoaded = true
@@ -210,7 +194,7 @@ export const useChatStore = defineStore('chat', {
         this.sessionError = ''
         this.openStream()
       } catch (error) {
-        this.sessionError = toUserError(error)
+        this.sessionError = withFeatureError('会话创建', error)
         this.lastError = this.sessionError
         if (this.sessionError.includes('404')) {
           this.realtimeUnsupported = true
@@ -372,11 +356,25 @@ export const useChatStore = defineStore('chat', {
           meta: message.meta
         })
         this.messages = this.messages.map(item => (item._id === message._id ? saved : item))
+        const aiAnswer = typeof saved.meta?.aiAnswer === 'string' ? saved.meta.aiAnswer.trim() : ''
+        if (aiAnswer) {
+          const aiMessage: MessageEntity = {
+            _id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+            roomId: message.roomId,
+            senderId: 'u_ai',
+            senderType: 'ai',
+            messageType: 'text',
+            content: aiAnswer,
+            createdAt: saved.createdAt,
+            status: 'delivered'
+          }
+          this.messages = [...this.messages, aiMessage]
+        }
       } catch (error) {
         this.messages = this.messages.map(item =>
           item._id === message._id ? { ...item, status: 'failed' } : item
         )
-        this.lastError = toUserError(error)
+        this.lastError = withFeatureError('消息发送', error)
       }
     },
 
@@ -389,7 +387,7 @@ export const useChatStore = defineStore('chat', {
         this.ttsAudioUrl = result.audioUrl
         await this.playTts(result.audioUrl)
       } catch (error) {
-        this.lastError = toUserError(error)
+        this.lastError = withFeatureError('TTS 请求', error)
       } finally {
         this.ttsLoading = false
       }
@@ -412,7 +410,7 @@ export const useChatStore = defineStore('chat', {
         this.ttsPlaying = true
       } catch (error) {
         this.ttsPlaying = false
-        this.lastError = toUserError(error)
+        this.lastError = withFeatureError('TTS 播放', error)
       }
     },
 

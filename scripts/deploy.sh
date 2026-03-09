@@ -35,7 +35,7 @@ show_help() {
   echo "  github [提交信息]                  仅提交到 GitHub"
   echo "  vercel [production|preview]        仅部署前端到 Vercel"
   echo "  smoke                              执行后端接口冒烟检查"
-  echo "  probe                              检查远程后端可达性与接口缺口"
+  echo "  probe                              检查远程后端 MVP 接口可达性"
   echo "  test                               仅执行 app 单元测试"
   echo "  build                              仅执行 app 构建"
   echo "  all [环境] [提交信息]               完整流程（测试/构建/GitHub + Vercel）"
@@ -80,7 +80,7 @@ case "$ACTION" in
     ;;
 
   probe)
-    log_section "检查远程后端可达性与接口缺口"
+    log_section "检查远程后端 MVP 接口可达性"
     "$SCRIPT_DIR/check_remote_backend.sh"
     ;;
 
