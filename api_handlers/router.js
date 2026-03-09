@@ -26,6 +26,16 @@ import v1AssetsUploadHandler from '../api_handlers/v1/assets/upload.js'
 import v1CapabilitiesExecuteHandler from '../api_handlers/v1/capabilities/execute.js'
 
 function toPathname(req) {
+  const rewrittenPath = req?.query?.__path
+  if (typeof rewrittenPath === 'string') {
+    const normalized = rewrittenPath.trim()
+    return normalized ? `/api/${normalized.replace(/^\/+/, '')}` : '/api'
+  }
+  if (Array.isArray(rewrittenPath)) {
+    const normalized = rewrittenPath.filter(Boolean).map(item => String(item)).join('/')
+    return normalized ? `/api/${normalized.replace(/^\/+/, '')}` : '/api'
+  }
+
   const rawPath = req?.query?.path
   if (Array.isArray(rawPath) && rawPath.length > 0) {
     return `/${rawPath.map(item => String(item)).join('/')}`

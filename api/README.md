@@ -2,9 +2,10 @@
 
 ## 部署模式
 
-1. Vercel 运行入口：`api/[...path].js`（单函数网关）
+1. Vercel 运行入口：`api/index.js`（单函数网关）
 2. 业务处理器目录：`api_handlers/**`
-3. 路由分发实现：`api_handlers/router.js`
+3. `vercel.json` rewrite 将 `/api/*` 显式转发至 `/api/index` 并透传原路径
+4. 路由分发实现：`api_handlers/router.js`
 
 ## 路由状态
 
