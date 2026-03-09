@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Baby 项目 Vercel 部署脚本
+# Baby 项目 Vercel 部署脚本（前后端一体）
 # 使用方法: ./scripts/deploy_vercel.sh [production|preview]
 
 set -e
@@ -24,35 +24,24 @@ log_error() {
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-APP_DIR="$PROJECT_ROOT/app"
 
 ENVIRONMENT="${1:-preview}"
 BABY_VERCEL_SCOPE="${BABY_VERCEL_SCOPE:-iunknow588s-projects}"
-BABY_VERCEL_PROJECT="${BABY_VERCEL_PROJECT:-app}"
-
-if [ ! -d "$APP_DIR" ]; then
-  log_error "错误: 未找到 app 目录: $APP_DIR"
-  exit 1
-fi
+BABY_VERCEL_PROJECT="${BABY_VERCEL_PROJECT:-baby}"
 
 if ! command -v vercel >/dev/null 2>&1; then
   log_error "错误: 未检测到 vercel CLI，请先安装: npm i -g vercel"
   exit 1
 fi
 
-cd "$APP_DIR"
+cd "$PROJECT_ROOT"
 
-log_info "开始部署 Baby 前端到 Vercel ($ENVIRONMENT)"
+log_info "开始部署 Baby 前后端一体到 Vercel ($ENVIRONMENT)"
 log_info "Vercel Scope: $BABY_VERCEL_SCOPE"
 log_info "Vercel Project: $BABY_VERCEL_PROJECT"
 
 log_info "步骤 1: 链接 Vercel 项目（无交互）"
 vercel link --yes --scope "$BABY_VERCEL_SCOPE" --project "$BABY_VERCEL_PROJECT"
-
-# vercel link 会在当前目录生成仅含 ".vercel" 的 .gitignore，避免污染仓库工作区
-if [ -f "$APP_DIR/.gitignore" ] && grep -q '^[[:space:]]*\.vercel[[:space:]]*$' "$APP_DIR/.gitignore"; then
-  rm -f "$APP_DIR/.gitignore"
-fi
 
 log_info "步骤 2: 执行部署"
 if [ "$ENVIRONMENT" = "production" ]; then
