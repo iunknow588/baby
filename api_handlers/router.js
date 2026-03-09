@@ -26,6 +26,13 @@ import v1AssetsUploadHandler from '../api_handlers/v1/assets/upload.js'
 import v1CapabilitiesExecuteHandler from '../api_handlers/v1/capabilities/execute.js'
 
 function toPathname(req) {
+  const rawPath = req?.query?.path
+  if (Array.isArray(rawPath) && rawPath.length > 0) {
+    return `/${rawPath.map(item => String(item)).join('/')}`
+  }
+  if (typeof rawPath === 'string' && rawPath.trim()) {
+    return `/${rawPath.trim()}`
+  }
   const rawUrl = typeof req.url === 'string' ? req.url : '/api'
   try {
     return new URL(rawUrl, 'http://localhost').pathname
@@ -37,12 +44,8 @@ function toPathname(req) {
 
 function normalizeApiPath(pathname) {
   if (!pathname || pathname === '/') return '/api'
-  if (pathname === '/api') return pathname
-  if (pathname.startsWith('/api/')) return pathname
-  if (pathname.startsWith('/v1/') || pathname.startsWith('/chat/') || pathname.startsWith('/coze/') || pathname.startsWith('/social/') || pathname.startsWith('/voice/') || pathname === '/health' || pathname === '/diagnostics' || pathname === '/user' || pathname === '/history' || pathname === '/chat') {
-    return `/api${pathname}`
-  }
-  return pathname
+  if (pathname.startsWith('/api')) return pathname
+  return `/api${pathname.startsWith('/') ? pathname : `/${pathname}`}`
 }
 
 function parseQuery(req, pathParams) {
