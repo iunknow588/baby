@@ -75,5 +75,5 @@ export function getSseAutoRecoverCooldownMs(): number {
 }
 
 export function getRealtimeEnabled(): boolean {
-  return toBoolean(import.meta.env.VITE_CHAT_REALTIME_ENABLED, false)
+  return toBoolean(import.meta.env.VITE_CHAT_REALTIME_ENABLED, true)
 }
