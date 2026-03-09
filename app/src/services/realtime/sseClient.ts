@@ -24,7 +24,8 @@ export class ChatSseClient {
     this.close()
 
     const token = localStorage.getItem('baby_token') || ''
-    const qs = new URLSearchParams({ sessionId, token })
+    const actorId = localStorage.getItem('baby_device_id') || ''
+    const qs = new URLSearchParams({ sessionId, token, actorId })
     const base = getApiBaseUrl().replace(/\/+$/, '')
     this.es = new EventSource(`${base}/chat/stream?${qs.toString()}`)
 

@@ -101,7 +101,7 @@ export const useChatStore = defineStore('chat', {
     connectionHint(state): string {
       if (state.streamConnected) return ''
       if (state.streamConnecting) return '正在建立实时连接...'
-      if (state.realtimeUnsupported) return '后端未提供实时接口（/api/chat/sessions 或 /api/chat/stream）。'
+      if (state.realtimeUnsupported) return '当前版本未启用实时通道，消息通过普通接口发送与刷新。'
       if (state.sessionError) return `会话创建失败: ${state.sessionError}`
       if (state.streamError) return `实时通道异常: ${state.streamError}`
       return state.roomId ? '实时连接未建立，可点击“立即重连”。' : '当前没有可用聊天房间。'
@@ -189,7 +189,10 @@ export const useChatStore = defineStore('chat', {
       try {
         const room = this.rooms.find(item => item.roomId === this.roomId)
         if (!room) return
-        const created = await chatApi.createSession({ roomType: room.roomType })
+        const created = await chatApi.createSession({
+          roomType: room.roomType,
+          topicId: room.roomId
+        })
         this.sessionId = created.sessionId
         this.sessionError = ''
         this.openStream()
@@ -347,7 +350,7 @@ export const useChatStore = defineStore('chat', {
 
     async persistMessage(message: MessageEntity) {
       try {
-        const saved = await chatApi.sendMessage({
+        const result = await chatApi.sendMessage({
           roomId: message.roomId,
           clientMessageId: message._id,
           messageType: message.messageType,
@@ -355,20 +358,10 @@ export const useChatStore = defineStore('chat', {
           files: message.files,
           meta: message.meta
         })
+        const saved = result.message
         this.messages = this.messages.map(item => (item._id === message._id ? saved : item))
-        const aiAnswer = typeof saved.meta?.aiAnswer === 'string' ? saved.meta.aiAnswer.trim() : ''
-        if (aiAnswer) {
-          const aiMessage: MessageEntity = {
-            _id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-            roomId: message.roomId,
-            senderId: 'u_ai',
-            senderType: 'ai',
-            messageType: 'text',
-            content: aiAnswer,
-            createdAt: saved.createdAt,
-            status: 'delivered'
-          }
-          this.messages = [...this.messages, aiMessage]
+        if (result.aiMessage) {
+          this.messages = upsertMessage(this.messages, result.aiMessage)
         }
       } catch (error) {
         this.messages = this.messages.map(item =>

@@ -2,16 +2,23 @@ import { apiClient } from './client'
 import type { RoomEntity, MessageEntity } from '../../types/domain'
 import {
   ensureArray,
+  ensureBoolean,
   ensureNumber,
   ensureObject,
   ensureString,
   parseApiEnvelope
 } from './guard'
+import { ApiError } from '../../types/api'
 
 export interface PagedResult<T> {
   list: T[]
   nextCursor?: string
   hasMore: boolean
+}
+
+export interface SendMessageResult {
+  message: MessageEntity
+  aiMessage?: MessageEntity
 }
 
 type HistoryItem = {
@@ -49,8 +56,59 @@ function getOrCreateDeviceId(): string {
   return generated
 }
 
+function withActorHeaders() {
+  return { headers: { 'x-user-id': getOrCreateDeviceId() } }
+}
+
 async function ensureUser(deviceId: string) {
-  await apiClient.post('/user', { deviceId })
+  await apiClient.post('/user', { deviceId }, withActorHeaders())
+}
+
+function parseRoomEntity(raw: unknown, index: number): RoomEntity {
+  const row = ensureObject(raw, `conversations.list[${index}]`)
+  return {
+    roomId: ensureString(row.roomId, `conversations.list[${index}].roomId`),
+    roomName: ensureString(row.roomName, `conversations.list[${index}].roomName`),
+    roomType:
+      row.roomType === 'group' || row.roomType === 'dm' || row.roomType === 'ai_dm' || row.roomType === 'mentor_room'
+        ? row.roomType
+        : 'ai_dm',
+    users: [],
+    unreadCount: typeof row.unreadCount === 'number' ? row.unreadCount : 0,
+    lastActiveAt:
+      typeof row.lastActiveAt === 'string' && row.lastActiveAt.trim()
+        ? row.lastActiveAt
+        : new Date().toISOString(),
+    lastMessage: undefined
+  }
+}
+
+function parseMessageEntity(raw: unknown, index: number): MessageEntity {
+  const row = ensureObject(raw, `messages.list[${index}]`)
+  return {
+    _id: ensureString(row._id, `messages.list[${index}]._id`),
+    roomId: ensureString(row.roomId, `messages.list[${index}].roomId`),
+    senderId: ensureString(row.senderId, `messages.list[${index}].senderId`),
+    senderType:
+      row.senderType === 'ai' || row.senderType === 'system' || row.senderType === 'user'
+        ? row.senderType
+        : 'user',
+    messageType:
+      typeof row.messageType === 'string' && row.messageType.trim()
+        ? (row.messageType as MessageEntity['messageType'])
+        : 'text',
+    content: typeof row.content === 'string' ? row.content : '',
+    createdAt:
+      typeof row.createdAt === 'string' && row.createdAt.trim()
+        ? row.createdAt
+        : new Date().toISOString(),
+    status:
+      row.status === 'local' || row.status === 'sending' || row.status === 'delivered' || row.status === 'seen' || row.status === 'failed'
+        ? row.status
+        : 'delivered',
+    files: Array.isArray(row.files) ? (row.files as MessageEntity['files']) : undefined,
+    meta: row.meta && typeof row.meta === 'object' ? (row.meta as MessageEntity['meta']) : undefined
+  }
 }
 
 function parseHistory(raw: unknown): HistoryItem[] {
@@ -67,12 +125,19 @@ function parseHistory(raw: unknown): HistoryItem[] {
   })
 }
 
-async function getHistory(limit = 20): Promise<HistoryItem[]> {
-  const deviceId = getOrCreateDeviceId()
-  await ensureUser(deviceId)
-  const res = await apiClient.get('/history', { params: { deviceId, limit } })
-  const body = parseApiEnvelope<unknown>(res.data)
-  return parseHistory(body.data)
+function roomsFromHistoryItems(items: HistoryItem[]): PagedResult<RoomEntity> {
+  const messages = mapHistoryToMessages(items)
+  const lastMessage = messages.length ? messages[messages.length - 1] : undefined
+  const room: RoomEntity = {
+    roomId: MVP_ROOM_ID,
+    roomName: MVP_ROOM_NAME,
+    roomType: 'ai_dm',
+    users: [],
+    unreadCount: 0,
+    lastActiveAt: lastMessage?.createdAt || new Date().toISOString(),
+    lastMessage
+  }
+  return { list: [room], hasMore: false, nextCursor: undefined }
 }
 
 function mapHistoryToMessages(items: HistoryItem[]): MessageEntity[] {
@@ -103,40 +168,140 @@ function mapHistoryToMessages(items: HistoryItem[]): MessageEntity[] {
   return list
 }
 
+async function getHistory(limit = 20): Promise<HistoryItem[]> {
+  const deviceId = getOrCreateDeviceId()
+  await ensureUser(deviceId)
+  const res = await apiClient.get('/history', { params: { deviceId, limit }, ...withActorHeaders() })
+  const body = parseApiEnvelope<unknown>(res.data)
+  return parseHistory(body.data)
+}
+
+async function listRoomsFallback(): Promise<PagedResult<RoomEntity>> {
+  const history = await getHistory(20)
+  const messages = mapHistoryToMessages(history)
+  const lastMessage = messages.length ? messages[messages.length - 1] : undefined
+  const room: RoomEntity = {
+    roomId: MVP_ROOM_ID,
+    roomName: MVP_ROOM_NAME,
+    roomType: 'ai_dm',
+    users: [],
+    unreadCount: 0,
+    lastActiveAt: lastMessage?.createdAt || new Date().toISOString(),
+    lastMessage
+  }
+  return { list: [room], hasMore: false, nextCursor: undefined }
+}
+
 export const chatApi = {
   async createSession(payload: { roomType: RoomEntity['roomType']; targetId?: string; topicId?: string }) {
-    const _ = payload
-    return {
-      sessionId: `s_mvp_${Date.now()}`,
-      roomId: MVP_ROOM_ID
+    const deviceId = getOrCreateDeviceId()
+    await ensureUser(deviceId)
+
+    const roomType = payload.roomType === 'dm' || payload.roomType === 'ai_dm' ? 'private' : 'group'
+    const groupId = typeof payload.topicId === 'string' ? payload.topicId.trim() : ''
+    const participantIds = payload.targetId
+      ? [payload.targetId]
+      : payload.roomType === 'ai_dm'
+        ? ['u_ai']
+        : []
+
+    try {
+      const res = await apiClient.post(
+        '/v1/conversations',
+        {
+          type: roomType,
+          groupId: groupId || undefined,
+          participantIds
+        },
+        withActorHeaders()
+      )
+      const body = parseApiEnvelope<unknown>(res.data)
+      const data = ensureObject(body.data, 'createSession.data')
+      const roomId =
+        (typeof data.roomId === 'string' && data.roomId.trim()) ||
+        (typeof data.conversationId === 'string' && data.conversationId.trim()) ||
+        ''
+
+      if (!roomId) {
+        throw new ApiError('INVALID_RESPONSE', 'Missing roomId in createSession response', {
+          path: '/v1/conversations',
+          method: 'POST'
+        })
+      }
+
+      const sessionRes = await apiClient.post('/chat/sessions', { roomId }, withActorHeaders())
+      const sessionBody = parseApiEnvelope<unknown>(sessionRes.data)
+      const sessionData = ensureObject(sessionBody.data, 'createSession.session.data')
+      const sessionId = ensureString(sessionData.sessionId, 'createSession.session.data.sessionId')
+
+      return {
+        sessionId,
+        roomId
+      }
+    } catch (_error) {
+      const roomId = payload.targetId || payload.topicId || MVP_ROOM_ID
+      return {
+        sessionId: `s_${roomId}_${Date.now()}`,
+        roomId
+      }
     }
   },
 
   async listRooms(cursor?: string): Promise<PagedResult<RoomEntity>> {
-    const _ = cursor
-    const history = await getHistory(20)
-    const messages = mapHistoryToMessages(history)
-    const lastMessage = messages.length ? messages[messages.length - 1] : undefined
-    const room: RoomEntity = {
-      roomId: MVP_ROOM_ID,
-      roomName: MVP_ROOM_NAME,
-      roomType: 'ai_dm',
-      users: [],
-      unreadCount: 0,
-      lastActiveAt: lastMessage?.createdAt || new Date().toISOString(),
-      lastMessage
+    const deviceId = getOrCreateDeviceId()
+    await ensureUser(deviceId)
+
+    try {
+      const res = await apiClient.get('/v1/conversations', {
+        params: { cursor, limit: 20 },
+        ...withActorHeaders()
+      })
+      const body = parseApiEnvelope<unknown>(res.data)
+      const data = ensureObject(body.data, 'conversations.data')
+
+      // Compatibility: when backend still returns history-like shape.
+      if (Array.isArray(data.items)) {
+        const history = parseHistory(data)
+        return roomsFromHistoryItems(history)
+      }
+
+      const listRaw = ensureArray(data.list, 'conversations.data.list')
+      const list = listRaw.map(parseRoomEntity)
+      const hasMore = ensureBoolean(data.hasMore, 'conversations.data.hasMore')
+      const nextCursor = typeof data.nextCursor === 'string' ? data.nextCursor : undefined
+      return { list, hasMore, nextCursor }
+    } catch (error) {
+      if (error instanceof ApiError && error.code === 'INVALID_RESPONSE') {
+        throw error
+      }
+      return listRoomsFallback()
     }
-    return { list: [room], hasMore: false, nextCursor: undefined }
   },
 
   async listMessages(roomId: string, cursor?: string): Promise<PagedResult<MessageEntity>> {
-    const _ = cursor
-    if (roomId !== MVP_ROOM_ID) {
+    if (!roomId) {
       return { list: [], hasMore: false, nextCursor: undefined }
     }
-    const history = await getHistory(50)
-    const list = mapHistoryToMessages(history)
-    return { list, hasMore: false, nextCursor: undefined }
+
+    try {
+      const res = await apiClient.get(`/v1/conversations/${encodeURIComponent(roomId)}/messages`, {
+        params: { cursor, limit: 50 },
+        ...withActorHeaders()
+      })
+      const body = parseApiEnvelope<unknown>(res.data)
+      const data = ensureObject(body.data, 'messages.data')
+      const listRaw = ensureArray(data.list, 'messages.data.list')
+      const list = listRaw.map(parseMessageEntity)
+      const hasMore = ensureBoolean(data.hasMore, 'messages.data.hasMore')
+      const nextCursor = typeof data.nextCursor === 'string' ? data.nextCursor : undefined
+      return { list, hasMore, nextCursor }
+    } catch (_error) {
+      if (roomId !== MVP_ROOM_ID) {
+        return { list: [], hasMore: false, nextCursor: undefined }
+      }
+      const history = await getHistory(50)
+      return { list: mapHistoryToMessages(history), hasMore: false, nextCursor: undefined }
+    }
   },
 
   async sendMessage(payload: {
@@ -146,30 +311,66 @@ export const chatApi = {
     content: string
     files?: MessageEntity['files']
     meta?: MessageEntity['meta']
-  }): Promise<MessageEntity> {
-    if (payload.roomId !== MVP_ROOM_ID) {
-      throw new Error(`roomId ${payload.roomId} is invalid for MVP mode`)
-    }
+  }): Promise<SendMessageResult> {
     const deviceId = getOrCreateDeviceId()
     await ensureUser(deviceId)
-    const res = await apiClient.post('/chat', {
-      deviceId,
-      message: payload.content
-    })
-    const body = parseApiEnvelope<Record<string, unknown>>(res.data)
-    const data = ensureObject(body.data, 'sendMessage.data')
-    const answer = ensureString(data.answer, 'sendMessage.data.answer')
-    return {
-      _id: payload.clientMessageId,
-      roomId: payload.roomId,
-      senderId: 'u_current',
-      senderType: 'user',
-      messageType: payload.messageType,
-      content: payload.content,
-      createdAt: ensureString(data.createdAt, 'sendMessage.data.createdAt'),
-      status: 'delivered',
-      files: payload.files,
-      meta: { ...(payload.meta || {}), aiAnswer: answer }
+
+    try {
+      const res = await apiClient.post(
+        `/v1/conversations/${encodeURIComponent(payload.roomId)}/messages`,
+        {
+          clientMessageId: payload.clientMessageId,
+          type: payload.messageType,
+          content: payload.content,
+          files: payload.files,
+          meta: payload.meta
+        },
+        withActorHeaders()
+      )
+      const body = parseApiEnvelope<unknown>(res.data)
+      const data = ensureObject(body.data, 'sendMessage.data')
+      const message = parseMessageEntity(ensureObject(data.message, 'sendMessage.data.message'), 0)
+      const aiMessage = data.aiMessage && typeof data.aiMessage === 'object' ? parseMessageEntity(data.aiMessage, 1) : null
+      if (aiMessage?.content) {
+        message.meta = {
+          ...(message.meta || {}),
+          aiAnswer: aiMessage.content
+        }
+      }
+      return { message, aiMessage: aiMessage || undefined }
+    } catch (_error) {
+      const res = await apiClient.post('/chat', {
+        deviceId,
+        message: payload.content
+      }, withActorHeaders())
+      const body = parseApiEnvelope<Record<string, unknown>>(res.data)
+      const data = ensureObject(body.data, 'sendMessage.data')
+      const answer = ensureString(data.answer, 'sendMessage.data.answer')
+      const userMessage: MessageEntity = {
+        _id: payload.clientMessageId,
+        roomId: payload.roomId || MVP_ROOM_ID,
+        senderId: 'u_current',
+        senderType: 'user',
+        messageType: payload.messageType,
+        content: payload.content,
+        createdAt: ensureString(data.createdAt, 'sendMessage.data.createdAt'),
+        status: 'delivered',
+        files: payload.files,
+        meta: { ...(payload.meta || {}), aiAnswer: answer }
+      }
+      const aiMessage: MessageEntity | undefined = answer
+        ? {
+            _id: `ai_${payload.clientMessageId}`,
+            roomId: payload.roomId || MVP_ROOM_ID,
+            senderId: 'u_ai',
+            senderType: 'ai',
+            messageType: 'text',
+            content: answer,
+            createdAt: userMessage.createdAt,
+            status: 'delivered'
+          }
+        : undefined
+      return { message: userMessage, aiMessage }
     }
   }
 }

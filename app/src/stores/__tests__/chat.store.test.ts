@@ -59,9 +59,11 @@ describe('chat store state machine', () => {
     store.messages = [failed]
 
     sendMessageMock.mockResolvedValueOnce({
-      ...failed,
-      _id: 'm_1',
-      status: 'delivered'
+      message: {
+        ...failed,
+        _id: 'm_1',
+        status: 'delivered'
+      }
     })
 
     await store.retryMessage('cm_1')
