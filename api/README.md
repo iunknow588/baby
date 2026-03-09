@@ -2,7 +2,7 @@
 
 ## 部署模式
 
-1. Vercel 运行入口：`api/[[...path]].js`（单函数网关）
+1. Vercel 运行入口：`api/[...path].js`（单函数网关）
 2. 业务处理器目录：`api_handlers/**`
 3. 路由分发实现：`api_handlers/router.js`
 

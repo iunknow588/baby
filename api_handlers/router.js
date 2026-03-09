@@ -35,6 +35,16 @@ function toPathname(req) {
   }
 }
 
+function normalizeApiPath(pathname) {
+  if (!pathname || pathname === '/') return '/api'
+  if (pathname === '/api') return pathname
+  if (pathname.startsWith('/api/')) return pathname
+  if (pathname.startsWith('/v1/') || pathname.startsWith('/chat/') || pathname.startsWith('/coze/') || pathname.startsWith('/social/') || pathname.startsWith('/voice/') || pathname === '/health' || pathname === '/diagnostics' || pathname === '/user' || pathname === '/history' || pathname === '/chat') {
+    return `/api${pathname}`
+  }
+  return pathname
+}
+
 function parseQuery(req, pathParams) {
   const rawUrl = typeof req.url === 'string' ? req.url : '/api'
   const url = new URL(rawUrl, 'http://localhost')
@@ -114,7 +124,7 @@ const dynamicRoutes = [
 
 export default async function handler(req, res) {
   try {
-    const pathname = toPathname(req)
+    const pathname = normalizeApiPath(toPathname(req))
 
     const exact = exactRoutes.get(pathname)
     if (exact) {

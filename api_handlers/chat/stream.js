@@ -34,7 +34,14 @@ export default async function handler(req, res) {
   try {
     await ensureRoomMember(roomId, userId)
   } catch (error) {
-    return fail(res, 403, 'PERMISSION_DENIED', 'Not a room member')
+    if (roomId !== 'r_mvp_main') {
+      return fail(res, 403, 'PERMISSION_DENIED', 'Not a room member')
+    }
+    // Compatibility fallback for MVP default room.
+    // In mixed deployments, membership rows may be absent for legacy users.
+    if (!userId) {
+      return fail(res, 403, 'PERMISSION_DENIED', 'Not a room member')
+    }
   }
 
   const now = new Date().toISOString()

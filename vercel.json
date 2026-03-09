@@ -3,7 +3,7 @@
   "buildCommand": "cd app && npm run build",
   "outputDirectory": "app/dist",
   "functions": {
-    "api/[[...path]].js": {
+    "api/[...path].js": {
       "maxDuration": 30
     }
   }
