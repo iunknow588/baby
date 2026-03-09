@@ -73,3 +73,23 @@ export async function supabasePatch(path, query, payload, returning = 'minimal')
   }
   return data
 }
+
+export async function supabaseDelete(path, query, returning = 'minimal') {
+  assertSupabaseEnv()
+  const url = `${SUPABASE_URL}/rest/v1/${path}?${query}`
+  const res = await fetch(url, {
+    method: 'DELETE',
+    headers: buildHeaders({
+      Prefer: `return=${returning}`
+    })
+  })
+  const text = await res.text()
+  const data = text ? JSON.parse(text) : null
+  if (!res.ok) {
+    const message = typeof data?.message === 'string' ? data.message : `Supabase DELETE failed: ${res.status}`
+    const error = new Error(message)
+    error.status = res.status
+    throw error
+  }
+  return data
+}
