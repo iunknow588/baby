@@ -19,6 +19,20 @@ const sseClient = new ChatSseClient()
 const ttsAudio = typeof Audio !== 'undefined' ? new Audio() : null
 
 const STATUS_SET = new Set<MessageEntity['status']>(['local', 'sending', 'delivered', 'seen', 'failed'])
+const FALLBACK_ROOM_ID = 'r_mvp_main'
+const FALLBACK_ROOM_NAME = 'AI 助手'
+
+function createFallbackRoom(): RoomEntity {
+  return {
+    roomId: FALLBACK_ROOM_ID,
+    roomName: FALLBACK_ROOM_NAME,
+    roomType: 'ai_dm',
+    users: [],
+    unreadCount: 0,
+    lastActiveAt: new Date().toISOString(),
+    lastMessage: undefined
+  }
+}
 
 function upsertMessage(list: MessageEntity[], message: MessageEntity): MessageEntity[] {
   const index = list.findIndex(item => item._id === message._id)
@@ -116,23 +130,23 @@ export const useChatStore = defineStore('chat', {
       this.loadingRooms = true
       try {
         const result = await chatApi.listRooms(reset ? undefined : this.roomsCursor)
-        this.rooms = reset
+        const nextRooms = reset
           ? result.list
           : mergeUniqueByKey(this.rooms, result.list, item => item.roomId)
+        this.rooms = nextRooms.length ? nextRooms : [createFallbackRoom()]
         this.roomsCursor = result.nextCursor
         this.roomsLoaded = !result.hasMore
       } catch (error) {
         this.lastError = withFeatureError('聊天房间加载', error)
         if (reset) {
-          this.rooms = []
+          this.rooms = [createFallbackRoom()]
           this.roomsCursor = undefined
           this.roomsLoaded = true
         }
       } finally {
         this.loadingRooms = false
-        if (!this.roomId && this.rooms.length) {
-          this.roomId = this.rooms[0].roomId
-        }
+        if (!this.rooms.length) this.rooms = [createFallbackRoom()]
+        if (!this.roomId && this.rooms.length) this.roomId = this.rooms[0].roomId
       }
     },
 
