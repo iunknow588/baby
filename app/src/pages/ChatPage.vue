@@ -24,8 +24,8 @@
       :room-id.prop="chat.roomId"
       :messages.prop="vacMessages"
       :loading-rooms="chat.loadingRooms"
-      :rooms-loaded="chat.roomsLoaded"
-      :messages-loaded="chat.messagesLoaded"
+      :rooms-loaded="vacRoomsLoaded"
+      :messages-loaded="vacMessagesLoaded"
       :show-audio="true"
       :show-files="true"
       :show-emojis="true"
@@ -65,6 +65,10 @@ const chatUiReady = ref(false)
 const vacRooms = computed(() => chatAdapter.toVacRooms(chat.rooms))
 const vacMessages = computed(() => chatAdapter.toVacMessages(chat.messages))
 const failedMessages = computed(() => chat.messages.filter(msg => msg.status === 'failed'))
+const vacRoomsLoaded = computed(() => chat.roomsLoaded || (!chat.loadingRooms && chat.rooms.length > 0))
+const vacMessagesLoaded = computed(
+  () => chat.messagesLoaded || (!chat.loadingMessages && !!chat.roomId)
+)
 
 onMounted(async () => {
   await ensureChatUiReady()
