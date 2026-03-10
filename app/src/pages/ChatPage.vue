@@ -78,11 +78,9 @@ const chatUiReady = ref(false)
 const vacRooms = computed(() => chatAdapter.toVacRooms(chat.rooms))
 const vacMessages = computed(() => chatAdapter.toVacMessages(chat.messages))
 const failedMessages = computed(() => chat.messages.filter(msg => msg.status === 'failed'))
-const vacLoadingRooms = computed(() => chat.loadingRooms && chat.rooms.length === 0)
-const vacRoomsLoaded = computed(() => chat.roomsLoaded || (!chat.loadingRooms && chat.rooms.length > 0))
-const vacMessagesLoaded = computed(
-  () => chat.messagesLoaded || (!chat.loadingMessages && !!chat.roomId)
-)
+const vacLoadingRooms = computed(() => false)
+const vacRoomsLoaded = computed(() => true)
+const vacMessagesLoaded = computed(() => true)
 const showDiag = computed(() => {
   if (typeof window === 'undefined') return false
   const search = new URLSearchParams(window.location.search)
