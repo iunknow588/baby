@@ -1,7 +1,16 @@
 const COZE_API_BASE_URL = (process.env.COZE_API_BASE_URL || '').replace(/\/+$/, '')
 const COZE_API_TOKEN = process.env.COZE_API_TOKEN || ''
 const COZE_BOT_ID = (process.env.COZE_BOT_ID || '').trim()
-const COZE_MAX_WAIT_MS = Number(process.env.COZE_MAX_WAIT_MS || 60000)
+const DEFAULT_COZE_MAX_WAIT_MS = 20000
+const HARD_COZE_MAX_WAIT_MS = 25000
+
+function resolveCozeMaxWaitMs() {
+  const raw = Number(process.env.COZE_MAX_WAIT_MS || DEFAULT_COZE_MAX_WAIT_MS)
+  if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_COZE_MAX_WAIT_MS
+  return Math.min(Math.max(1000, Math.floor(raw)), HARD_COZE_MAX_WAIT_MS)
+}
+
+const COZE_MAX_WAIT_MS = resolveCozeMaxWaitMs()
 
 export function assertCozeEnv() {
   if (!COZE_API_BASE_URL || !COZE_API_TOKEN || !COZE_BOT_ID) {
