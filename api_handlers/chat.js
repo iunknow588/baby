@@ -3,6 +3,11 @@ import { fail, methodNotAllowed, ok, readJson } from './_lib/http.js'
 import { ensureUserByDeviceId, isValidDeviceId, normalizeDeviceId } from './_lib/mvp-user.js'
 import { supabaseInsert } from './_lib/supabase.js'
 
+function buildFallbackAnswer(message) {
+  const preview = message.length > 80 ? `${message.slice(0, 80)}...` : message
+  return `已收到你的消息：${preview}\n\n当前 AI 服务暂时繁忙，我先帮你记录问题。请稍后再试一次，我会尽快给出完整回复。`
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') return methodNotAllowed(res)
 
@@ -23,15 +28,20 @@ export default async function handler(req, res) {
     }
 
     let coze
+    let fallbackUsed = false
+    let fallbackReason = ''
     try {
       coze = await cozeComplete({ message })
     } catch (error) {
-      const status = typeof error?.status === 'number' && error.status >= 400 ? 502 : 500
-      return fail(res, status, 'COZE_REQUEST_FAILED', error.message || 'Coze request failed')
+      fallbackUsed = true
+      fallbackReason = error?.message || 'Coze request failed'
+      coze = { answer: buildFallbackAnswer(message) }
     }
 
     if (!coze.answer || !coze.answer.trim()) {
-      return fail(res, 502, 'COZE_REQUEST_FAILED', 'Coze returned empty answer')
+      fallbackUsed = true
+      fallbackReason = fallbackReason || 'Coze returned empty answer'
+      coze = { answer: buildFallbackAnswer(message) }
     }
 
     try {
@@ -48,7 +58,9 @@ export default async function handler(req, res) {
       return ok(res, {
         conversationId: row.id,
         answer: row.answer,
-        createdAt: row.created_at
+        createdAt: row.created_at,
+        degraded: fallbackUsed,
+        degradedReason: fallbackUsed ? fallbackReason : ''
       })
     } catch (error) {
       return fail(res, 500, 'CONVERSATION_INSERT_FAILED', error.message || 'conversation insert failed')
