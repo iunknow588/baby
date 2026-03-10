@@ -8,13 +8,18 @@ export interface SseEventPayload {
 export interface SseConnectionCallbacks {
   onOpen?: () => void
   onError?: () => void
-  onReconnect?: () => void
+  onReconnect?: (attempt: number, delayMs: number) => void
+  onHalt?: (attempt: number) => void
+  shouldReconnect?: (nextAttempt: number) => boolean
   reconnectDelayMs?: number
+  maxReconnectDelayMs?: number
 }
 
 export class ChatSseClient {
   private es?: EventSource
   private reconnectTimer?: number
+  private reconnectAttempts = 0
+  private closedManually = false
 
   connect(
     sessionId: string,
@@ -22,14 +27,26 @@ export class ChatSseClient {
     callbacks: SseConnectionCallbacks = {}
   ) {
     this.close()
+    this.closedManually = false
+    this.reconnectAttempts = 0
+    this.openConnection(sessionId, onEvent, callbacks)
+  }
 
+  private openConnection(
+    sessionId: string,
+    onEvent: (payload: SseEventPayload) => void,
+    callbacks: SseConnectionCallbacks
+  ) {
     const token = localStorage.getItem('baby_token') || ''
     const actorId = localStorage.getItem('baby_device_id') || ''
-    const qs = new URLSearchParams({ sessionId, token, actorId })
+    const qs = new URLSearchParams({ sessionId })
+    if (token) qs.set('token', token)
+    if (actorId) qs.set('actorId', actorId)
     const base = getApiBaseUrl().replace(/\/+$/, '')
     this.es = new EventSource(`${base}/chat/stream?${qs.toString()}`)
 
     this.es.onopen = () => {
+      this.reconnectAttempts = 0
       callbacks.onOpen?.()
     }
 
@@ -54,16 +71,32 @@ export class ChatSseClient {
 
     this.es.onerror = () => {
       callbacks.onError?.()
-      this.close()
-      const reconnectDelayMs = callbacks.reconnectDelayMs ?? 5000
+      if (this.es) {
+        this.es.close()
+        this.es = undefined
+      }
+      if (this.closedManually) return
+
+      const nextAttempt = this.reconnectAttempts + 1
+      if (callbacks.shouldReconnect && !callbacks.shouldReconnect(nextAttempt)) {
+        callbacks.onHalt?.(nextAttempt)
+        return
+      }
+
+      this.reconnectAttempts = nextAttempt
+      const baseDelayMs = callbacks.reconnectDelayMs ?? 5000
+      const maxDelayMs = callbacks.maxReconnectDelayMs ?? 30000
+      const reconnectDelayMs = Math.min(maxDelayMs, baseDelayMs * 2 ** Math.max(0, nextAttempt - 1))
+
       this.reconnectTimer = window.setTimeout(() => {
-        callbacks.onReconnect?.()
-        this.connect(sessionId, onEvent, callbacks)
+        callbacks.onReconnect?.(nextAttempt, reconnectDelayMs)
+        this.openConnection(sessionId, onEvent, callbacks)
       }, reconnectDelayMs)
     }
   }
 
   close() {
+    this.closedManually = true
     if (this.reconnectTimer) {
       window.clearTimeout(this.reconnectTimer)
       this.reconnectTimer = undefined

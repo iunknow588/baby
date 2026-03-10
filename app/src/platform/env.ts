@@ -62,6 +62,14 @@ export function getSseReconnectMs(): number {
   return toPositiveInt(import.meta.env.VITE_SSE_RECONNECT_MS, 5000)
 }
 
+export function getSseMaxReconnectAttempts(): number {
+  return toPositiveInt(import.meta.env.VITE_SSE_MAX_RECONNECT_ATTEMPTS, 6)
+}
+
+export function getSseMaxReconnectDelayMs(): number {
+  return toPositiveInt(import.meta.env.VITE_SSE_MAX_RECONNECT_DELAY_MS, 30000)
+}
+
 export function getSseStaleMs(): number {
   return toPositiveInt(import.meta.env.VITE_SSE_STALE_MS, 15000)
 }

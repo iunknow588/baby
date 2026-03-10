@@ -6,6 +6,8 @@ import { toUserError } from '../services/api/errorMap'
 import { ApiError } from '../types/api'
 import {
   getSseAutoRecoverCooldownMs,
+  getSseMaxReconnectAttempts,
+  getSseMaxReconnectDelayMs,
   getRealtimeEnabled,
   getSseReconnectMs,
   getSseStaleMs,
@@ -84,6 +86,7 @@ export const useChatStore = defineStore('chat', {
     streamLastConnectedAt: '',
     streamLastEventAt: '',
     streamReconnectCount: 0,
+    streamReconnectLimitReached: false,
     streamStale: false,
     streamRecovering: false,
     streamLastRecoverAt: '',
@@ -102,6 +105,7 @@ export const useChatStore = defineStore('chat', {
       if (state.streamConnected) return ''
       if (state.streamConnecting) return '正在建立实时连接...'
       if (state.realtimeUnsupported) return '当前版本未启用实时通道，消息通过普通接口发送与刷新。'
+      if (state.streamReconnectLimitReached) return '自动重连已暂停，请检查网络/服务后点击“立即重连”。'
       if (state.sessionError) return `会话创建失败: ${state.sessionError}`
       if (state.streamError) return `实时通道异常: ${state.streamError}`
       return state.roomId ? '实时连接未建立，可点击“立即重连”。' : '当前没有可用聊天房间。'
@@ -211,13 +215,18 @@ export const useChatStore = defineStore('chat', {
       if (!this.sessionId) return
       this.streamConnecting = true
       this.streamStale = false
+      this.streamReconnectLimitReached = false
       this.streamError = ''
       this.startStreamWatchdog()
       sseClient.connect(this.sessionId, payload => this.onSseEvent(payload), {
         reconnectDelayMs: getSseReconnectMs(),
+        maxReconnectDelayMs: getSseMaxReconnectDelayMs(),
+        shouldReconnect: nextAttempt => nextAttempt <= getSseMaxReconnectAttempts(),
         onOpen: () => {
           this.streamConnecting = false
           this.streamConnected = true
+          this.streamReconnectCount = 0
+          this.streamReconnectLimitReached = false
           this.streamError = ''
           const nowAt = new Date().toISOString()
           this.streamLastConnectedAt = nowAt
@@ -227,9 +236,16 @@ export const useChatStore = defineStore('chat', {
           this.streamConnected = false
           this.streamError = 'SSE 建连失败或连接中断'
         },
-        onReconnect: () => {
-          this.streamReconnectCount += 1
+        onReconnect: attempt => {
+          this.streamReconnectCount = attempt
           this.streamConnecting = true
+        },
+        onHalt: attempt => {
+          this.streamConnecting = false
+          this.streamConnected = false
+          this.streamReconnectCount = attempt
+          this.streamReconnectLimitReached = true
+          this.streamError = `SSE 自动重连已暂停（已尝试 ${attempt} 次）`
         }
       })
     },
@@ -239,6 +255,8 @@ export const useChatStore = defineStore('chat', {
       this.streamRecovering = true
       this.sessionError = ''
       this.streamError = ''
+      this.streamReconnectCount = 0
+      this.streamReconnectLimitReached = false
       this.closeStream()
       if (!this.sessionId) {
         await this.ensureSession()
@@ -254,6 +272,7 @@ export const useChatStore = defineStore('chat', {
       this.streamConnecting = false
       this.streamConnected = false
       this.streamStale = false
+      this.streamReconnectLimitReached = false
       this.streamRecovering = false
       this.stopStreamWatchdog()
     },
