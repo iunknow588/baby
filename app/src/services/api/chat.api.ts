@@ -362,6 +362,8 @@ export const chatApi = {
       const body = parseApiEnvelope<Record<string, unknown>>(res.data)
       const data = ensureObject(body.data, 'sendMessage.data')
       const answer = ensureString(data.answer, 'sendMessage.data.answer')
+      const degraded = typeof data.degraded === 'boolean' ? data.degraded : false
+      const degradedReason = typeof data.degradedReason === 'string' ? data.degradedReason : ''
       const userMessage: MessageEntity = {
         _id: payload.clientMessageId,
         roomId: payload.roomId || MVP_ROOM_ID,
@@ -372,7 +374,7 @@ export const chatApi = {
         createdAt: ensureString(data.createdAt, 'sendMessage.data.createdAt'),
         status: 'delivered',
         files: payload.files,
-        meta: { ...(payload.meta || {}), aiAnswer: answer }
+        meta: { ...(payload.meta || {}), aiAnswer: answer, degraded, degradedReason }
       }
       const aiMessage: MessageEntity | undefined = answer
         ? {
@@ -383,7 +385,8 @@ export const chatApi = {
             messageType: 'text',
             content: answer,
             createdAt: userMessage.createdAt,
-            status: 'delivered'
+            status: 'delivered',
+            meta: { degraded, degradedReason }
           }
         : undefined
       return { message: userMessage, aiMessage }

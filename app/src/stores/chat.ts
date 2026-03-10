@@ -421,10 +421,14 @@ export const useChatStore = defineStore('chat', {
         // MVP room uses async backend orchestration; when request phase fails,
         // server-side message may still be persisted shortly after.
         if (message.roomId === FALLBACK_ROOM_ID) {
+          const snapshot = [...this.messages]
           for (let attempt = 0; attempt < 2; attempt += 1) {
             await sleep(1200 * (attempt + 1))
             try {
-              await this.fetchMessages(message.roomId, true)
+              const refreshed = await chatApi.listMessages(message.roomId)
+              this.messages = refreshed.list
+              this.messagesCursorByRoom[message.roomId] = refreshed.nextCursor
+              this.messagesLoaded = !refreshed.hasMore
               const hasDelivered = this.messages.some(
                 item =>
                   item.senderType === 'user' &&
@@ -436,8 +440,14 @@ export const useChatStore = defineStore('chat', {
                 break
               }
             } catch {
-              // keep original error if refresh fails
+              // keep original error and snapshot when refresh fails
+              this.messages = snapshot
             }
+          }
+
+          const stillMissing = !this.messages.some(item => item._id === message._id)
+          if (stillMissing) {
+            this.messages = upsertMessage(this.messages, { ...message, status: 'failed' })
           }
         }
       }

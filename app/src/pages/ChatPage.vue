@@ -53,6 +53,9 @@
           <span v-else-if="item.status === 'failed'" style="color: #b42318">发送失败</span>
         </div>
         <div class="bubble">{{ item.content || '[空消息]' }}</div>
+        <div v-if="item.meta?.degradedReason" class="degraded-note">
+          降级回复: {{ item.meta.degradedReason }}
+        </div>
       </article>
     </div>
 
@@ -692,6 +695,12 @@ function formatTime(input: string): string {
   line-height: 1.4;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.degraded-note {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #b54708;
 }
 
 .msg.me {

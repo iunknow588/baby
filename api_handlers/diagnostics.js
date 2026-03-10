@@ -13,7 +13,8 @@ export default async function handler(req, res) {
     SUPABASE_SERVICE_ROLE_KEY: isSet('SUPABASE_SERVICE_ROLE_KEY'),
     COZE_API_BASE_URL: isSet('COZE_API_BASE_URL'),
     COZE_API_TOKEN: isSet('COZE_API_TOKEN'),
-    COZE_BOT_ID: isSet('COZE_BOT_ID')
+    COZE_BOT_ID: isSet('COZE_BOT_ID'),
+    OPENAI_API_KEY: isSet('OPENAI_API_KEY')
   }
   const missing = Object.entries(checks)
     .filter(([, ready]) => !ready)

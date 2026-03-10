@@ -33,6 +33,8 @@ export interface MessageEntity {
     asrText?: string
     ttsUrl?: string
     aiAnswer?: string
+    degraded?: boolean
+    degradedReason?: string
     cardType?: 'advice' | 'task' | 'summary'
     taskId?: string
     traceId?: string

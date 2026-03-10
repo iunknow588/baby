@@ -191,7 +191,7 @@ describe('chat store state machine', () => {
     await vi.advanceTimersByTimeAsync(1300)
     await pending
 
-    expect(listMessagesMock).toHaveBeenCalledWith('r_mvp_main', undefined)
+    expect(listMessagesMock).toHaveBeenCalledWith('r_mvp_main')
     expect(store.lastError).toBe('')
     expect(store.messages.some(item => item.content === 'hello' && item.status === 'delivered')).toBe(true)
   })
@@ -218,6 +218,7 @@ describe('chat store state machine', () => {
 
     expect(listMessagesMock).toHaveBeenCalledTimes(2)
     expect(store.lastError).toContain('[消息发送]')
-    expect(store.messages).toHaveLength(0)
+    expect(store.messages).toHaveLength(1)
+    expect(store.messages[0].status).toBe('failed')
   })
 })
