@@ -60,9 +60,10 @@ wait_for_http() {
   local url="$1"
   local retries="${2:-60}"
   local interval="${3:-0.5}"
+  local timeout="${4:-5}"
   local i
   for i in $(seq 1 "$retries"); do
-    if curl -sS -m 1 "$url" >/dev/null 2>&1; then
+    if curl -sS -m "$timeout" "$url" >/dev/null 2>&1; then
       return 0
     fi
     sleep "$interval"
@@ -104,7 +105,7 @@ log_info "启动本地后端: http://${API_HOST}:${API_PORT}"
 ) &
 API_PID=$!
 
-if ! wait_for_http "http://${API_HOST}:${API_PORT}/api/health" 120 0.5; then
+if ! wait_for_http "http://${API_HOST}:${API_PORT}/api/health" 120 0.5 5; then
   log_error "本地后端启动超时: http://${API_HOST}:${API_PORT}/api/health"
   exit 1
 fi
@@ -117,7 +118,7 @@ log_info "启动本地前端: http://${WEB_HOST}:${WEB_PORT}"
 ) &
 WEB_PID=$!
 
-if ! wait_for_http "http://${WEB_HOST}:${WEB_PORT}/" 60 0.5; then
+if ! wait_for_http "http://${WEB_HOST}:${WEB_PORT}/" 60 0.5 3; then
   log_error "本地前端启动超时: http://${WEB_HOST}:${WEB_PORT}/"
   exit 1
 fi

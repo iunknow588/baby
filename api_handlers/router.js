@@ -5,9 +5,6 @@ import userHandler from '../api_handlers/user.js'
 import chatHandler from '../api_handlers/chat.js'
 import historyHandler from '../api_handlers/history.js'
 import cozeChatHandler from '../api_handlers/coze/chat.js'
-import chatMessagesLegacyHandler from '../api_handlers/chat/messages.js'
-import chatRoomsLegacyHandler from '../api_handlers/chat/rooms.js'
-import chatRoomMessagesLegacyHandler from '../api_handlers/chat/rooms/[roomId]/messages.js'
 import chatSessionsHandler from '../api_handlers/chat/sessions.js'
 import chatStreamHandler from '../api_handlers/chat/stream.js'
 import socialContactsHandler from '../api_handlers/social/contacts.js'
@@ -87,8 +84,6 @@ const exactRoutes = new Map([
   ['/api/chat', chatHandler],
   ['/api/history', historyHandler],
   ['/api/coze/chat', cozeChatHandler],
-  ['/api/chat/messages', chatMessagesLegacyHandler],
-  ['/api/chat/rooms', chatRoomsLegacyHandler],
   ['/api/chat/sessions', chatSessionsHandler],
   ['/api/chat/stream', chatStreamHandler],
   ['/api/social/contacts', socialContactsHandler],
@@ -103,11 +98,6 @@ const exactRoutes = new Map([
 ])
 
 const dynamicRoutes = [
-  {
-    pattern: /^\/api\/chat\/rooms\/([^/]+)\/messages$/,
-    params: m => ({ roomId: decodeURIComponent(m[1]) }),
-    handler: chatRoomMessagesLegacyHandler
-  },
   {
     pattern: /^\/api\/social\/friend-requests\/([^/]+)\/accept$/,
     params: m => ({ requestId: decodeURIComponent(m[1]) }),

@@ -9,7 +9,7 @@
 
 ## 路由状态
 
-当前启用:
+当前启用（单云函数内部分发）:
 - `GET /api/health`
 - `GET /api/diagnostics`
 - `POST /api/user`
@@ -33,10 +33,25 @@
 - `POST /api/voice/asr`
 - `POST /api/voice/tts`
 
-历史占位（保留文件，仅返回 `410 LEGACY_API_DEPRECATED`）:
-- `/api/chat/rooms`
-- `/api/chat/rooms/{roomId}/messages`
-- `/api/chat/messages`
+## 路由使用矩阵（2026-03-10）
+
+当前前端主流程在用：
+- `/api/user`
+- `/api/chat`
+- `/api/history`
+- `/api/coze/chat`
+- `/api/chat/sessions`
+- `/api/chat/stream`（若实时开启）
+- `/api/v1/conversations`
+- `/api/v1/conversations/{conversationId}/messages`
+- `/api/social/*`
+- `/api/voice/*`
+
+保留备用（当前页面主流程未直接触发）：
+- `/api/diagnostics`
+- `/api/v1/groups*`
+- `/api/v1/assets/upload`
+- `/api/v1/capabilities/execute`
 
 ## 环境变量
 
@@ -46,9 +61,12 @@
 3. `COZE_API_BASE_URL`
 4. `COZE_API_TOKEN`
 5. `COZE_BOT_ID`
+6. `OPENAI_API_KEY`（语音转写 ASR）
 
 可选:
-1. `COZE_MAX_WAIT_MS`（v3 轮询等待上限，默认 `60000`）
+1. `COZE_MAX_WAIT_MS`（v3 轮询等待上限，默认 `20000`，最大 `25000`）
+2. `OPENAI_API_BASE_URL`（默认 `https://api.openai.com`）
+3. `OPENAI_ASR_MODEL`（默认 `whisper-1`）
 
 ## 数据库初始化
 
@@ -64,5 +82,4 @@
 2. MVP 当前基线接口：`/api/user`、`/api/chat`、`/api/history`、`/api/coze/chat`
 3. 平台重构接口（v1）：`/api/v1/groups`、`/api/v1/conversations`、`/api/v1/assets/upload`、`/api/v1/capabilities/execute`
 4. 社交与语音接口（MVP 占位实现）：`/api/social/*`、`/api/voice/*`
-5. 旧房间接口 `/api/chat/rooms*`、`/api/chat/messages` 统一返回 `410 LEGACY_API_DEPRECATED`（用于防误接旧协议）
-6. 生产建议后续接入 Supabase Auth + RLS
+5. 生产建议后续接入 Supabase Auth + RLS

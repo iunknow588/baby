@@ -31,7 +31,10 @@ type HistoryItem = {
 const DEVICE_ID_KEY = 'baby_device_id'
 const MVP_ROOM_ID = 'r_mvp_main'
 const MVP_ROOM_NAME = 'AI 助手'
+const MVP_CHAT_TIMEOUT_MS = 30000
+const MVP_CHAT_RETRY_COUNT = 1
 let memoryDeviceId = ''
+let platformMessagePathUnavailable = false
 
 function getStorage() {
   if (typeof globalThis !== 'undefined' && 'localStorage' in globalThis) {
@@ -62,6 +65,10 @@ function withActorHeaders() {
 
 async function ensureUser(deviceId: string) {
   await apiClient.post('/user', { deviceId }, withActorHeaders())
+}
+
+function sleep(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms))
 }
 
 function parseRoomEntity(raw: unknown, index: number): RoomEntity {
@@ -282,6 +289,10 @@ export const chatApi = {
     if (!roomId) {
       return { list: [], hasMore: false, nextCursor: undefined }
     }
+    if (roomId === MVP_ROOM_ID || platformMessagePathUnavailable) {
+      const history = await getHistory(50)
+      return { list: mapHistoryToMessages(history), hasMore: false, nextCursor: undefined }
+    }
 
     try {
       const res = await apiClient.get(`/v1/conversations/${encodeURIComponent(roomId)}/messages`, {
@@ -314,35 +325,40 @@ export const chatApi = {
   }): Promise<SendMessageResult> {
     const deviceId = getOrCreateDeviceId()
     await ensureUser(deviceId)
+    const sendViaMvpChat = async (): Promise<SendMessageResult> => {
+      let res: Awaited<ReturnType<typeof apiClient.post>> | null = null
+      let lastError: unknown = null
 
-    try {
-      const res = await apiClient.post(
-        `/v1/conversations/${encodeURIComponent(payload.roomId)}/messages`,
-        {
-          clientMessageId: payload.clientMessageId,
-          type: payload.messageType,
-          content: payload.content,
-          files: payload.files,
-          meta: payload.meta
-        },
-        withActorHeaders()
-      )
-      const body = parseApiEnvelope<unknown>(res.data)
-      const data = ensureObject(body.data, 'sendMessage.data')
-      const message = parseMessageEntity(ensureObject(data.message, 'sendMessage.data.message'), 0)
-      const aiMessage = data.aiMessage && typeof data.aiMessage === 'object' ? parseMessageEntity(data.aiMessage, 1) : null
-      if (aiMessage?.content) {
-        message.meta = {
-          ...(message.meta || {}),
-          aiAnswer: aiMessage.content
+      for (let attempt = 0; attempt <= MVP_CHAT_RETRY_COUNT; attempt += 1) {
+        try {
+          res = await apiClient.post(
+            '/chat',
+            {
+              deviceId,
+              message: payload.content
+            },
+            {
+              ...withActorHeaders(),
+              timeout: MVP_CHAT_TIMEOUT_MS
+            }
+          )
+          lastError = null
+          break
+        } catch (error) {
+          lastError = error
+          const code = error instanceof ApiError ? error.code : ''
+          const timeoutLike = code === 'ECONNABORTED' || String(code).toUpperCase().includes('TIMEOUT')
+          const canRetry = timeoutLike && attempt < MVP_CHAT_RETRY_COUNT
+          if (!canRetry) {
+            throw error
+          }
+          await sleep(400)
         }
       }
-      return { message, aiMessage: aiMessage || undefined }
-    } catch (_error) {
-      const res = await apiClient.post('/chat', {
-        deviceId,
-        message: payload.content
-      }, withActorHeaders())
+
+      if (!res) {
+        throw (lastError instanceof Error ? lastError : new Error('MVP chat request failed'))
+      }
       const body = parseApiEnvelope<Record<string, unknown>>(res.data)
       const data = ensureObject(body.data, 'sendMessage.data')
       const answer = ensureString(data.answer, 'sendMessage.data.answer')
@@ -371,6 +387,39 @@ export const chatApi = {
           }
         : undefined
       return { message: userMessage, aiMessage }
+    }
+
+    if (payload.roomId === MVP_ROOM_ID || platformMessagePathUnavailable) {
+      return sendViaMvpChat()
+    }
+
+    try {
+      const res = await apiClient.post(
+        `/v1/conversations/${encodeURIComponent(payload.roomId)}/messages`,
+        {
+          clientMessageId: payload.clientMessageId,
+          type: payload.messageType,
+          content: payload.content,
+          files: payload.files,
+          meta: payload.meta
+        },
+        withActorHeaders()
+      )
+      const body = parseApiEnvelope<unknown>(res.data)
+      const data = ensureObject(body.data, 'sendMessage.data')
+      const message = parseMessageEntity(ensureObject(data.message, 'sendMessage.data.message'), 0)
+      const aiMessage = data.aiMessage && typeof data.aiMessage === 'object' ? parseMessageEntity(data.aiMessage, 1) : null
+      if (aiMessage?.content) {
+        message.meta = {
+          ...(message.meta || {}),
+          aiAnswer: aiMessage.content
+        }
+      }
+      return { message, aiMessage: aiMessage || undefined }
+    } catch (_error) {
+      // Platform messages table is currently unavailable in production; switch to MVP path.
+      platformMessagePathUnavailable = true
+      return sendViaMvpChat()
     }
   }
 }

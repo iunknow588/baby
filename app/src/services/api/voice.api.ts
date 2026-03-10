@@ -1,6 +1,19 @@
 import { apiClient } from './client'
 import { ensureNumber, ensureObject, ensureString, parseApiEnvelope } from './guard'
 
+async function blobToBase64(blob: Blob): Promise<string> {
+  return await new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(reader.error || new Error('read blob failed'))
+    reader.onload = () => {
+      const result = typeof reader.result === 'string' ? reader.result : ''
+      const base64 = result.includes(',') ? result.split(',')[1] : result
+      resolve(base64)
+    }
+    reader.readAsDataURL(blob)
+  })
+}
+
 export const voiceApi = {
   async uploadAudio(file: Blob): Promise<{ fileId: string; duration: number; codec: string }> {
     const form = new FormData()
@@ -23,6 +36,22 @@ export const voiceApi = {
       text: ensureString(data.text, 'voice.asr.data.text'),
       language: ensureString(data.language, 'voice.asr.data.language'),
       confidence: ensureNumber(data.confidence, 'voice.asr.data.confidence')
+    }
+  },
+
+  async asrByAudio(blob: Blob, roomId: string): Promise<{ text: string; language: string; confidence: number }> {
+    const audioBase64 = await blobToBase64(blob)
+    const res = await apiClient.post('/voice/asr', {
+      roomId,
+      audioBase64,
+      mimeType: blob.type || 'audio/webm'
+    })
+    const body = parseApiEnvelope<unknown>(res.data)
+    const data = ensureObject(body.data, 'voice.asrByAudio.data')
+    return {
+      text: ensureString(data.text, 'voice.asrByAudio.data.text'),
+      language: ensureString(data.language, 'voice.asrByAudio.data.language'),
+      confidence: ensureNumber(data.confidence, 'voice.asrByAudio.data.confidence')
     }
   },
 

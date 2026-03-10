@@ -1,0 +1,19 @@
+# VCS / local artifacts
+.git/
+.vercel/
+node_modules/
+app/node_modules/
+
+# Local docs / references, not runtime source-of-truth
+ref/
+local-platform/
+utils/
+
+# Build artifacts
+app/dist/
+coverage/
+
+# Temp files
+*.log
+*.tmp
+*.swp

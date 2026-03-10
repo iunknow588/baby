@@ -181,4 +181,87 @@ describe('chatApi', () => {
       code: 'INVALID_RESPONSE'
     })
   })
+
+  it('sends MVP room message via /chat without calling platform messages path', async () => {
+    const postSpy = vi.spyOn(apiClient, 'post')
+      .mockResolvedValueOnce({
+        data: {
+          success: true,
+          data: {
+            id: 'u_1',
+            deviceId: 'dev_1',
+            createdAt: '2026-03-09T00:00:00.000Z',
+            lastActive: '2026-03-09T00:00:00.000Z'
+          },
+          error: null,
+          traceId: 'trc_0'
+        }
+      } as never)
+      .mockResolvedValueOnce({
+        data: {
+          success: true,
+          data: {
+            conversationId: 1,
+            answer: 'ok',
+            createdAt: '2026-03-09T00:00:00.000Z'
+          },
+          error: null,
+          traceId: 'trc_1'
+        }
+      } as never)
+
+    const result = await chatApi.sendMessage({
+      roomId: 'r_mvp_main',
+      clientMessageId: 'cm_1',
+      messageType: 'text',
+      content: 'hello'
+    })
+
+    expect(result.message.status).toBe('delivered')
+    expect(result.aiMessage?.content).toBe('ok')
+    expect(postSpy).toHaveBeenNthCalledWith(2, '/chat', expect.any(Object), expect.any(Object))
+    expect(postSpy).not.toHaveBeenCalledWith(expect.stringContaining('/v1/conversations/'), expect.anything(), expect.anything())
+  })
+
+  it('retries /chat once on timeout-like error', async () => {
+    const postSpy = vi.spyOn(apiClient, 'post')
+      .mockResolvedValueOnce({
+        data: {
+          success: true,
+          data: {
+            id: 'u_1',
+            deviceId: 'dev_1',
+            createdAt: '2026-03-09T00:00:00.000Z',
+            lastActive: '2026-03-09T00:00:00.000Z'
+          },
+          error: null,
+          traceId: 'trc_0'
+        }
+      } as never)
+      .mockRejectedValueOnce(new ApiError('ECONNABORTED', 'timeout of 30000ms exceeded'))
+      .mockResolvedValueOnce({
+        data: {
+          success: true,
+          data: {
+            conversationId: 1,
+            answer: 'retry-ok',
+            createdAt: '2026-03-09T00:00:00.000Z'
+          },
+          error: null,
+          traceId: 'trc_1'
+        }
+      } as never)
+
+    const result = await chatApi.sendMessage({
+      roomId: 'r_mvp_main',
+      clientMessageId: 'cm_retry_1',
+      messageType: 'text',
+      content: 'hello retry'
+    })
+
+    expect(result.aiMessage?.content).toBe('retry-ok')
+    expect(postSpy).toHaveBeenCalledTimes(3)
+    expect(postSpy).toHaveBeenNthCalledWith(2, '/chat', expect.any(Object), expect.any(Object))
+    expect(postSpy).toHaveBeenNthCalledWith(3, '/chat', expect.any(Object), expect.any(Object))
+  })
 })

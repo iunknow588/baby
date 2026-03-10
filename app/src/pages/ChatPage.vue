@@ -18,36 +18,91 @@
   </section>
 
   <section v-if="showDiag" class="panel" style="margin-bottom: 12px; font-size: 12px; color: #475467">
-    <div>diag: chatUiReady={{ chatUiReady }} roomId={{ chat.roomId || 'none' }}</div>
-    <div>
-      diag: loadingRooms={{ chat.loadingRooms }} roomsLoaded={{ chat.roomsLoaded }} rooms={{ chat.rooms.length }}
-      vacLoadingRooms={{ vacLoadingRooms }} vacRoomsLoaded={{ vacRoomsLoaded }}
-    </div>
-    <div>
-      diag: loadingMessages={{ chat.loadingMessages }} messagesLoaded={{ chat.messagesLoaded }} messages={{ chat.messages.length }}
-      vacMessagesLoaded={{ vacMessagesLoaded }}
-    </div>
+    <div>diag: roomId={{ chat.roomId || 'none' }} rooms={{ chat.rooms.length }} loadingRooms={{ chat.loadingRooms }}</div>
+    <div>diag: messages={{ chat.messages.length }} loadingMessages={{ chat.loadingMessages }} loaded={{ chat.messagesLoaded }}</div>
     <div>diag: sessionId={{ chat.sessionId || 'none' }} streamConnected={{ chat.streamConnected }}</div>
+    <div>
+      diag: streamConnecting={{ chat.streamConnecting }} reconnectCount={{ chat.streamReconnectCount }}
+      stale={{ chat.streamStale }} realtimeUnsupported={{ chat.realtimeUnsupported }}
+    </div>
+    <div>diag: sessionError={{ chat.sessionError || 'none' }}</div>
+    <div>diag: streamError={{ chat.streamError || 'none' }}</div>
+    <div>diag: lastError={{ chat.lastError || 'none' }}</div>
+    <div>diag: connectionHint={{ chat.connectionHint || 'none' }}</div>
+    <div>diag: roomNames={{ roomNamesText }}</div>
+    <div>diag: tailMessages={{ tailMessagesText }}</div>
   </section>
 
-  <section v-if="chatUiReady" class="panel" style="padding: 0; overflow: hidden">
-    <vue-advanced-chat
-      :current-user-id.prop="auth.userId"
-      :rooms.prop="vacRooms"
-      :room-id.prop="chat.roomId"
-      :messages.prop="vacMessages"
-      :loading-rooms="vacLoadingRooms"
-      :rooms-loaded="vacRoomsLoaded"
-      :messages-loaded="vacMessagesLoaded"
-      :show-audio="true"
-      :show-files="true"
-      :show-emojis="true"
-      @fetch-messages="onFetchMessages"
-      @fetch-more-rooms="onFetchMoreRooms"
-      @send-message="onSendMessage"
-    />
+  <section class="panel chat-shell">
+    <header class="chat-head">
+      <strong>{{ currentRoomName }}</strong>
+      <small>{{ chat.loadingMessages ? '加载消息中...' : `${chat.messages.length} 条消息` }}</small>
+    </header>
+
+    <div ref="listRef" class="chat-list">
+      <div v-if="!chat.messages.length && !chat.loadingMessages" class="chat-empty">暂无消息，发送第一条消息开始聊天。</div>
+      <article
+        v-for="item in chat.messages"
+        :key="item._id"
+        :class="['msg', item.senderId === auth.userId ? 'me' : 'ai']"
+      >
+        <div class="meta">
+          <span>{{ item.senderId === auth.userId ? '我' : 'AI' }}</span>
+          <span>{{ formatTime(item.createdAt) }}</span>
+          <span v-if="item.status === 'sending'">发送中</span>
+          <span v-else-if="item.status === 'failed'" style="color: #b42318">发送失败</span>
+        </div>
+        <div class="bubble">{{ item.content || '[空消息]' }}</div>
+      </article>
+    </div>
+
+    <form class="chat-input" @submit.prevent="sendNow">
+      <input ref="fileInputRef" type="file" style="display: none" @change="onPickFile" />
+      <button class="icon-btn" type="button" :disabled="sending || uploadingFile" title="上传文件" @click="openFilePicker">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path
+            d="M8.5 7.5V16a3.5 3.5 0 1 0 7 0V6.75a2.25 2.25 0 0 0-4.5 0V16a1 1 0 0 0 2 0V8"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </svg>
+      </button>
+      <textarea
+        v-model="draft"
+        placeholder="输入消息..."
+        rows="3"
+        :disabled="sending || uploadingVoice"
+      />
+      <button type="submit" :disabled="sending || uploadingVoice || (!draft.trim() && !pendingFileName)">
+        {{ sending ? '发送中...' : '发送' }}
+      </button>
+    </form>
+    <div class="voice-panel">
+      <button
+        class="voice-main-btn"
+        type="button"
+        :class="{ recording }"
+        :disabled="sending || uploadingVoice || uploadingFile"
+        @click="recording ? stopRecording() : startRecording()"
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="9" y="3" width="6" height="12" rx="3" ry="3" fill="none" stroke="currentColor" stroke-width="2" />
+          <path d="M5 11a7 7 0 0 0 14 0M12 18v3M8 21h8" fill="none" stroke="currentColor" stroke-width="2" />
+        </svg>
+        <span>{{ recording ? '停止录音并发送' : '点击开始语音输入' }}</span>
+      </button>
+      <div class="chat-input-hint">
+        <span v-if="recording" style="color: #b42318">录音中 {{ recordingDurationText }}</span>
+        <span v-else-if="uploadingVoice">语音识别中...</span>
+        <span v-else-if="uploadingFile">文件处理中...</span>
+        <span v-else-if="pendingFileName">待发送文件: {{ pendingFileName }}</span>
+        <span v-else>支持文本、文件与语音输入</span>
+      </div>
+    </div>
   </section>
-  <section v-else class="panel">聊天组件加载中...</section>
 
   <section v-if="failedMessages.length" class="panel" style="margin-top: 12px">
     <h3 class="page-title">发送失败消息</h3>
@@ -65,52 +120,86 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, watch } from 'vue'
-import { ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useAuthStore } from '../stores/auth'
 import { useChatStore } from '../stores/chat'
-import { chatAdapter } from '../adapters/chatAdapter'
+import { voiceApi } from '../services/api/voice.api'
+import { requestMicPermission } from '../platform/media'
+import type { MessageEntity } from '../types/domain'
+
+type SpeechRecognitionLike = {
+  lang: string
+  interimResults: boolean
+  continuous: boolean
+  onresult: ((event: unknown) => void) | null
+  onerror: ((event: unknown) => void) | null
+  onend: (() => void) | null
+  start: () => void
+  stop: () => void
+}
+
+type SpeechCtor = new () => SpeechRecognitionLike
 
 const auth = useAuthStore()
 const chat = useChatStore()
-const chatUiReady = ref(false)
+const draft = ref('')
+const sending = ref(false)
+const recording = ref(false)
+const uploadingVoice = ref(false)
+const uploadingFile = ref(false)
+const pendingFileName = ref('')
+const listRef = ref<HTMLElement | null>(null)
+const fileInputRef = ref<HTMLInputElement | null>(null)
+const mediaRecorderRef = ref<MediaRecorder | null>(null)
+const mediaStreamRef = ref<MediaStream | null>(null)
+const voiceChunks = ref<Blob[]>([])
+const speechRecognitionRef = ref<SpeechRecognitionLike | null>(null)
+const speechDraftText = ref('')
+const recordingDurationSec = ref(0)
+let recordTickerId = 0
 
-const vacRooms = computed(() => chatAdapter.toVacRooms(chat.rooms))
-const vacMessages = computed(() => chatAdapter.toVacMessages(chat.messages))
 const failedMessages = computed(() => chat.messages.filter(msg => msg.status === 'failed'))
-const vacLoadingRooms = computed(() => false)
-const vacRoomsLoaded = computed(() => true)
-const vacMessagesLoaded = computed(() => true)
+const currentRoomName = computed(() => {
+  const room = chat.rooms.find(item => item.roomId === chat.roomId) || chat.rooms[0]
+  return room?.roomName || 'AI 助手'
+})
 const showDiag = computed(() => {
   if (typeof window === 'undefined') return false
   const search = new URLSearchParams(window.location.search)
   return search.get('diag') === '1' || localStorage.getItem('baby_diag') === '1'
 })
-
-const roomLoadingSince = ref(0)
-const messageLoadingSince = ref(0)
-const autoHealInFlight = ref(false)
-const autoHealTimerId = ref(0)
+const roomNamesText = computed(() => chat.rooms.map(item => `${item.roomId}:${item.roomName}`).join(' | ') || 'none')
+const speechSupported = computed(() => {
+  if (typeof window === 'undefined') return false
+  const maybeWindow = window as typeof window & {
+    SpeechRecognition?: SpeechCtor
+    webkitSpeechRecognition?: SpeechCtor
+  }
+  return Boolean(maybeWindow.SpeechRecognition || maybeWindow.webkitSpeechRecognition)
+})
+const tailMessagesText = computed(() => {
+  const tail = chat.messages.slice(-5)
+  if (!tail.length) return 'none'
+  return tail
+    .map(item => `${item._id}:${item.senderId}:${item.status}:${(item.content || '').slice(0, 24)}`)
+    .join(' | ')
+})
+const recordingDurationText = computed(() => {
+  const mins = String(Math.floor(recordingDurationSec.value / 60)).padStart(2, '0')
+  const secs = String(recordingDurationSec.value % 60).padStart(2, '0')
+  return `${mins}:${secs}`
+})
 
 watch(
-  () => chat.loadingRooms,
-  val => {
-    roomLoadingSince.value = val ? Date.now() : 0
-  },
-  { immediate: true }
-)
-
-watch(
-  () => chat.loadingMessages,
-  val => {
-    messageLoadingSince.value = val ? Date.now() : 0
-  },
-  { immediate: true }
+  () => chat.messages.length,
+  async () => {
+    await nextTick()
+    if (!listRef.value) return
+    listRef.value.scrollTop = listRef.value.scrollHeight
+  }
 )
 
 onMounted(async () => {
-  await ensureChatUiReady()
-  startAutoHealWatchdog()
   await chat.fetchRooms()
   if (chat.roomId) {
     await chat.fetchMessages(chat.roomId)
@@ -119,103 +208,445 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
-  stopAutoHealWatchdog()
+  cleanupRecorder()
   chat.closeStream()
   chat.stopTts()
 })
 
-type VacFetchPayload = {
-  room?: { roomId?: string }
-  options?: { reset?: boolean }
-}
-
-function normalizeVacPayload(payload: unknown): VacFetchPayload {
-  if (!payload || typeof payload !== 'object') return {}
-  const eventLike = payload as { detail?: unknown }
-  if (eventLike.detail && typeof eventLike.detail === 'object') {
-    return eventLike.detail as VacFetchPayload
+async function sendNow() {
+  const content = draft.value.trim()
+  if ((!content && !pendingFileName.value) || sending.value) return
+  sending.value = true
+  try {
+    if (content) {
+      await chat.sendText(content)
+    } else if (pendingFileName.value) {
+      await chat.sendMessagePayload({
+        content: `[附件] ${pendingFileName.value}`,
+        messageType: 'file'
+      })
+    }
+    draft.value = ''
+    pendingFileName.value = ''
+  } finally {
+    sending.value = false
   }
-  return payload as VacFetchPayload
 }
 
-async function onFetchMessages(payload: unknown) {
-  const normalized = normalizeVacPayload(payload)
-  const roomId = normalized.room?.roomId || chat.roomId || vacRooms.value[0]?.roomId
-  if (!roomId) {
-    chat.lastError = '聊天房间信息缺失，请刷新后重试。'
+function openFilePicker() {
+  fileInputRef.value?.click()
+}
+
+async function onPickFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  if (!chat.roomId) {
+    chat.lastError = '聊天房间未就绪，请稍后再试。'
     return
   }
-  const reset = normalized.options?.reset !== false
-  if (reset) {
-    await chat.fetchMessages(roomId, true)
-  } else {
-    await chat.fetchMoreMessages(roomId)
+
+  uploadingFile.value = true
+  pendingFileName.value = file.name
+  try {
+    const extension = file.name.includes('.') ? file.name.split('.').pop() || '' : ''
+    const messageType: MessageEntity['messageType'] = file.type.startsWith('image/') ? 'image' : 'file'
+    const fallbackContent = draft.value.trim() || `[附件] ${file.name}`
+    await chat.sendMessagePayload({
+      content: fallbackContent,
+      messageType,
+      files: [
+        {
+          name: file.name,
+          size: file.size,
+          type: file.type,
+          extension
+        }
+      ]
+    })
+    draft.value = ''
+    pendingFileName.value = ''
+  } catch (error) {
+    chat.lastError = `文件发送失败: ${(error as Error)?.message || 'unknown'}`
+  } finally {
+    uploadingFile.value = false
+    input.value = ''
   }
-  await chat.ensureSession()
 }
 
-async function onFetchMoreRooms() {
-  await chat.fetchMoreRooms()
-}
+async function startRecording() {
+  if (recording.value || uploadingVoice.value) return
+  if (!chat.roomId) {
+    chat.lastError = '聊天房间未就绪，请稍后再试。'
+    return
+  }
+  if (speechSupported.value) {
+    toggleSpeechRecognition()
+    return
+  }
+  if (!('MediaRecorder' in window)) {
+    chat.lastError = '当前浏览器不支持语音录制。'
+    return
+  }
 
-async function onSendMessage(payload: unknown) {
-  const normalized = normalizeVacPayload(payload)
-  const directContent = (normalized as { content?: unknown }).content
-  const messageContent = (normalized as { message?: { content?: unknown } }).message?.content
-  const content = typeof directContent === 'string'
-    ? directContent
-    : typeof messageContent === 'string'
-      ? messageContent
-      : ''
-  await chat.sendText(content)
-}
+  const allowed = await requestMicPermission()
+  if (!allowed) {
+    chat.lastError = '麦克风权限未开启。'
+    return
+  }
 
-async function ensureChatUiReady() {
-  if (chatUiReady.value) return
-  const module = await import('vue-advanced-chat')
-  module.register()
-  chatUiReady.value = true
-}
-
-function startAutoHealWatchdog() {
-  if (typeof window === 'undefined') return
-  stopAutoHealWatchdog()
-  autoHealTimerId.value = window.setInterval(async () => {
-    if (autoHealInFlight.value) return
-    const now = Date.now()
-
-    if (chat.loadingRooms && chat.rooms.length === 0 && roomLoadingSince.value && now - roomLoadingSince.value > 8000) {
-      autoHealInFlight.value = true
-      try {
-        await chat.fetchRooms(true)
-      } finally {
-        autoHealInFlight.value = false
-      }
-      return
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    mediaStreamRef.value = stream
+    voiceChunks.value = []
+    const preferred = 'audio/webm;codecs=opus'
+    const mimeType = MediaRecorder.isTypeSupported(preferred) ? preferred : 'audio/webm'
+    const recorder = new MediaRecorder(stream, { mimeType })
+    mediaRecorderRef.value = recorder
+    recorder.ondataavailable = ev => {
+      if (ev.data && ev.data.size > 0) voiceChunks.value.push(ev.data)
     }
-
-    const activeRoomId = chat.roomId || vacRooms.value[0]?.roomId || ''
-    if (chat.loadingMessages && activeRoomId && messageLoadingSince.value && now - messageLoadingSince.value > 8000) {
-      autoHealInFlight.value = true
-      try {
-        await chat.fetchMessages(activeRoomId, true)
-        await chat.ensureSession()
-      } finally {
-        autoHealInFlight.value = false
-      }
+    recorder.onerror = () => {
+      chat.lastError = '录音失败，请重试。'
+      cleanupRecorder()
+      recording.value = false
     }
-  }, 3000)
+    recorder.onstop = () => {
+      void processRecordedVoice()
+    }
+    recorder.start()
+    recording.value = true
+    startRecordingTicker()
+  } catch (error) {
+    chat.lastError = `无法开始录音: ${(error as Error)?.message || 'unknown'}`
+    cleanupRecorder()
+  }
 }
 
-function stopAutoHealWatchdog() {
-  if (!autoHealTimerId.value) return
-  window.clearInterval(autoHealTimerId.value)
-  autoHealTimerId.value = 0
+function stopRecording() {
+  if (speechSupported.value && speechRecognitionRef.value) {
+    speechRecognitionRef.value.stop()
+    return
+  }
+  const recorder = mediaRecorderRef.value
+  if (!recorder || recorder.state === 'inactive') return
+  recording.value = false
+  recorder.stop()
+}
+
+function getSpeechCtor(): SpeechCtor | null {
+  if (typeof window === 'undefined') return null
+  const maybeWindow = window as typeof window & {
+    SpeechRecognition?: SpeechCtor
+    webkitSpeechRecognition?: SpeechCtor
+  }
+  return maybeWindow.SpeechRecognition || maybeWindow.webkitSpeechRecognition || null
+}
+
+function createRecognition(): SpeechRecognitionLike | null {
+  const Ctor = getSpeechCtor()
+  if (!Ctor) return null
+  const recognition = new Ctor()
+  recognition.lang = 'zh-CN'
+  recognition.interimResults = true
+  recognition.continuous = false
+  recognition.onresult = event => {
+    const e = event as { results?: ArrayLike<ArrayLike<{ transcript?: string }>> }
+    if (!e.results) return
+    let transcript = ''
+    for (let i = 0; i < e.results.length; i += 1) {
+      const item = e.results[i]
+      if (!item || !item[0]) continue
+      transcript += item[0].transcript || ''
+    }
+    speechDraftText.value = transcript.trim()
+  }
+  recognition.onerror = () => {
+    recording.value = false
+    stopRecordingTicker()
+    chat.lastError = '语音识别失败，请重试。'
+  }
+  recognition.onend = () => {
+    void finalizeSpeechRecognition()
+  }
+  return recognition
+}
+
+function toggleSpeechRecognition() {
+  if (!speechRecognitionRef.value) {
+    speechRecognitionRef.value = createRecognition()
+  }
+  const recognition = speechRecognitionRef.value
+  if (!recognition) {
+    chat.lastError = '当前浏览器不支持语音识别。'
+    return
+  }
+  if (!recording.value) {
+    speechDraftText.value = ''
+    recording.value = true
+    chat.lastError = ''
+    startRecordingTicker()
+    recognition.start()
+    return
+  }
+  recognition.stop()
+}
+
+async function finalizeSpeechRecognition() {
+  const transcript = speechDraftText.value.trim()
+  recording.value = false
+  stopRecordingTicker()
+  recordingDurationSec.value = 0
+  speechDraftText.value = ''
+  if (!transcript) return
+  sending.value = true
+  try {
+    await chat.sendMessagePayload({
+      content: transcript,
+      messageType: 'audio',
+      meta: {
+        asrText: transcript,
+        asrSource: 'browser_speech'
+      }
+    })
+  } finally {
+    sending.value = false
+  }
+}
+
+function isMockAsrText(text: string) {
+  const normalized = text.replace(/\s+/g, '')
+  return normalized.includes('这是语音转写示例结果')
+}
+
+async function processRecordedVoice() {
+  const chunks = voiceChunks.value
+  const durationSec = recordingDurationSec.value
+  cleanupRecorder()
+  if (!chunks.length || !chat.roomId) return
+
+  uploadingVoice.value = true
+  try {
+    const blob = new Blob(chunks, { type: 'audio/webm' })
+    const asr = await voiceApi.asrByAudio(blob, chat.roomId)
+    if (!asr.text.trim() || isMockAsrText(asr.text)) {
+      throw new Error('后端 ASR 当前仍是示例模式，请启用真实语音转写服务。')
+    }
+    await chat.sendMessagePayload({
+      content: asr.text,
+      messageType: 'audio',
+      files: [
+        {
+          name: 'voice.webm',
+          type: blob.type || 'audio/webm',
+          extension: 'webm',
+          audio: true,
+          duration: durationSec > 0 ? durationSec : undefined
+        }
+      ],
+      meta: {
+        asrText: asr.text
+      }
+    })
+  } catch (error) {
+    chat.lastError = `语音发送失败: ${(error as Error)?.message || 'unknown'}`
+  } finally {
+    uploadingVoice.value = false
+  }
+}
+
+function cleanupRecorder() {
+  mediaRecorderRef.value = null
+  if (mediaStreamRef.value) {
+    mediaStreamRef.value.getTracks().forEach(track => track.stop())
+  }
+  mediaStreamRef.value = null
+  if (speechRecognitionRef.value) {
+    speechRecognitionRef.value.onresult = null
+    speechRecognitionRef.value.onerror = null
+    speechRecognitionRef.value.onend = null
+    speechRecognitionRef.value.stop()
+  }
+  speechRecognitionRef.value = null
+  speechDraftText.value = ''
+  stopRecordingTicker()
+  recordingDurationSec.value = 0
+}
+
+function startRecordingTicker() {
+  stopRecordingTicker()
+  recordingDurationSec.value = 0
+  recordTickerId = window.setInterval(() => {
+    recordingDurationSec.value += 1
+  }, 1000)
+}
+
+function stopRecordingTicker() {
+  if (!recordTickerId) return
+  window.clearInterval(recordTickerId)
+  recordTickerId = 0
+}
+
+function formatTime(input: string): string {
+  const date = new Date(input)
+  if (Number.isNaN(date.getTime())) return '-'
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
 }
 </script>
 
 <style scoped>
-:deep(.vac-room-footer) {
-  display: none !important;
+.chat-shell {
+  padding: 0;
+  overflow: hidden;
+}
+
+.chat-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 14px;
+  border-bottom: 1px solid #eaecf0;
+}
+
+.chat-list {
+  min-height: 360px;
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 12px;
+  background: #f9fafb;
+}
+
+.chat-empty {
+  color: #667085;
+  text-align: center;
+  padding: 60px 12px;
+}
+
+.msg {
+  margin-bottom: 10px;
+}
+
+.msg .meta {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 4px;
+  font-size: 12px;
+  color: #667085;
+}
+
+.msg .bubble {
+  display: inline-block;
+  max-width: 90%;
+  padding: 8px 10px;
+  border-radius: 10px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.msg.me {
+  text-align: right;
+}
+
+.msg.me .meta {
+  justify-content: flex-end;
+}
+
+.msg.me .bubble {
+  background: #1d4ed8;
+  color: #fff;
+}
+
+.msg.ai .bubble {
+  background: #fff;
+  border: 1px solid #eaecf0;
+  color: #101828;
+}
+
+.chat-input {
+  display: grid;
+  grid-template-columns: 44px 1fr 92px;
+  gap: 8px;
+  padding: 12px;
+  padding-bottom: 8px;
+  border-top: 1px solid #eaecf0;
+  background: #fff;
+  align-items: center;
+}
+
+.chat-input textarea {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid #d0d5dd;
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.chat-input button {
+  border: 0;
+  border-radius: 8px;
+  background: #175cd3;
+  color: #fff;
+  height: 44px;
+}
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border: 1px solid #d0d5dd;
+  border-radius: 8px;
+  color: #344054;
+  background: #fff;
+}
+
+.icon-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
+.icon-btn:disabled {
+  opacity: 0.5;
+}
+
+.voice-panel {
+  padding: 0 12px 12px;
+}
+
+.voice-main-btn {
+  width: 100%;
+  min-height: 52px;
+  border: 1px solid #d0d5dd;
+  border-radius: 12px;
+  background: #f8f9fc;
+  color: #1d2939;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  font-weight: 600;
+}
+
+.voice-main-btn svg {
+  width: 22px;
+  height: 22px;
+}
+
+.voice-main-btn.recording {
+  border-color: #fda29b;
+  background: #fff1f3;
+  color: #b42318;
+}
+
+.voice-main-btn:disabled {
+  opacity: 0.6;
+}
+
+.chat-input-hint {
+  padding-top: 8px;
+  font-size: 12px;
+  color: #667085;
 }
 </style>

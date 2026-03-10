@@ -31,5 +31,5 @@ Thumbs.db
 .idea/
 
 # local cloned references (not source-of-truth)
-vue-advanced-chat-main/
+ref/
 .vercel

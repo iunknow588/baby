@@ -53,7 +53,7 @@ cp .env.local.example .env.local
 
 ## Notes
 
-- 当前已接入 `vue-advanced-chat` 基础聊天壳。
+- 聊天页已改为原生 Vue 组件（不再依赖 `vue-advanced-chat`）。
 - 聊天页采用单输入区交互：语音仅在本地转文字，发送到后端始终是文本。
 - AI 回复可在同一输入区触发 TTS 播报，不再使用独立语音草稿窗口。
 - 聊天/联系人页面已具备 mock 回退能力，便于先跑通界面。

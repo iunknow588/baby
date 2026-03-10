@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
+import { ApiError } from '../../types/api'
 import type { MessageEntity } from '../../types/domain'
 
 const sendMessageMock = vi.fn()
@@ -34,6 +35,7 @@ vi.mock('../../platform/env', () => ({
 
 describe('chat store state machine', () => {
   beforeEach(() => {
+    vi.useRealTimers()
     setActivePinia(createPinia())
     sendMessageMock.mockReset()
     listRoomsMock.mockReset()
@@ -156,5 +158,66 @@ describe('chat store state machine', () => {
 
     expect(store.rooms).toHaveLength(2)
     expect(store.rooms.find(item => item.roomId === 'r_1')?.roomName).toBe('Room 1 updated')
+  })
+
+  it('heals MVP send timeout by refreshing history and clears lastError', async () => {
+    vi.useFakeTimers()
+    const { useChatStore } = await import('../chat')
+    const store = useChatStore()
+    store.roomId = 'r_mvp_main'
+
+    sendMessageMock.mockRejectedValueOnce(new ApiError('ECONNABORTED', 'timeout', undefined, {
+      method: 'POST',
+      path: '/chat'
+    }))
+    listMessagesMock.mockResolvedValueOnce({
+      list: [
+        {
+          _id: 'm_user_1',
+          roomId: 'r_mvp_main',
+          senderId: 'u_current',
+          senderType: 'user',
+          messageType: 'text',
+          content: 'hello',
+          createdAt: '2026-03-10T00:00:00.000Z',
+          status: 'delivered'
+        }
+      ],
+      nextCursor: undefined,
+      hasMore: false
+    })
+
+    const pending = store.sendText('hello')
+    await vi.advanceTimersByTimeAsync(1300)
+    await pending
+
+    expect(listMessagesMock).toHaveBeenCalledWith('r_mvp_main', undefined)
+    expect(store.lastError).toBe('')
+    expect(store.messages.some(item => item.content === 'hello' && item.status === 'delivered')).toBe(true)
+  })
+
+  it('keeps error state when MVP reconciliation cannot find delivered message', async () => {
+    vi.useFakeTimers()
+    const { useChatStore } = await import('../chat')
+    const store = useChatStore()
+    store.roomId = 'r_mvp_main'
+
+    sendMessageMock.mockRejectedValueOnce(new ApiError('ECONNABORTED', 'timeout', undefined, {
+      method: 'POST',
+      path: '/chat'
+    }))
+    listMessagesMock.mockResolvedValue({
+      list: [],
+      nextCursor: undefined,
+      hasMore: false
+    })
+
+    const pending = store.sendText('still failing')
+    await vi.advanceTimersByTimeAsync(4000)
+    await pending
+
+    expect(listMessagesMock).toHaveBeenCalledTimes(2)
+    expect(store.lastError).toContain('[消息发送]')
+    expect(store.messages).toHaveLength(0)
   })
 })

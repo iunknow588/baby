@@ -22,6 +22,10 @@ const STATUS_SET = new Set<MessageEntity['status']>(['local', 'sending', 'delive
 const FALLBACK_ROOM_ID = 'r_mvp_main'
 const FALLBACK_ROOM_NAME = 'AI 助手'
 
+function sleep(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
 function createFallbackRoom(): RoomEntity {
   return {
     roomId: FALLBACK_ROOM_ID,
@@ -353,23 +357,35 @@ export const useChatStore = defineStore('chat', {
       }
     },
 
-    async sendText(content: string) {
-      if (!this.roomId || !content.trim()) return
-
+    async sendMessagePayload(payload: {
+      content: string
+      messageType?: MessageEntity['messageType']
+      files?: MessageEntity['files']
+      meta?: MessageEntity['meta']
+    }) {
+      if (!this.roomId) return
+      const normalizedContent = payload.content.trim()
+      if (!normalizedContent && (!payload.files || payload.files.length === 0)) return
       const clientMessageId = `cm_${Date.now()}`
       const localMessage: MessageEntity = {
         _id: clientMessageId,
         roomId: this.roomId,
         senderId: 'u_current',
         senderType: 'user',
-        messageType: 'text',
-        content,
+        messageType: payload.messageType || 'text',
+        content: normalizedContent,
         createdAt: new Date().toISOString(),
-        status: 'sending'
+        status: 'sending',
+        files: payload.files,
+        meta: payload.meta
       }
 
       this.messages = [...this.messages, localMessage]
       await this.persistMessage(localMessage)
+    },
+
+    async sendText(content: string) {
+      await this.sendMessagePayload({ content, messageType: 'text' })
     },
 
     async retryMessage(messageId: string) {
@@ -401,6 +417,29 @@ export const useChatStore = defineStore('chat', {
           item._id === message._id ? { ...item, status: 'failed' } : item
         )
         this.lastError = withFeatureError('消息发送', error)
+
+        // MVP room uses async backend orchestration; when request phase fails,
+        // server-side message may still be persisted shortly after.
+        if (message.roomId === FALLBACK_ROOM_ID) {
+          for (let attempt = 0; attempt < 2; attempt += 1) {
+            await sleep(1200 * (attempt + 1))
+            try {
+              await this.fetchMessages(message.roomId, true)
+              const hasDelivered = this.messages.some(
+                item =>
+                  item.senderType === 'user' &&
+                  item.content === message.content &&
+                  item.status !== 'failed'
+              )
+              if (hasDelivered) {
+                this.lastError = ''
+                break
+              }
+            } catch {
+              // keep original error if refresh fails
+            }
+          }
+        }
       }
     },
 
