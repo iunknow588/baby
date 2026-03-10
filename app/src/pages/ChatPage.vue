@@ -58,6 +58,42 @@
 
     <form class="chat-input" @submit.prevent="sendNow">
       <input ref="fileInputRef" type="file" style="display: none" @change="onPickFile" />
+      <input
+        ref="cameraInputRef"
+        type="file"
+        accept="image/*"
+        capture="environment"
+        style="display: none"
+        @change="onPickCamera"
+      />
+      <button
+        class="voice-btn"
+        type="button"
+        :class="{ recording, canceling: voiceWillCancel }"
+        :disabled="sending || uploadingVoice || uploadingFile"
+        @pointerdown.prevent="onVoicePressStart"
+        @pointermove.prevent="onVoicePressMove"
+        @pointerup.prevent="onVoicePressEnd"
+        @pointercancel.prevent="onVoicePressCancel"
+        @pointerleave.prevent="onVoicePressMove"
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="9" y="3" width="6" height="12" rx="3" ry="3" fill="none" stroke="currentColor" stroke-width="2" />
+          <path d="M5 11a7 7 0 0 0 14 0M12 18v3M8 21h8" fill="none" stroke="currentColor" stroke-width="2" />
+        </svg>
+        <span>{{ recording ? (voiceWillCancel ? '松开取消' : '松开发送') : '按住说话' }}</span>
+      </button>
+      <textarea
+        ref="textInputRef"
+        v-model="draft"
+        class="chat-text-input"
+        placeholder="输入消息..."
+        rows="1"
+        :disabled="sending || uploadingVoice"
+        @input="adjustTextareaHeight"
+        @keydown.enter.exact.prevent="sendNow"
+        @focus="composerMenuOpen = false"
+      />
       <button class="icon-btn" type="button" :disabled="sending || uploadingFile" title="上传文件" @click="openFilePicker">
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <path
@@ -70,37 +106,31 @@
           />
         </svg>
       </button>
-      <textarea
-        v-model="draft"
-        placeholder="输入消息..."
-        rows="3"
+      <button
+        class="send-btn"
+        :class="{ plus: primaryAction === 'plus' }"
+        :type="primaryAction === 'send' ? 'submit' : 'button'"
         :disabled="sending || uploadingVoice"
-      />
-      <button type="submit" :disabled="sending || uploadingVoice || (!draft.trim() && !pendingFileName)">
-        {{ sending ? '发送中...' : '发送' }}
+        @click="onPrimaryActionClick"
+      >
+        {{ sending ? '发送中...' : primaryAction === 'send' ? '发送' : '+' }}
       </button>
     </form>
-    <div class="voice-panel">
-      <button
-        class="voice-main-btn"
-        type="button"
-        :class="{ recording }"
-        :disabled="sending || uploadingVoice || uploadingFile"
-        @click="recording ? stopRecording() : startRecording()"
-      >
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <rect x="9" y="3" width="6" height="12" rx="3" ry="3" fill="none" stroke="currentColor" stroke-width="2" />
-          <path d="M5 11a7 7 0 0 0 14 0M12 18v3M8 21h8" fill="none" stroke="currentColor" stroke-width="2" />
-        </svg>
-        <span>{{ recording ? '停止录音并发送' : '点击开始语音输入' }}</span>
+    <div v-if="composerMenuOpen" class="composer-menu">
+      <button class="composer-menu-item" type="button" @click="onMenuFile">
+        <span>文件</span>
       </button>
-      <div class="chat-input-hint">
-        <span v-if="recording" style="color: #b42318">录音中 {{ recordingDurationText }}</span>
-        <span v-else-if="uploadingVoice">语音识别中...</span>
-        <span v-else-if="uploadingFile">文件处理中...</span>
-        <span v-else-if="pendingFileName">待发送文件: {{ pendingFileName }}</span>
-        <span v-else>支持文本、文件与语音输入</span>
-      </div>
+      <button class="composer-menu-item" type="button" @click="onMenuCamera">
+        <span>拍照</span>
+      </button>
+    </div>
+    <div class="chat-input-hint">
+      <span v-if="recording && !voiceWillCancel" style="color: #b42318">录音中 {{ recordingDurationText }}（上滑取消）</span>
+      <span v-else-if="recording && voiceWillCancel" style="color: #b42318">松开后取消发送</span>
+      <span v-else-if="uploadingVoice">语音识别中...</span>
+      <span v-else-if="uploadingFile">文件处理中...</span>
+      <span v-else-if="pendingFileName">待发送文件: {{ pendingFileName }}</span>
+      <span v-else>支持文本、文件与语音输入</span>
     </div>
   </section>
 
@@ -150,13 +180,22 @@ const uploadingFile = ref(false)
 const pendingFileName = ref('')
 const listRef = ref<HTMLElement | null>(null)
 const fileInputRef = ref<HTMLInputElement | null>(null)
+const cameraInputRef = ref<HTMLInputElement | null>(null)
+const textInputRef = ref<HTMLTextAreaElement | null>(null)
 const mediaRecorderRef = ref<MediaRecorder | null>(null)
 const mediaStreamRef = ref<MediaStream | null>(null)
 const voiceChunks = ref<Blob[]>([])
 const speechRecognitionRef = ref<SpeechRecognitionLike | null>(null)
 const speechDraftText = ref('')
+const speechCancelled = ref(false)
+const skipNextVoiceSubmit = ref(false)
+const voicePressing = ref(false)
+const voiceWillCancel = ref(false)
+const voicePressStartY = ref(0)
+const composerMenuOpen = ref(false)
 const recordingDurationSec = ref(0)
 let recordTickerId = 0
+const VOICE_CANCEL_DISTANCE = 56
 
 const failedMessages = computed(() => chat.messages.filter(msg => msg.status === 'failed'))
 const currentRoomName = computed(() => {
@@ -184,6 +223,9 @@ const tailMessagesText = computed(() => {
     .map(item => `${item._id}:${item.senderId}:${item.status}:${(item.content || '').slice(0, 24)}`)
     .join(' | ')
 })
+const primaryAction = computed<'send' | 'plus'>(() =>
+  draft.value.trim() || pendingFileName.value ? 'send' : 'plus'
+)
 const recordingDurationText = computed(() => {
   const mins = String(Math.floor(recordingDurationSec.value / 60)).padStart(2, '0')
   const secs = String(recordingDurationSec.value % 60).padStart(2, '0')
@@ -198,8 +240,15 @@ watch(
     listRef.value.scrollTop = listRef.value.scrollHeight
   }
 )
+watch(draft, () => {
+  if (draft.value.trim()) {
+    composerMenuOpen.value = false
+  }
+  adjustTextareaHeight()
+})
 
 onMounted(async () => {
+  adjustTextareaHeight()
   await chat.fetchRooms()
   if (chat.roomId) {
     await chat.fetchMessages(chat.roomId)
@@ -228,19 +277,67 @@ async function sendNow() {
     }
     draft.value = ''
     pendingFileName.value = ''
+    composerMenuOpen.value = false
   } finally {
     sending.value = false
+    adjustTextareaHeight()
+    await nextTick()
+    focusTextInput()
   }
+}
+
+function adjustTextareaHeight() {
+  const el = textInputRef.value
+  if (!el) return
+  el.style.height = 'auto'
+  const nextHeight = Math.max(44, Math.min(el.scrollHeight, 120))
+  el.style.height = `${nextHeight}px`
+}
+
+function onPrimaryActionClick() {
+  if (primaryAction.value !== 'plus') return
+  composerMenuOpen.value = !composerMenuOpen.value
+}
+
+function onMenuFile() {
+  composerMenuOpen.value = false
+  openFilePicker()
+}
+
+function onMenuCamera() {
+  composerMenuOpen.value = false
+  openCameraPicker()
 }
 
 function openFilePicker() {
   fileInputRef.value?.click()
 }
 
+function openCameraPicker() {
+  cameraInputRef.value?.click()
+}
+
+function focusTextInput() {
+  textInputRef.value?.focus()
+}
+
 async function onPickFile(event: Event) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
   if (!file) return
+  await sendSelectedFile(file)
+  input.value = ''
+}
+
+async function onPickCamera(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  await sendSelectedFile(file)
+  input.value = ''
+}
+
+async function sendSelectedFile(file: File) {
   if (!chat.roomId) {
     chat.lastError = '聊天房间未就绪，请稍后再试。'
     return
@@ -270,7 +367,8 @@ async function onPickFile(event: Event) {
     chat.lastError = `文件发送失败: ${(error as Error)?.message || 'unknown'}`
   } finally {
     uploadingFile.value = false
-    input.value = ''
+    await nextTick()
+    focusTextInput()
   }
 }
 
@@ -334,6 +432,46 @@ function stopRecording() {
   recorder.stop()
 }
 
+function onVoicePressStart(event: PointerEvent) {
+  if (event.pointerType === 'mouse' && event.button !== 0) return
+  voicePressing.value = true
+  voiceWillCancel.value = false
+  voicePressStartY.value = event.clientY || 0
+  void startRecording()
+}
+
+function onVoicePressMove(event: PointerEvent) {
+  if (!voicePressing.value || !recording.value) return
+  const deltaY = voicePressStartY.value - (event.clientY || 0)
+  voiceWillCancel.value = deltaY > VOICE_CANCEL_DISTANCE
+}
+
+function onVoicePressEnd(event: PointerEvent) {
+  if (!voicePressing.value) return
+  onVoicePressMove(event)
+  voicePressing.value = false
+  if (!recording.value) {
+    voiceWillCancel.value = false
+    return
+  }
+  if (voiceWillCancel.value) {
+    onVoicePressCancel()
+    return
+  }
+  stopRecording()
+  voiceWillCancel.value = false
+}
+
+function onVoicePressCancel() {
+  voicePressing.value = false
+  voiceWillCancel.value = false
+  if (!recording.value) return
+  speechCancelled.value = true
+  skipNextVoiceSubmit.value = true
+  stopRecording()
+  chat.lastError = '已取消语音输入'
+}
+
 function getSpeechCtor(): SpeechCtor | null {
   if (typeof window === 'undefined') return null
   const maybeWindow = window as typeof window & {
@@ -383,6 +521,7 @@ function toggleSpeechRecognition() {
   }
   if (!recording.value) {
     speechDraftText.value = ''
+    speechCancelled.value = false
     recording.value = true
     chat.lastError = ''
     startRecordingTicker()
@@ -398,6 +537,10 @@ async function finalizeSpeechRecognition() {
   stopRecordingTicker()
   recordingDurationSec.value = 0
   speechDraftText.value = ''
+  if (speechCancelled.value) {
+    speechCancelled.value = false
+    return
+  }
   if (!transcript) return
   sending.value = true
   try {
@@ -423,6 +566,10 @@ async function processRecordedVoice() {
   const chunks = voiceChunks.value
   const durationSec = recordingDurationSec.value
   cleanupRecorder()
+  if (skipNextVoiceSubmit.value) {
+    skipNextVoiceSubmit.value = false
+    return
+  }
   if (!chunks.length || !chat.roomId) return
 
   uploadingVoice.value = true
@@ -469,6 +616,9 @@ function cleanupRecorder() {
   }
   speechRecognitionRef.value = null
   speechDraftText.value = ''
+  voicePressing.value = false
+  voiceWillCancel.value = false
+  voicePressStartY.value = 0
   stopRecordingTicker()
   recordingDurationSec.value = 0
 }
@@ -565,29 +715,37 @@ function formatTime(input: string): string {
 
 .chat-input {
   display: grid;
-  grid-template-columns: 44px 1fr 92px;
+  grid-template-columns: 84px 1fr 44px 84px;
   gap: 8px;
   padding: 12px;
-  padding-bottom: 8px;
   border-top: 1px solid #eaecf0;
   background: #fff;
   align-items: center;
 }
 
-.chat-input textarea {
+.chat-text-input {
   width: 100%;
-  resize: vertical;
+  min-height: 44px;
+  max-height: 120px;
+  resize: none;
   border: 1px solid #d0d5dd;
-  border-radius: 8px;
-  padding: 8px 10px;
+  border-radius: 22px;
+  padding: 10px 14px;
+  line-height: 1.4;
 }
 
-.chat-input button {
+.send-btn {
   border: 0;
-  border-radius: 8px;
+  border-radius: 22px;
   background: #175cd3;
   color: #fff;
   height: 44px;
+  font-weight: 600;
+}
+
+.send-btn.plus {
+  font-size: 24px;
+  line-height: 1;
 }
 
 .icon-btn {
@@ -611,42 +769,58 @@ function formatTime(input: string): string {
   opacity: 0.5;
 }
 
-.voice-panel {
-  padding: 0 12px 12px;
-}
-
-.voice-main-btn {
-  width: 100%;
-  min-height: 52px;
+.voice-btn {
+  height: 44px;
   border: 1px solid #d0d5dd;
-  border-radius: 12px;
-  background: #f8f9fc;
+  border-radius: 22px;
+  background: #fff;
   color: #1d2939;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 10px;
-  font-weight: 600;
+  gap: 6px;
+  font-weight: 500;
 }
 
-.voice-main-btn svg {
-  width: 22px;
-  height: 22px;
+.voice-btn svg {
+  width: 18px;
+  height: 18px;
 }
 
-.voice-main-btn.recording {
+.voice-btn.recording {
   border-color: #fda29b;
   background: #fff1f3;
   color: #b42318;
 }
 
-.voice-main-btn:disabled {
+.voice-btn.canceling {
+  border-color: #b42318;
+  background: #fef3f2;
+  color: #b42318;
+}
+
+.voice-btn:disabled {
   opacity: 0.6;
 }
 
 .chat-input-hint {
-  padding-top: 8px;
+  padding: 0 12px 12px;
   font-size: 12px;
   color: #667085;
+}
+
+.composer-menu {
+  display: flex;
+  gap: 10px;
+  padding: 0 12px 10px;
+}
+
+.composer-menu-item {
+  border: 1px solid #d0d5dd;
+  background: #fff;
+  color: #344054;
+  border-radius: 10px;
+  height: 36px;
+  min-width: 72px;
 }
 </style>
