@@ -138,6 +138,11 @@ log_info "Base URL: $BASE_URL"
 log_info "Timeout: ${TIMEOUT}s"
 log_info "Strict Mode: ${STRICT_MODE}"
 
+print_title "Web 路由检查"
+MISSING_WEB=0
+check_endpoint "web-root" "GET" "/" || MISSING_WEB=$((MISSING_WEB + 1))
+check_endpoint "web-chat-route" "GET" "/chat" || MISSING_WEB=$((MISSING_WEB + 1))
+
 print_title "Baby MVP 接口检查"
 MISSING_MVP=0
 check_endpoint "user-upsert" "POST" "/api/user" '{"deviceId":"dev_probe_001"}' || MISSING_MVP=$((MISSING_MVP + 1))
@@ -154,9 +159,10 @@ check_endpoint "voice-tts" "POST" "/api/voice/tts" '{"text":"probe"}' || MISSING
 check_endpoint "social-contacts" "GET" "/api/social/contacts?limit=1" || MISSING_PLATFORM=$((MISSING_PLATFORM + 1))
 
 print_title "结论"
-if [ "$MISSING_MVP" -eq 0 ] && [ "$MISSING_PLATFORM" -eq 0 ]; then
+if [ "$MISSING_WEB" -eq 0 ] && [ "$MISSING_MVP" -eq 0 ] && [ "$MISSING_PLATFORM" -eq 0 ]; then
   log_info "Baby MVP + Platform 接口已可联调（或仅缺鉴权）"
 else
+  log_warn "Web 路由缺口数量: $MISSING_WEB"
   log_warn "Baby MVP 接口缺口数量: $MISSING_MVP"
   log_warn "Baby Platform 接口缺口数量: $MISSING_PLATFORM"
   log_warn "说明: 通常表示远程路由未完整部署或环境变量缺失"
