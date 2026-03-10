@@ -17,6 +17,19 @@
     <p v-if="chat.connectionHint" style="margin-top: 8px; color: #b42318">{{ chat.connectionHint }}</p>
   </section>
 
+  <section v-if="showDiag" class="panel" style="margin-bottom: 12px; font-size: 12px; color: #475467">
+    <div>diag: chatUiReady={{ chatUiReady }} roomId={{ chat.roomId || 'none' }}</div>
+    <div>
+      diag: loadingRooms={{ chat.loadingRooms }} roomsLoaded={{ chat.roomsLoaded }} rooms={{ chat.rooms.length }}
+      vacLoadingRooms={{ vacLoadingRooms }} vacRoomsLoaded={{ vacRoomsLoaded }}
+    </div>
+    <div>
+      diag: loadingMessages={{ chat.loadingMessages }} messagesLoaded={{ chat.messagesLoaded }} messages={{ chat.messages.length }}
+      vacMessagesLoaded={{ vacMessagesLoaded }}
+    </div>
+    <div>diag: sessionId={{ chat.sessionId || 'none' }} streamConnected={{ chat.streamConnected }}</div>
+  </section>
+
   <section v-if="chatUiReady" class="panel" style="padding: 0; overflow: hidden">
     <vue-advanced-chat
       :current-user-id.prop="auth.userId"
@@ -52,7 +65,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted } from 'vue'
+import { computed, onBeforeUnmount, onMounted, watch } from 'vue'
 import { ref } from 'vue'
 import { useAuthStore } from '../stores/auth'
 import { useChatStore } from '../stores/chat'
@@ -70,9 +83,36 @@ const vacRoomsLoaded = computed(() => chat.roomsLoaded || (!chat.loadingRooms &&
 const vacMessagesLoaded = computed(
   () => chat.messagesLoaded || (!chat.loadingMessages && !!chat.roomId)
 )
+const showDiag = computed(() => {
+  if (typeof window === 'undefined') return false
+  const search = new URLSearchParams(window.location.search)
+  return search.get('diag') === '1' || localStorage.getItem('baby_diag') === '1'
+})
+
+const roomLoadingSince = ref(0)
+const messageLoadingSince = ref(0)
+const autoHealInFlight = ref(false)
+const autoHealTimerId = ref(0)
+
+watch(
+  () => chat.loadingRooms,
+  val => {
+    roomLoadingSince.value = val ? Date.now() : 0
+  },
+  { immediate: true }
+)
+
+watch(
+  () => chat.loadingMessages,
+  val => {
+    messageLoadingSince.value = val ? Date.now() : 0
+  },
+  { immediate: true }
+)
 
 onMounted(async () => {
   await ensureChatUiReady()
+  startAutoHealWatchdog()
   await chat.fetchRooms()
   if (chat.roomId) {
     await chat.fetchMessages(chat.roomId)
@@ -81,6 +121,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  stopAutoHealWatchdog()
   chat.closeStream()
   chat.stopTts()
 })
@@ -136,6 +177,42 @@ async function ensureChatUiReady() {
   const module = await import('vue-advanced-chat')
   module.register()
   chatUiReady.value = true
+}
+
+function startAutoHealWatchdog() {
+  if (typeof window === 'undefined') return
+  stopAutoHealWatchdog()
+  autoHealTimerId.value = window.setInterval(async () => {
+    if (autoHealInFlight.value) return
+    const now = Date.now()
+
+    if (chat.loadingRooms && chat.rooms.length === 0 && roomLoadingSince.value && now - roomLoadingSince.value > 8000) {
+      autoHealInFlight.value = true
+      try {
+        await chat.fetchRooms(true)
+      } finally {
+        autoHealInFlight.value = false
+      }
+      return
+    }
+
+    const activeRoomId = chat.roomId || vacRooms.value[0]?.roomId || ''
+    if (chat.loadingMessages && activeRoomId && messageLoadingSince.value && now - messageLoadingSince.value > 8000) {
+      autoHealInFlight.value = true
+      try {
+        await chat.fetchMessages(activeRoomId, true)
+        await chat.ensureSession()
+      } finally {
+        autoHealInFlight.value = false
+      }
+    }
+  }, 3000)
+}
+
+function stopAutoHealWatchdog() {
+  if (!autoHealTimerId.value) return
+  window.clearInterval(autoHealTimerId.value)
+  autoHealTimerId.value = 0
 }
 </script>
 
