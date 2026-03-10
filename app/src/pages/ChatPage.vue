@@ -36,16 +36,6 @@
   </section>
   <section v-else class="panel">聊天组件加载中...</section>
 
-  <UnifiedComposer
-    :disabled="!chat.roomId"
-    :can-play-tts="!!lastAiText"
-    :tts-loading="chat.ttsLoading"
-    :tts-playing="chat.ttsPlaying"
-    @send="onUnifiedSend"
-    @play-tts="playLastAiText"
-    @stop-tts="chat.stopTts"
-  />
-
   <section v-if="failedMessages.length" class="panel" style="margin-top: 12px">
     <h3 class="page-title">发送失败消息</h3>
     <ul>
@@ -67,7 +57,6 @@ import { ref } from 'vue'
 import { useAuthStore } from '../stores/auth'
 import { useChatStore } from '../stores/chat'
 import { chatAdapter } from '../adapters/chatAdapter'
-import UnifiedComposer from '../components/chat/UnifiedComposer.vue'
 
 const auth = useAuthStore()
 const chat = useChatStore()
@@ -76,12 +65,6 @@ const chatUiReady = ref(false)
 const vacRooms = computed(() => chatAdapter.toVacRooms(chat.rooms))
 const vacMessages = computed(() => chatAdapter.toVacMessages(chat.messages))
 const failedMessages = computed(() => chat.messages.filter(msg => msg.status === 'failed'))
-const lastAiText = computed(() => {
-  const target = [...chat.messages]
-    .reverse()
-    .find(msg => msg.senderType === 'ai' && msg.messageType === 'text' && !!msg.content)
-  return target?.content || ''
-})
 
 onMounted(async () => {
   await ensureChatUiReady()
@@ -143,15 +126,6 @@ async function onSendMessage(payload: unknown) {
   await chat.sendText(content)
 }
 
-async function onUnifiedSend(content: string) {
-  await chat.sendText(content)
-}
-
-async function playLastAiText() {
-  if (!lastAiText.value) return
-  await chat.requestTtsAndPlay(lastAiText.value)
-}
-
 async function ensureChatUiReady() {
   if (chatUiReady.value) return
   const module = await import('vue-advanced-chat')
@@ -161,7 +135,6 @@ async function ensureChatUiReady() {
 </script>
 
 <style scoped>
-:deep(.vac-box-footer),
 :deep(.vac-room-footer) {
   display: none !important;
 }
