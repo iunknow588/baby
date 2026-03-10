@@ -96,7 +96,7 @@ function normalizeVacPayload(payload: unknown): VacFetchPayload {
 
 async function onFetchMessages(payload: unknown) {
   const normalized = normalizeVacPayload(payload)
-  const roomId = normalized.room?.roomId
+  const roomId = normalized.room?.roomId || chat.roomId || vacRooms.value[0]?.roomId
   if (!roomId) {
     chat.lastError = '聊天房间信息缺失，请刷新后重试。'
     return
