@@ -2,10 +2,19 @@ import { logInfo } from './logger'
 
 const NOISE_MESSAGE_PATTERNS = [
   'Cannot redefine property: ethereum',
-  'Cannot set property chainId of #<r> which has only a getter'
+  'Cannot set property chainId of #<r> which has only a getter',
+  "WebSocket connection to 'ws://localhost:8081/' failed",
+  'Failed to load resource: net::ERR_FILE_NOT_FOUND',
+  'Failed to load resource: net::ERR_FAILED'
 ]
 
-const NOISE_STACK_PATTERNS = ['chrome-extension://', 'inpage.js', 'evmAsk.js', 'refresh.js']
+const NOISE_STACK_PATTERNS = [
+  'chrome-extension://',
+  'inpage.js',
+  'evmAsk.js',
+  'refresh.js',
+  'ws://localhost:8081/'
+]
 
 function asText(value: unknown): string {
   if (!value) return ''
@@ -33,19 +42,27 @@ export function installGlobalNoiseFilter() {
     'error',
     event => {
       const message = asText(event.message)
-      const stack = `${asText(event.error)}\n${asText(event.filename)}`
+      const target = event.target as { src?: string; href?: string } | null
+      const targetRef = target?.src || target?.href || ''
+      const stack = `${asText(event.error)}\n${asText(event.filename)}\n${targetRef}`
       if (!isExtensionNoise(message, stack)) return
       event.preventDefault()
-      logInfo('ignore_extension_noise:error', { message, stack })
+      event.stopImmediatePropagation()
+      logInfo('ignore_extension_noise:error', { message, stack, targetRef })
     },
     true
   )
 
   window.addEventListener('unhandledrejection', event => {
     const reasonText = asText(event.reason)
-    const stack = event.reason instanceof Error ? asText(event.reason.stack) : ''
+    const reasonMessage =
+      event.reason && typeof event.reason === 'object' ? asText((event.reason as { message?: unknown }).message) : ''
+    const reasonStack =
+      event.reason && typeof event.reason === 'object' ? asText((event.reason as { stack?: unknown }).stack) : ''
+    const stack = `${reasonMessage}\n${reasonStack}`
     if (!isExtensionNoise(reasonText, stack)) return
     event.preventDefault()
+    event.stopImmediatePropagation()
     logInfo('ignore_extension_noise:unhandledrejection', { reason: reasonText })
   })
 }
