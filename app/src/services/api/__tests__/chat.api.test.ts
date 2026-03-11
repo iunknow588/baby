@@ -52,8 +52,8 @@ describe('chatApi', () => {
     expect(postSpy).toHaveBeenNthCalledWith(3, '/chat/sessions', { roomId: 'r_1' }, expect.any(Object))
   })
 
-  it('falls back to local session id when conversations endpoint fails', async () => {
-    vi.spyOn(apiClient, 'post')
+  it('falls back to /chat/sessions when conversations endpoint fails', async () => {
+    const postSpy = vi.spyOn(apiClient, 'post')
       .mockResolvedValueOnce({
         data: {
           success: true,
@@ -68,11 +68,55 @@ describe('chatApi', () => {
         }
       } as never)
       .mockRejectedValueOnce(new Error('network fail'))
+      .mockResolvedValueOnce({
+        data: {
+          success: true,
+          data: {
+            sessionId: 'session_fallback_r_1'
+          },
+          error: null,
+          traceId: 'trc_fb'
+        }
+      } as never)
 
     const result = await chatApi.createSession({ roomType: 'group', topicId: 'r_1' })
 
     expect(result.roomId).toBe('r_1')
-    expect(result.sessionId.startsWith('s_r_1_')).toBe(true)
+    expect(result.sessionId).toBe('session_fallback_r_1')
+    expect(postSpy).toHaveBeenNthCalledWith(3, '/chat/sessions', { roomId: 'r_1' }, expect.any(Object))
+  })
+
+  it('creates MVP session directly via /chat/sessions', async () => {
+    const postSpy = vi.spyOn(apiClient, 'post')
+      .mockResolvedValueOnce({
+        data: {
+          success: true,
+          data: {
+            id: 'u_1',
+            deviceId: 'dev_1',
+            createdAt: '2026-03-09T00:00:00.000Z',
+            lastActive: '2026-03-09T00:00:00.000Z'
+          },
+          error: null,
+          traceId: 'trc_0'
+        }
+      } as never)
+      .mockResolvedValueOnce({
+        data: {
+          success: true,
+          data: {
+            sessionId: 'session_mvp_main'
+          },
+          error: null,
+          traceId: 'trc_1'
+        }
+      } as never)
+
+    const result = await chatApi.createSession({ roomType: 'ai_dm', topicId: 'r_mvp_main' })
+
+    expect(result).toEqual({ sessionId: 'session_mvp_main', roomId: 'r_mvp_main' })
+    expect(postSpy).toHaveBeenNthCalledWith(2, '/chat/sessions', { roomId: 'r_mvp_main' }, expect.any(Object))
+    expect(postSpy).not.toHaveBeenCalledWith('/v1/conversations', expect.anything(), expect.anything())
   })
 
   it('returns single MVP room from history', async () => {

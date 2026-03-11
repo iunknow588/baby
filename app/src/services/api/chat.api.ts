@@ -203,6 +203,15 @@ export const chatApi = {
   async createSession(payload: { roomType: RoomEntity['roomType']; targetId?: string; topicId?: string }) {
     const deviceId = getOrCreateDeviceId()
     await ensureUser(deviceId)
+    const fallbackRoomId = payload.targetId || payload.topicId || MVP_ROOM_ID
+
+    if (fallbackRoomId === MVP_ROOM_ID || payload.roomType === 'ai_dm') {
+      const sessionRes = await apiClient.post('/chat/sessions', { roomId: fallbackRoomId }, withActorHeaders())
+      const sessionBody = parseApiEnvelope<unknown>(sessionRes.data)
+      const sessionData = ensureObject(sessionBody.data, 'createSession.session.data')
+      const sessionId = ensureString(sessionData.sessionId, 'createSession.session.data.sessionId')
+      return { sessionId, roomId: fallbackRoomId }
+    }
 
     const roomType = payload.roomType === 'dm' || payload.roomType === 'ai_dm' ? 'private' : 'group'
     const groupId = typeof payload.topicId === 'string' ? payload.topicId.trim() : ''
@@ -245,12 +254,12 @@ export const chatApi = {
         sessionId,
         roomId
       }
-    } catch (_error) {
-      const roomId = payload.targetId || payload.topicId || MVP_ROOM_ID
-      return {
-        sessionId: `s_${roomId}_${Date.now()}`,
-        roomId
-      }
+    } catch {
+      const sessionRes = await apiClient.post('/chat/sessions', { roomId: fallbackRoomId }, withActorHeaders())
+      const sessionBody = parseApiEnvelope<unknown>(sessionRes.data)
+      const sessionData = ensureObject(sessionBody.data, 'createSession.session.data')
+      const sessionId = ensureString(sessionData.sessionId, 'createSession.session.data.sessionId')
+      return { sessionId, roomId: fallbackRoomId }
     }
   },
 

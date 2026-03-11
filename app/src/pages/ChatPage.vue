@@ -52,7 +52,10 @@
           <span v-if="item.status === 'sending'">发送中</span>
           <span v-else-if="item.status === 'failed'" style="color: #b42318">发送失败</span>
         </div>
-        <div class="bubble">{{ item.content || '[空消息]' }}</div>
+        <div class="bubble">{{ formatMessageContent(item.content) }}</div>
+        <div v-if="isToolCallLeak(item.content)" class="degraded-note">
+          已拦截工具中间消息，等待最终答案...
+        </div>
         <div v-if="item.meta?.degradedReason" class="degraded-note">
           降级回复: {{ item.meta.degradedReason }}
         </div>
@@ -73,12 +76,17 @@
         class="voice-btn"
         type="button"
         :class="{ recording, canceling: voiceWillCancel }"
-        :disabled="sending || uploadingVoice || uploadingFile"
+        :disabled="voiceActionLocked"
+        :title="voiceDisabledReason || '按住说话'"
         @pointerdown.prevent="onVoicePressStart"
         @pointermove.prevent="onVoicePressMove"
         @pointerup.prevent="onVoicePressEnd"
         @pointercancel.prevent="onVoicePressCancel"
         @pointerleave.prevent="onVoicePressMove"
+        @touchstart.prevent="onVoiceTouchStart"
+        @touchmove.prevent="onVoiceTouchMove"
+        @touchend.prevent="onVoiceTouchEnd"
+        @touchcancel.prevent="onVoiceTouchCancel"
       >
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <rect x="9" y="3" width="6" height="12" rx="3" ry="3" fill="none" stroke="currentColor" stroke-width="2" />
@@ -133,7 +141,14 @@
       <span v-else-if="uploadingVoice">语音识别中...</span>
       <span v-else-if="uploadingFile">文件处理中...</span>
       <span v-else-if="pendingFileName">待发送文件: {{ pendingFileName }}</span>
+      <span v-else-if="voiceDisabledReason">{{ voiceDisabledReason }}</span>
       <span v-else>支持文本、文件与语音输入</span>
+    </div>
+    <div v-if="recording" class="voice-overlay">
+      <div class="voice-overlay-card">
+        <strong>{{ voiceWillCancel ? '松开取消发送' : '正在录音' }}</strong>
+        <p>{{ recordingDurationText }}{{ voiceWillCancel ? ' · 已进入取消区' : ' · 上滑可取消' }}</p>
+      </div>
     </div>
   </section>
 
@@ -234,6 +249,13 @@ const recordingDurationText = computed(() => {
   const secs = String(recordingDurationSec.value % 60).padStart(2, '0')
   return `${mins}:${secs}`
 })
+const voiceActionLocked = computed(() => uploadingVoice.value)
+const voiceDisabledReason = computed(() => {
+  if (uploadingVoice.value) return '语音识别处理中，请稍候。'
+  if (uploadingFile.value) return '文件处理中，请稍后再试语音。'
+  if (!chat.roomId) return '聊天房间未就绪，请稍后重试。'
+  return ''
+})
 
 watch(
   () => chat.messages.length,
@@ -254,8 +276,11 @@ onMounted(async () => {
   adjustTextareaHeight()
   await chat.fetchRooms()
   if (chat.roomId) {
-    await chat.fetchMessages(chat.roomId)
-    await chat.ensureSession()
+    const roomId = chat.roomId
+    await Promise.allSettled([
+      chat.fetchMessages(roomId),
+      chat.ensureSession()
+    ])
   }
 })
 
@@ -377,8 +402,17 @@ async function sendSelectedFile(file: File) {
 
 async function startRecording() {
   if (recording.value || uploadingVoice.value) return
+  if (uploadingFile.value) {
+    chat.lastError = '文件处理中，请稍后再试语音输入。'
+    return
+  }
   if (!chat.roomId) {
     chat.lastError = '聊天房间未就绪，请稍后再试。'
+    return
+  }
+  const permission = await requestMicPermission()
+  if (!permission.granted) {
+    chat.lastError = permission.reason || '麦克风权限未开启。'
     return
   }
   if (speechSupported.value) {
@@ -387,12 +421,6 @@ async function startRecording() {
   }
   if (!('MediaRecorder' in window)) {
     chat.lastError = '当前浏览器不支持语音录制。'
-    return
-  }
-
-  const allowed = await requestMicPermission()
-  if (!allowed) {
-    chat.lastError = '麦克风权限未开启。'
     return
   }
 
@@ -437,6 +465,10 @@ function stopRecording() {
 
 function onVoicePressStart(event: PointerEvent) {
   if (event.pointerType === 'mouse' && event.button !== 0) return
+  if (voiceActionLocked.value) {
+    chat.lastError = voiceDisabledReason.value || '语音暂不可用，请稍后重试。'
+    return
+  }
   voicePressing.value = true
   voiceWillCancel.value = false
   voicePressStartY.value = event.clientY || 0
@@ -473,6 +505,52 @@ function onVoicePressCancel() {
   skipNextVoiceSubmit.value = true
   stopRecording()
   chat.lastError = '已取消语音输入'
+}
+
+function getFirstTouch(event: TouchEvent): Touch | null {
+  if (event.touches?.length) return event.touches[0]
+  if (event.changedTouches?.length) return event.changedTouches[0]
+  return null
+}
+
+function onVoiceTouchStart(event: TouchEvent) {
+  if (voiceActionLocked.value) {
+    chat.lastError = voiceDisabledReason.value || '语音暂不可用，请稍后重试。'
+    return
+  }
+  const touch = getFirstTouch(event)
+  voicePressing.value = true
+  voiceWillCancel.value = false
+  voicePressStartY.value = touch?.clientY || 0
+  void startRecording()
+}
+
+function onVoiceTouchMove(event: TouchEvent) {
+  if (!voicePressing.value || !recording.value) return
+  const touch = getFirstTouch(event)
+  const clientY = touch?.clientY || 0
+  const deltaY = voicePressStartY.value - clientY
+  voiceWillCancel.value = deltaY > VOICE_CANCEL_DISTANCE
+}
+
+function onVoiceTouchEnd(event: TouchEvent) {
+  if (!voicePressing.value) return
+  onVoiceTouchMove(event)
+  voicePressing.value = false
+  if (!recording.value) {
+    voiceWillCancel.value = false
+    return
+  }
+  if (voiceWillCancel.value) {
+    onVoicePressCancel()
+    return
+  }
+  stopRecording()
+  voiceWillCancel.value = false
+}
+
+function onVoiceTouchCancel() {
+  onVoicePressCancel()
 }
 
 function getSpeechCtor(): SpeechCtor | null {
@@ -644,6 +722,57 @@ function formatTime(input: string): string {
   const date = new Date(input)
   if (Number.isNaN(date.getTime())) return '-'
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+}
+
+function isToolCallLeak(content: string): boolean {
+  const text = typeof content === 'string' ? content.trim() : ''
+  if (!text.startsWith('{') || !text.endsWith('}')) return false
+  try {
+    const obj = JSON.parse(text)
+    if (!obj || typeof obj !== 'object') return false
+    const hasApiMarker =
+      typeof obj.api_name === 'string' ||
+      typeof obj.plugin_id === 'number' ||
+      typeof obj.plugin_name === 'string' ||
+      typeof obj.name === 'string'
+    const hasArguments = Object.prototype.hasOwnProperty.call(obj, 'arguments')
+    return hasApiMarker && hasArguments
+  } catch {
+    return false
+  }
+}
+
+function formatMessageContent(content: string): string {
+  if (!content) return '[空消息]'
+  if (isToolCallLeak(content)) return '正在联网检索，请稍候...'
+  const structured = formatStructuredAnswer(content)
+  if (structured) return structured
+  return content
+}
+
+function formatStructuredAnswer(content: string): string {
+  const text = content.trim()
+  if (!text.startsWith('{') || !text.endsWith('}')) return ''
+  try {
+    const obj = JSON.parse(text) as Record<string, unknown>
+    if (!obj || typeof obj !== 'object') return ''
+    const title = typeof obj.title === 'string' ? obj.title.trim() : ''
+    const summary = typeof obj.content === 'string' ? obj.content.trim() : ''
+    const example = typeof obj.example === 'string' ? obj.example.trim() : ''
+    const question = typeof obj.question === 'string' ? obj.question.trim() : ''
+    const encourage = typeof obj.encourage === 'string' ? obj.encourage.trim() : ''
+    const hasStructuredField = Boolean(title || summary || example || question || encourage)
+    if (!hasStructuredField) return ''
+    const lines: string[] = []
+    if (title) lines.push(`【${title}】`)
+    if (summary) lines.push(summary)
+    if (example) lines.push(`示例：${example}`)
+    if (question) lines.push(`练习：${question}`)
+    if (encourage) lines.push(encourage)
+    return lines.join('\n\n')
+  } catch {
+    return ''
+  }
 }
 </script>
 
@@ -831,5 +960,90 @@ function formatTime(input: string): string {
   border-radius: 10px;
   height: 36px;
   min-width: 72px;
+}
+
+.voice-overlay {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.voice-overlay-card {
+  min-width: 180px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: rgba(16, 24, 40, 0.78);
+  color: #fff;
+  text-align: center;
+}
+
+.voice-overlay-card p {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: #d0d5dd;
+}
+
+@media (max-width: 768px) {
+  .chat-shell {
+    border-radius: 10px;
+  }
+
+  .chat-list {
+    min-height: 48vh;
+    max-height: 56vh;
+    padding: 12px 10px;
+  }
+
+  .chat-input {
+    grid-template-columns: 74px 1fr 40px 64px;
+    gap: 6px;
+    padding: 10px;
+  }
+
+  .chat-text-input {
+    min-height: 48px;
+    max-height: 132px;
+    border-radius: 18px;
+    padding: 12px 12px;
+    font-size: 16px;
+    line-height: 1.35;
+  }
+
+  .voice-btn {
+    height: 48px;
+    border-radius: 18px;
+    gap: 4px;
+    font-size: 12px;
+  }
+
+  .voice-btn svg {
+    width: 16px;
+    height: 16px;
+  }
+
+  .icon-btn {
+    width: 40px;
+    height: 48px;
+    border-radius: 10px;
+  }
+
+  .icon-btn svg {
+    width: 18px;
+    height: 18px;
+  }
+
+  .send-btn {
+    height: 48px;
+    border-radius: 18px;
+    font-size: 14px;
+  }
+
+  .chat-input-hint {
+    padding: 0 10px 10px;
+    font-size: 12px;
+  }
 }
 </style>

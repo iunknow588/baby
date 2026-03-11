@@ -3,6 +3,33 @@ import { fail, methodNotAllowed, ok, readJson } from './_lib/http.js'
 import { ensureUserByDeviceId, isValidDeviceId, normalizeDeviceId } from './_lib/mvp-user.js'
 import { supabaseInsert } from './_lib/supabase.js'
 
+function isToolCallPayload(text) {
+  if (typeof text !== 'string') return false
+  const trimmed = text.trim()
+  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return false
+  try {
+    const obj = JSON.parse(trimmed)
+    if (!obj || typeof obj !== 'object') return false
+    const hasApiMarker =
+      typeof obj.api_name === 'string' ||
+      typeof obj.plugin_id === 'number' ||
+      typeof obj.plugin_name === 'string' ||
+      typeof obj.name === 'string'
+    const hasArguments = Object.prototype.hasOwnProperty.call(obj, 'arguments')
+    return hasApiMarker && hasArguments
+  } catch {
+    return false
+  }
+}
+
+function sanitizeAnswer(answer, message) {
+  const text = typeof answer === 'string' ? answer.trim() : ''
+  if (!text) return buildFallbackAnswer(message)
+  if (isToolCallPayload(text)) return buildFallbackAnswer(message)
+  if (text === '正在联网检索，请稍候...') return buildFallbackAnswer(message)
+  return text
+}
+
 function buildFallbackAnswer(message) {
   const preview = message.length > 80 ? `${message.slice(0, 80)}...` : message
   return `已收到你的消息：${preview}\n\n当前 AI 服务暂时繁忙，我先帮你记录问题。请稍后再试一次，我会尽快给出完整回复。`
@@ -38,10 +65,15 @@ export default async function handler(req, res) {
       coze = { answer: buildFallbackAnswer(message) }
     }
 
-    if (!coze.answer || !coze.answer.trim()) {
+    const normalizedAnswer = sanitizeAnswer(coze.answer, message)
+    if (!normalizedAnswer) {
       fallbackUsed = true
       fallbackReason = fallbackReason || 'Coze returned empty answer'
       coze = { answer: buildFallbackAnswer(message) }
+    } else if (normalizedAnswer !== coze.answer) {
+      fallbackUsed = true
+      fallbackReason = fallbackReason || 'Coze returned intermediate tool payload'
+      coze = { answer: normalizedAnswer }
     }
 
     try {
