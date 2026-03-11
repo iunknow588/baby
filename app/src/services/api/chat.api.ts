@@ -21,6 +21,11 @@ export interface SendMessageResult {
   aiMessage?: MessageEntity
 }
 
+export interface BackendReadinessResult {
+  aiReplyReady: boolean
+  missing: string[]
+}
+
 type HistoryItem = {
   id: number
   question: string
@@ -181,6 +186,23 @@ async function getHistory(limit = 20): Promise<HistoryItem[]> {
   const res = await apiClient.get('/history', { params: { deviceId, limit }, ...withActorHeaders() })
   const body = parseApiEnvelope<unknown>(res.data)
   return parseHistory(body.data)
+}
+
+async function getBackendReadiness(): Promise<BackendReadinessResult> {
+  const res = await apiClient.get('/diagnostics', withActorHeaders())
+  const body = parseApiEnvelope<unknown>(res.data)
+  const data = ensureObject(body.data, 'diagnostics.data')
+  const missingRaw = Array.isArray(data.missing) ? data.missing : []
+  const missing = missingRaw
+    .filter(item => typeof item === 'string')
+    .map(item => item.trim())
+    .filter(Boolean)
+  const requiredForAi = ['COZE_API_BASE_URL', 'COZE_API_TOKEN', 'COZE_BOT_ID']
+  const missingCritical = requiredForAi.filter(name => missing.includes(name))
+  return {
+    aiReplyReady: missingCritical.length === 0,
+    missing: missingCritical
+  }
 }
 
 async function listRoomsFallback(): Promise<PagedResult<RoomEntity>> {
@@ -433,5 +455,9 @@ export const chatApi = {
       platformMessagePathUnavailable = true
       return sendViaMvpChat()
     }
+  },
+
+  async getBackendReadiness(): Promise<BackendReadinessResult> {
+    return getBackendReadiness()
   }
 }

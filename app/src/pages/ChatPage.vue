@@ -244,13 +244,20 @@ const tailMessagesText = computed(() => {
 const primaryAction = computed<'send' | 'plus'>(() =>
   draft.value.trim() || pendingFileName.value ? 'send' : 'plus'
 )
+const startupBlocked = computed(() => chat.startupChecked && !chat.aiReplyReady)
+const startupBlockedReason = computed(() => {
+  if (!startupBlocked.value) return ''
+  const missing = chat.missingStartupDeps.length ? chat.missingStartupDeps.join(', ') : 'COZE_*'
+  return `系统配置缺失：${missing}，暂不可发送消息。`
+})
 const recordingDurationText = computed(() => {
   const mins = String(Math.floor(recordingDurationSec.value / 60)).padStart(2, '0')
   const secs = String(recordingDurationSec.value % 60).padStart(2, '0')
   return `${mins}:${secs}`
 })
-const voiceActionLocked = computed(() => uploadingVoice.value)
+const voiceActionLocked = computed(() => uploadingVoice.value || startupBlocked.value)
 const voiceDisabledReason = computed(() => {
+  if (startupBlocked.value) return startupBlockedReason.value
   if (uploadingVoice.value) return '语音识别处理中，请稍候。'
   if (uploadingFile.value) return '文件处理中，请稍后再试语音。'
   if (!chat.roomId) return '聊天房间未就绪，请稍后重试。'
@@ -274,6 +281,7 @@ watch(draft, () => {
 
 onMounted(async () => {
   adjustTextareaHeight()
+  await chat.checkBackendReadiness()
   await chat.fetchRooms()
   if (chat.roomId) {
     const roomId = chat.roomId
@@ -291,6 +299,10 @@ onBeforeUnmount(() => {
 })
 
 async function sendNow() {
+  if (startupBlocked.value) {
+    chat.lastError = startupBlockedReason.value
+    return
+  }
   const content = draft.value.trim()
   if ((!content && !pendingFileName.value) || sending.value) return
   sending.value = true
@@ -366,6 +378,10 @@ async function onPickCamera(event: Event) {
 }
 
 async function sendSelectedFile(file: File) {
+  if (startupBlocked.value) {
+    chat.lastError = startupBlockedReason.value
+    return
+  }
   if (!chat.roomId) {
     chat.lastError = '聊天房间未就绪，请稍后再试。'
     return
@@ -401,6 +417,10 @@ async function sendSelectedFile(file: File) {
 }
 
 async function startRecording() {
+  if (startupBlocked.value) {
+    chat.lastError = startupBlockedReason.value
+    return
+  }
   if (recording.value || uploadingVoice.value) return
   if (uploadingFile.value) {
     chat.lastError = '文件处理中，请稍后再试语音输入。'

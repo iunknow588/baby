@@ -116,10 +116,16 @@ export const useChatStore = defineStore('chat', {
     ttsPlaying: false,
     ttsAudioUrl: '',
     streamDrafts: {} as Record<string, string>,
+    startupChecked: false,
+    aiReplyReady: true,
+    missingStartupDeps: [] as string[],
     lastError: ''
   }),
   getters: {
     connectionHint(state): string {
+      if (state.startupChecked && !state.aiReplyReady) {
+        return `系统配置缺失（${state.missingStartupDeps.join(', ')}），当前无法生成 AI 回复。`
+      }
       if (state.streamConnected) return ''
       if (state.streamConnecting) return '正在建立实时连接...'
       if (state.realtimeUnsupported) return '当前版本未启用实时通道，消息通过普通接口发送与刷新。'
@@ -130,6 +136,23 @@ export const useChatStore = defineStore('chat', {
     }
   },
   actions: {
+    async checkBackendReadiness() {
+      try {
+        const result = await chatApi.getBackendReadiness()
+        this.startupChecked = true
+        this.aiReplyReady = result.aiReplyReady
+        this.missingStartupDeps = result.missing
+        if (!result.aiReplyReady) {
+          this.lastError = `系统配置缺失：${result.missing.join(', ')}。当前无法生成 AI 回复，请联系管理员。`
+        }
+      } catch (error) {
+        this.startupChecked = true
+        this.aiReplyReady = true
+        this.missingStartupDeps = []
+        this.lastError = withFeatureError('启动自检', error)
+      }
+    },
+
     async fetchRooms(reset = true) {
       this.loadingRooms = true
       try {
