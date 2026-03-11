@@ -100,12 +100,18 @@
         class="chat-text-input"
         placeholder="输入消息..."
         rows="1"
-        :disabled="sending || uploadingVoice"
+        :disabled="sending || uploadingVoice || startupBlocked"
         @input="adjustTextareaHeight"
         @keydown.enter.exact.prevent="sendNow"
         @focus="composerMenuOpen = false"
       />
-      <button class="icon-btn" type="button" :disabled="sending || uploadingFile" title="上传文件" @click="openFilePicker">
+      <button
+        class="icon-btn"
+        type="button"
+        :disabled="sending || uploadingFile || startupBlocked"
+        title="上传文件"
+        @click="openFilePicker"
+      >
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <path
             d="M8.5 7.5V16a3.5 3.5 0 1 0 7 0V6.75a2.25 2.25 0 0 0-4.5 0V16a1 1 0 0 0 2 0V8"
@@ -121,7 +127,7 @@
         class="send-btn"
         :class="{ plus: primaryAction === 'plus' }"
         :type="primaryAction === 'send' ? 'submit' : 'button'"
-        :disabled="sending || uploadingVoice"
+        :disabled="sending || uploadingVoice || startupBlocked"
         @click="onPrimaryActionClick"
       >
         {{ sending ? '发送中...' : primaryAction === 'send' ? '发送' : '+' }}
@@ -141,6 +147,7 @@
       <span v-else-if="uploadingVoice">语音识别中...</span>
       <span v-else-if="uploadingFile">文件处理中...</span>
       <span v-else-if="pendingFileName">待发送文件: {{ pendingFileName }}</span>
+      <span v-else-if="startupBlocked" style="color: #b42318">{{ startupBlockedReason }}</span>
       <span v-else-if="voiceDisabledReason">{{ voiceDisabledReason }}</span>
       <span v-else>支持文本、文件与语音输入</span>
     </div>
