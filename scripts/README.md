@@ -4,20 +4,30 @@
 
 ## 核心脚本
 
-- `deploy.sh`：统一入口
-- `deploy_all.sh`：一键流程（测试/构建/GitHub + Vercel）
+- `deploy_all.sh`：统一顶层入口（无参数执行完整部署）
+- `deploy.sh`：兼容别名入口（等价转发到 `deploy_all.sh`）
 - `upload_to_github.sh`：提交并推送到 GitHub
 - `deploy_vercel.sh`：部署前后端一体到 Vercel（根目录 `vercel.json` + `api/*` Functions）
 - `smoke_api.sh`：MVP 接口冒烟检查（`/api/user`、`/api/chat`、`/api/history`、`/api/coze/chat`）
 - `smoke_realtime.sh`：实时链路冒烟检查（`/api/chat/sessions`、`/api/chat/stream`、`/api/v1/conversations/*`）
 - `smoke_platform.sh`：平台能力冒烟检查（`/api/v1/groups/*`、`/api/v1/assets/upload`、`/api/v1/capabilities/execute`）
-- `deploy.sh smoke-all`：串行执行 `smoke + smoke-rt + smoke-platform`
+- `deploy_all.sh smoke-all`：串行执行 `smoke + smoke-rt + smoke-platform`
 - `gate_local.sh`：本地门禁（文档巡检 + 脚本语法 + 前端测试构建）
 
 说明: `smoke-rt` 与 `smoke-platform` 为 fail-fast 策略，关键步骤失败会立即退出并返回非 0。
 - `check_remote_backend.sh`：检查远程后端 MVP + Platform 接口可达性
 - `run_local.sh`：一键启动本地联调（后端 `4010` + 前端 `5173`）
 - `../works-docs/baby/scripts/check_links.sh`：文档链接巡检
+
+## 调用关系
+
+- 顶层入口：`deploy_all.sh`
+- 兼容别名：`deploy.sh`（仅转发到 `deploy_all.sh`，不承载独立业务逻辑）
+- 完整发布会在 `deploy_all.sh` 内依次调用：
+  - `docs-check`
+  - `upload_to_github.sh`
+  - `deploy_vercel.sh`（可通过 `BABY_DEPLOY_VERCEL=false` 跳过）
+- `deploy_all.sh` 不接收业务参数；执行即开始完整流程。
 
 ## 远端仓库
 
@@ -30,57 +40,20 @@
 ```bash
 cd /home/lc/luckee_dao/baby
 
+# 直接执行完整部署（docs-check -> test -> build -> github -> vercel）
+./scripts/deploy_all.sh
+
+# 兼容别名（等价）
+./scripts/deploy.sh
+
 # 查看帮助
-./scripts/deploy.sh help
+./scripts/deploy_all.sh help
 
-# 仅推送 GitHub
-./scripts/deploy.sh github "chore: update deploy scripts"
-
-# 仅测试/构建
-./scripts/deploy.sh test
-./scripts/deploy.sh build
-
-# 接口冒烟（建议使用网关令牌）
-BABY_API_BASE_URL=https://api.example.com \
-BABY_GATEWAY_TOKEN=your_token \
-./scripts/deploy.sh smoke
-
-# 实时链路冒烟（sessions + SSE stream）
-BABY_API_BASE_URL=https://api.example.com \
-BABY_GATEWAY_TOKEN=your_token \
-./scripts/deploy.sh smoke-rt
-
-# 平台能力冒烟（C006/C007/C008/X001 最小链路）
-BABY_API_BASE_URL=https://api.example.com \
-BABY_GATEWAY_TOKEN=your_token \
-./scripts/deploy.sh smoke-platform
-
-# 全量冒烟（MVP + realtime + platform）
-BABY_API_BASE_URL=https://api.example.com \
-BABY_GATEWAY_TOKEN=your_token \
-./scripts/deploy.sh smoke-all
-
-# 远程后端探测（检查 Baby MVP + Platform 接口可达性）
-BABY_REMOTE_BASE_URL=https://your-backend-domain \
-./scripts/deploy.sh probe
-
-# 文档链接巡检
-./scripts/deploy.sh docs-check
-
-# 本地门禁（docs + scripts + app）
-./scripts/deploy.sh gate
-
-# 本地联调一键启动
-./scripts/deploy.sh local
-
-# 完整流程（默认: test + build + github + vercel）
-./scripts/deploy.sh all production "feat: release"
-
-# 如需仅执行到 GitHub（跳过 Vercel）
-BABY_DEPLOY_VERCEL=false ./scripts/deploy.sh all preview "feat: preview release"
-
-# all-vercel 为 all 的兼容别名
-./scripts/deploy.sh all-vercel production "feat: release"
+# 使用环境变量控制部署细节
+BABY_DEPLOY_ENVIRONMENT=preview \
+BABY_COMMIT_MSG="feat: preview release" \
+BABY_DEPLOY_VERCEL=true \
+./scripts/deploy_all.sh
 ```
 
 ## 环境变量
@@ -89,12 +62,25 @@ BABY_DEPLOY_VERCEL=false ./scripts/deploy.sh all preview "feat: preview release"
 - `BABY_RUN_TEST`：`true|false`，默认 `true`
 - `BABY_RUN_BUILD`：`true|false`，默认 `true`
 - `BABY_DEPLOY_VERCEL`：`true|false`，默认 `true`
-- `BABY_VERCEL_SCOPE`：Vercel scope，默认 `iunknow588s-projects`
-- `BABY_VERCEL_PROJECT`：Vercel project name，默认 `baby`
+- `BABY_DEPLOY_ENVIRONMENT`：`production|preview`，默认 `production`
+- `BABY_COMMIT_MSG`：提交信息（默认由脚本自动生成）
+- `BABY_VERCEL_SCOPE`：Vercel scope，固定 `iunknow588s-projects`（脚本会校验）
+- `BABY_VERCEL_PROJECT`：Vercel project name，固定 `app`（脚本会校验）
+- `BABY_VERCEL_PROJECT_ID`：Vercel project id，固定 `prj_zIhaklJ2j8v0tblKxzYanBzPJl3X`（脚本会校验）
+- `BABY_VERCEL_STRICT_LINK`：`true|false`，默认 `true`；开启后若本地 link 状态与预期不一致会直接失败
 - `BABY_SMOKE_TIMEOUT`：`smoke_api.sh` 超时秒数，默认 `80`
 - `BABY_REMOTE_TIMEOUT`：`check_remote_backend.sh` 超时秒数，默认 `80`
 - `BABY_PROBE_STRICT`：`true|false`，默认 `false`；为 `true` 时 probe 发现缺口即返回非 0
 - `BABY_SKIP_DOCS_CHECK`：`true|false`，默认 `false`；在 `probe/all/all-vercel` 前跳过文档巡检
+
+## 防冲突策略（已内置）
+
+- 部署前会检查根目录 `.vercel/project.json` 与 `app/.vercel/project.json`，若同时存在且 projectId 不一致会告警，并仅按根目录绑定继续部署。
+- 部署前会先确认目标项目在 Vercel 控制台已存在，避免脚本误创建新项目。
+- `vercel link` 后会二次校验 `projectName/projectId`，不匹配即终止。
+- 部署目标已锁定为 `iunknow588s-projects/app (prj_zIhaklJ2j8v0tblKxzYanBzPJl3X)`，覆盖变量将被拒绝。
+- 团队约定：仅允许从仓库根目录执行部署，不在 `app/` 目录单独执行 `vercel link/deploy`。
+- 脚本会记录调用审计到 `baby/.deploy_audit.log`，用于追溯到底是哪个入口触发了部署。
 
 ## 安全建议
 

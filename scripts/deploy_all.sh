@@ -1,14 +1,12 @@
 #!/bin/bash
 
-# Baby 项目一键部署脚本
-# 默认流程：测试 -> 构建 -> GitHub -> Vercel
-# 可选流程：通过环境变量关闭某一步
+# Baby 项目完整部署脚本（唯一模式：部署所有代码）
 
 set -e
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
-BLUE='\033[0;34m'
+CYAN='\033[0;36m'
 NC='\033[0m'
 
 log_info() {
@@ -21,61 +19,129 @@ log_error() {
 
 log_section() {
   echo ""
-  echo -e "${BLUE}========================================${NC}"
-  echo -e "${BLUE}$1${NC}"
-  echo -e "${BLUE}========================================${NC}"
+  echo -e "${CYAN}════════════════════════════════════${NC}"
+  echo -e "${CYAN}$1${NC}"
+  echo -e "${CYAN}════════════════════════════════════${NC}"
   echo ""
+}
+
+show_help() {
+  cat <<'EOF'
+Baby 项目完整部署脚本（deploy_all）
+
+用法:
+  ./scripts/deploy_all.sh
+
+说明:
+  - 该脚本不接收业务参数，执行即完整部署所有代码
+  - 完整流程: docs-check -> test -> build -> github -> vercel
+  - 可通过环境变量控制细节（见下）
+
+可选环境变量:
+  BABY_DEPLOY_ENVIRONMENT   默认 production（可设为 preview）
+  BABY_COMMIT_MSG           Git 提交信息（默认自动生成）
+  BABY_RUN_TEST             true|false，默认 true
+  BABY_RUN_BUILD            true|false，默认 true
+  BABY_DEPLOY_VERCEL        true|false，默认 true
+  BABY_SKIP_DOCS_CHECK      true|false，默认 false
+EOF
 }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 APP_DIR="$PROJECT_ROOT/app"
+DOCS_CHECK_SCRIPT="$PROJECT_ROOT/../works-docs/baby/scripts/check_links.sh"
+AUDIT_LOG="$PROJECT_ROOT/.deploy_audit.log"
 
-cd "$PROJECT_ROOT"
-
-ENVIRONMENT="${1:-production}"
-COMMIT_MSG="${2:-}"
-
+BABY_DEPLOY_ENVIRONMENT="${BABY_DEPLOY_ENVIRONMENT:-production}"
+BABY_COMMIT_MSG="${BABY_COMMIT_MSG:-}"
 BABY_RUN_TEST="${BABY_RUN_TEST:-true}"
 BABY_RUN_BUILD="${BABY_RUN_BUILD:-true}"
 BABY_DEPLOY_VERCEL="${BABY_DEPLOY_VERCEL:-true}"
+BABY_SKIP_DOCS_CHECK="${BABY_SKIP_DOCS_CHECK:-false}"
 
-log_section "Baby 项目一键部署"
-log_info "项目路径: $PROJECT_ROOT"
-log_info "前端目录: $APP_DIR"
-log_info "环境: $ENVIRONMENT"
-log_info "执行测试: $BABY_RUN_TEST"
-log_info "执行构建: $BABY_RUN_BUILD"
-log_info "部署 Vercel: $BABY_DEPLOY_VERCEL"
-if [ "$BABY_DEPLOY_VERCEL" != "true" ]; then
-  log_info "提示: 当前已关闭 Vercel 部署（BABY_DEPLOY_VERCEL=false）"
+log_audit() {
+  local message="$1"
+  printf '%s script=%s env=%s user=%s cwd=%s msg=%s\n' \
+    "$(date '+%Y-%m-%d %H:%M:%S')" \
+    "deploy_all.sh" \
+    "$BABY_DEPLOY_ENVIRONMENT" \
+    "${USER:-unknown}" \
+    "$PROJECT_ROOT" \
+    "$message" >> "$AUDIT_LOG" 2>/dev/null || true
+}
+
+run_docs_check() {
+  if [ "$BABY_SKIP_DOCS_CHECK" = "true" ]; then
+    log_info "跳过文档巡检（BABY_SKIP_DOCS_CHECK=true）"
+    return
+  fi
+  if [ ! -x "$DOCS_CHECK_SCRIPT" ]; then
+    log_error "缺少文档巡检脚本: $DOCS_CHECK_SCRIPT"
+    exit 1
+  fi
+  log_section "执行文档链接巡检"
+  "$DOCS_CHECK_SCRIPT"
+}
+
+run_full_pipeline() {
+  log_section "完整部署流程"
+  log_info "项目路径: $PROJECT_ROOT"
+  log_info "前端目录: $APP_DIR"
+  log_info "环境: $BABY_DEPLOY_ENVIRONMENT"
+  log_info "执行测试: $BABY_RUN_TEST"
+  log_info "执行构建: $BABY_RUN_BUILD"
+  log_info "部署 Vercel: $BABY_DEPLOY_VERCEL"
+  if [ "$BABY_DEPLOY_VERCEL" != "true" ]; then
+    log_info "提示: 当前已关闭 Vercel 部署（BABY_DEPLOY_VERCEL=false）"
+  fi
+
+  if [ "$BABY_RUN_TEST" = "true" ]; then
+    log_section "步骤 1: 执行测试"
+    cd "$APP_DIR"
+    npm test
+    cd "$PROJECT_ROOT"
+  fi
+
+  if [ "$BABY_RUN_BUILD" = "true" ]; then
+    log_section "步骤 2: 执行构建"
+    cd "$APP_DIR"
+    npm run build
+    cd "$PROJECT_ROOT"
+  fi
+
+  log_section "步骤 3: 上传到 GitHub"
+  if [ -n "$BABY_COMMIT_MSG" ]; then
+    "$SCRIPT_DIR/upload_to_github.sh" "$BABY_COMMIT_MSG"
+  else
+    "$SCRIPT_DIR/upload_to_github.sh"
+  fi
+
+  if [ "$BABY_DEPLOY_VERCEL" = "true" ]; then
+    log_section "步骤 4: 部署到 Vercel"
+    "$SCRIPT_DIR/deploy_vercel.sh" "$BABY_DEPLOY_ENVIRONMENT"
+  fi
+
+  log_section "部署完成"
+  log_info "所有步骤已完成"
+}
+
+cd "$PROJECT_ROOT"
+log_audit "entry"
+
+if [ "$#" -gt 0 ]; then
+  case "$1" in
+    help|--help|-h)
+      show_help
+      exit 0
+      ;;
+    *)
+      log_error "deploy_all.sh 不接受业务参数。请直接执行: ./scripts/deploy_all.sh"
+      log_error "如需说明，请执行: ./scripts/deploy_all.sh help"
+      exit 1
+      ;;
+  esac
 fi
 
-if [ "$BABY_RUN_TEST" = "true" ]; then
-  log_section "步骤 1: 执行测试"
-  cd "$APP_DIR"
-  npm test
-  cd "$PROJECT_ROOT"
-fi
-
-if [ "$BABY_RUN_BUILD" = "true" ]; then
-  log_section "步骤 2: 执行构建"
-  cd "$APP_DIR"
-  npm run build
-  cd "$PROJECT_ROOT"
-fi
-
-log_section "步骤 3: 上传到 GitHub"
-if [ -n "$COMMIT_MSG" ]; then
-  "$SCRIPT_DIR/upload_to_github.sh" "$COMMIT_MSG"
-else
-  "$SCRIPT_DIR/upload_to_github.sh"
-fi
-
-if [ "$BABY_DEPLOY_VERCEL" = "true" ]; then
-  log_section "步骤 4: 部署到 Vercel"
-  "$SCRIPT_DIR/deploy_vercel.sh" "$ENVIRONMENT"
-fi
-
-log_section "部署完成"
-log_info "所有步骤已完成"
+run_docs_check
+run_full_pipeline
