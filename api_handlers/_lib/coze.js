@@ -108,6 +108,15 @@ function renderStructuredAnswer(obj) {
   return lines.join('\n\n').trim()
 }
 
+function renderJsonErrorAnswer(obj) {
+  if (!obj || typeof obj !== 'object') return ''
+  const msg = typeof obj.msg === 'string' ? obj.msg.trim() : ''
+  const code = typeof obj.code === 'number' || typeof obj.code === 'string' ? String(obj.code).trim() : ''
+  if (!msg) return ''
+  if (code) return `服务调用失败（${code}）：${msg}`
+  return `服务调用失败：${msg}`
+}
+
 function normalizeAssistantAnswer(content) {
   if (typeof content !== 'string') return ''
   const normalized = unwrapCodeFence(content)
@@ -119,7 +128,9 @@ function normalizeAssistantAnswer(content) {
   if (isToolCallPayload(normalized)) return ''
 
   const structured = renderStructuredAnswer(parsed)
-  return structured || normalized
+  if (structured) return structured
+  const errorText = renderJsonErrorAnswer(parsed)
+  return errorText || normalized
 }
 
 function extractAnswerFromMessages(messages) {

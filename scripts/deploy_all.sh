@@ -52,6 +52,9 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 APP_DIR="$PROJECT_ROOT/app"
 DOCS_CHECK_SCRIPT="$PROJECT_ROOT/../works-docs/baby/scripts/check_links.sh"
 AUDIT_LOG="$PROJECT_ROOT/.deploy_audit.log"
+ROOT_VERCEL_FILE="$PROJECT_ROOT/.vercel/project.json"
+APP_VERCEL_FILE="$PROJECT_ROOT/app/.vercel/project.json"
+LOCKED_VERCEL_PROJECT_ID="prj_zIhaklJ2j8v0tblKxzYanBzPJl3X"
 
 BABY_DEPLOY_ENVIRONMENT="${BABY_DEPLOY_ENVIRONMENT:-production}"
 BABY_COMMIT_MSG="${BABY_COMMIT_MSG:-}"
@@ -59,6 +62,8 @@ BABY_RUN_TEST="${BABY_RUN_TEST:-true}"
 BABY_RUN_BUILD="${BABY_RUN_BUILD:-true}"
 BABY_DEPLOY_VERCEL="${BABY_DEPLOY_VERCEL:-true}"
 BABY_SKIP_DOCS_CHECK="${BABY_SKIP_DOCS_CHECK:-false}"
+BABY_DEPLOY_BRANCH="${BABY_DEPLOY_BRANCH:-main}"
+BABY_ALLOW_NON_MAIN="${BABY_ALLOW_NON_MAIN:-false}"
 
 log_audit() {
   local message="$1"
@@ -82,6 +87,45 @@ run_docs_check() {
   fi
   log_section "执行文档链接巡检"
   "$DOCS_CHECK_SCRIPT"
+}
+
+extract_project_field() {
+  local file="$1"
+  local field="$2"
+  if [ ! -f "$file" ]; then
+    echo ""
+    return
+  fi
+  sed -n "s/.*\"$field\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$file" | head -n1
+}
+
+run_preflight_checks() {
+  local branch
+  branch="$(git -C "$PROJECT_ROOT" branch --show-current || true)"
+  if [ -z "$branch" ]; then
+    log_error "无法识别当前 Git 分支。"
+    exit 1
+  fi
+
+  if [ "$BABY_ALLOW_NON_MAIN" != "true" ] && [ "$branch" != "$BABY_DEPLOY_BRANCH" ]; then
+    log_error "当前分支为 '$branch'，默认只允许在 '$BABY_DEPLOY_BRANCH' 分支部署。"
+    log_error "如确需跨分支部署，请显式设置 BABY_ALLOW_NON_MAIN=true。"
+    exit 1
+  fi
+
+  local root_project_id app_project_id
+  root_project_id="$(extract_project_field "$ROOT_VERCEL_FILE" "projectId")"
+  app_project_id="$(extract_project_field "$APP_VERCEL_FILE" "projectId")"
+
+  if [ -n "$root_project_id" ] && [ "$root_project_id" != "$LOCKED_VERCEL_PROJECT_ID" ]; then
+    log_warn "检测到根目录历史绑定 projectId=$root_project_id，期望=$LOCKED_VERCEL_PROJECT_ID。"
+    log_warn "后续 deploy_vercel.sh 会自动修正到唯一项目。"
+  fi
+
+  if [ -n "$app_project_id" ] && [ "$app_project_id" != "$LOCKED_VERCEL_PROJECT_ID" ]; then
+    log_warn "检测到 app/.vercel 历史绑定 projectId=$app_project_id，期望=$LOCKED_VERCEL_PROJECT_ID。"
+    log_warn "建议清理 app/.vercel，避免后续排障歧义。"
+  fi
 }
 
 run_full_pipeline() {
@@ -143,5 +187,6 @@ if [ "$#" -gt 0 ]; then
   esac
 fi
 
+run_preflight_checks
 run_docs_check
 run_full_pipeline

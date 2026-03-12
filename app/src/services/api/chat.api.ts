@@ -26,6 +26,16 @@ export interface BackendReadinessResult {
   missing: string[]
 }
 
+export interface UploadedAsset {
+  assetId: string
+  conversationId: string
+  fileName: string
+  mediaType: string
+  size: number
+  url: string
+  createdAt: string
+}
+
 type HistoryItem = {
   id: number
   question: string
@@ -74,6 +84,19 @@ async function ensureUser(deviceId: string) {
 
 function sleep(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(reader.error || new Error('read blob failed'))
+    reader.onload = () => {
+      const raw = typeof reader.result === 'string' ? reader.result : ''
+      const encoded = raw.includes(',') ? raw.split(',')[1] : raw
+      resolve(encoded || '')
+    }
+    reader.readAsDataURL(blob)
+  })
 }
 
 function parseRoomEntity(raw: unknown, index: number): RoomEntity {
@@ -366,7 +389,8 @@ export const chatApi = {
             '/chat',
             {
               deviceId,
-              message: payload.content
+              message: payload.content,
+              files: payload.files || []
             },
             {
               ...withActorHeaders(),
@@ -459,5 +483,39 @@ export const chatApi = {
 
   async getBackendReadiness(): Promise<BackendReadinessResult> {
     return getBackendReadiness()
+  },
+
+  async uploadAsset(payload: {
+    conversationId: string
+    file: Blob
+    fileName: string
+    mediaType?: string
+    size?: number
+  }): Promise<UploadedAsset> {
+    const mediaType = payload.mediaType || payload.file.type || 'application/octet-stream'
+    const size = Number.isFinite(Number(payload.size)) ? Number(payload.size) : payload.file.size || 0
+    const fileBase64 = await blobToBase64(payload.file)
+    const res = await apiClient.post(
+      '/v1/assets/upload',
+      {
+        conversationId: payload.conversationId,
+        fileName: payload.fileName,
+        mediaType,
+        size,
+        fileBase64
+      },
+      withActorHeaders()
+    )
+    const body = parseApiEnvelope<unknown>(res.data)
+    const data = ensureObject(body.data, 'uploadAsset.data')
+    return {
+      assetId: ensureString(data.assetId, 'uploadAsset.data.assetId'),
+      conversationId: ensureString(data.conversationId, 'uploadAsset.data.conversationId'),
+      fileName: ensureString(data.fileName, 'uploadAsset.data.fileName'),
+      mediaType: ensureString(data.mediaType, 'uploadAsset.data.mediaType'),
+      size: ensureNumber(data.size, 'uploadAsset.data.size'),
+      url: ensureString(data.url, 'uploadAsset.data.url'),
+      createdAt: ensureString(data.createdAt, 'uploadAsset.data.createdAt')
+    }
   }
 }

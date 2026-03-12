@@ -178,6 +178,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useAuthStore } from '../stores/auth'
 import { useChatStore } from '../stores/chat'
+import { chatApi } from '../services/api/chat.api'
 import { voiceApi } from '../services/api/voice.api'
 import { requestMicPermission } from '../platform/media'
 import type { MessageEntity } from '../types/domain'
@@ -400,6 +401,19 @@ async function sendSelectedFile(file: File) {
     const extension = file.name.includes('.') ? file.name.split('.').pop() || '' : ''
     const messageType: MessageEntity['messageType'] = file.type.startsWith('image/') ? 'image' : 'file'
     const fallbackContent = draft.value.trim() || `[附件] ${file.name}`
+    let uploadedUrl = ''
+    try {
+      const uploaded = await chatApi.uploadAsset({
+        conversationId: chat.roomId,
+        file,
+        fileName: file.name,
+        mediaType: file.type || 'application/octet-stream',
+        size: file.size
+      })
+      uploadedUrl = uploaded.url
+    } catch (error) {
+      chat.lastError = `附件上传失败，已继续发送文本消息: ${(error as Error)?.message || 'unknown'}`
+    }
     await chat.sendMessagePayload({
       content: fallbackContent,
       messageType,
@@ -408,7 +422,8 @@ async function sendSelectedFile(file: File) {
           name: file.name,
           size: file.size,
           type: file.type,
-          extension
+          extension,
+          url: uploadedUrl || undefined
         }
       ]
     })
@@ -789,14 +804,26 @@ function formatStructuredAnswer(content: string): string {
     const question = typeof obj.question === 'string' ? obj.question.trim() : ''
     const encourage = typeof obj.encourage === 'string' ? obj.encourage.trim() : ''
     const hasStructuredField = Boolean(title || summary || example || question || encourage)
-    if (!hasStructuredField) return ''
     const lines: string[] = []
-    if (title) lines.push(`【${title}】`)
-    if (summary) lines.push(summary)
-    if (example) lines.push(`示例：${example}`)
-    if (question) lines.push(`练习：${question}`)
-    if (encourage) lines.push(encourage)
-    return lines.join('\n\n')
+    if (hasStructuredField) {
+      if (title) lines.push(`【${title}】`)
+      if (summary) lines.push(summary)
+      if (example) lines.push(`示例：${example}`)
+      if (question) lines.push(`练习：${question}`)
+      if (encourage) lines.push(encourage)
+    }
+    const structured = lines.join('\n\n')
+    if (structured) return structured
+
+    const errorMsg = typeof obj.msg === 'string' ? obj.msg.trim() : ''
+    const errorCode =
+      typeof obj.code === 'number' || typeof obj.code === 'string'
+        ? String(obj.code).trim()
+        : ''
+    if (errorMsg) {
+      return errorCode ? `服务调用失败（${errorCode}）：${errorMsg}` : `服务调用失败：${errorMsg}`
+    }
+    return ''
   } catch {
     return ''
   }
