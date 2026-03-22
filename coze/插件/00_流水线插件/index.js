@@ -378,7 +378,7 @@ class HanziPipelinePlugin {
       keyOutputs: {
         inputPath: locatePerspectiveInputPath,
         a4ConstraintMetaPath: rectifyA4ConstraintMetaPath,
-        a4ConstraintImagePath: path.join(rectifyDir, '02_0_A4规格约束检测', '02_0_A4规格约束检测图.png'),
+        a4ConstraintImagePath: path.join(rectifyDir, '02_0_A4规格约束检测', '02_0_2_A4规格约束检测图.png'),
         preprocessPath,
         warpedPath: preprocessWarpedPath,
         guideRemovedPath: preprocessGuideRemovedPath,
@@ -405,8 +405,8 @@ class HanziPipelinePlugin {
       },
       processChain: [
         '01_2_稿纸裁切图 -> 02_0_1_A4内切清边图',
-        '02_0_1_A4内切清边图 -> 02_0_A4规格约束检测图',
-        '02_0_A4规格约束检测图 -> 02_1_纸张角点调试图',
+        '02_0_1_A4内切清边图 -> 02_0_2_A4规格约束检测图',
+        '02_0_2_A4规格约束检测图 -> 02_1_纸张角点调试图',
         '02_1_纸张角点调试图 -> 02_2_透视矫正图',
         '02_2_透视矫正图 -> 02_3_1_检测去底纹图',
         '02_3_1_检测去底纹图 -> 02_3_2_矫正预处理图'

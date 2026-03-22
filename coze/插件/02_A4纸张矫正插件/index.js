@@ -47,7 +47,7 @@ class A4RectifyPlugin {
         ${toPolygon(selectedCorners, '#ef4444', '', 'selected')}
         <rect x="18" y="18" width="${Math.min(720, Math.max(340, width - 36))}" height="144" rx="12" ry="12" fill="rgba(17,24,39,0.84)"/>
         <text x="34" y="50" font-size="24" fill="#ffffff">02_1 纸张角点检测</text>
-        <text x="34" y="82" font-size="18" fill="#fde68a">当前输入=02_0_A4规格约束检测图</text>
+        <text x="34" y="82" font-size="18" fill="#fde68a">当前输入=02_0_2_A4规格约束检测图</text>
         <text x="34" y="110" font-size="18" fill="#d1fae5">输出=02_1_纸张角点调试图</text>
         <text x="34" y="138" font-size="18" fill="#93c5fd">角点选择=${selection?.selected || 'unknown'} ${selection?.reason ? `(${selection.reason})` : ''}</text>
       </svg>
@@ -99,7 +99,7 @@ class A4RectifyPlugin {
     const warpedOutputPath = path.join(step02_2Dir, '02_2_透视矫正图.png');
     const neutralGuideRemovedOutputPath = path.join(step02_3_1Dir, '02_3_1_检测去底纹图.png');
     const outputMetaPath = path.join(outputDir, '02_A4纸张矫正结果.json');
-    const a4ConstraintImagePath = path.join(step02_0Dir, '02_0_A4规格约束检测图.png');
+    const a4ConstraintImagePath = path.join(step02_0Dir, '02_0_2_A4规格约束检测图.png');
     const a4ConstraintMetaPath = path.join(step02_0Dir, '02_0_A4规格约束检测.json');
     const a4CleanedInputPath = path.join(step02_0Dir, '02_0_1_A4内切清边图.png');
     const outputDebugPath = path.join(step02_1Dir, '02_1_纸张角点调试图.png');
