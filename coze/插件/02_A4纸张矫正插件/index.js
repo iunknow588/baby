@@ -95,9 +95,9 @@ class A4RectifyPlugin {
     await fs.promises.mkdir(step02_3_1Dir, { recursive: true });
     await fs.promises.mkdir(step02_3_2Dir, { recursive: true });
 
-    const outputPath = path.join(step02_3_2Dir, '02_3_2_矫正预处理图.png');
-    const warpedOutputPath = path.join(step02_2Dir, '02_2_透视矫正图.png');
-    const neutralGuideRemovedOutputPath = path.join(step02_3_1Dir, '02_3_1_检测去底纹图.png');
+    const outputPath = path.join(step02_3_2Dir, '02_3_2_1_矫正预处理图.png');
+    const warpedOutputPath = path.join(step02_2Dir, '02_2_1_透视矫正图.png');
+    const neutralGuideRemovedOutputPath = path.join(step02_3_1Dir, '02_3_1_1_检测去底纹图.png');
     const outputMetaPath = path.join(outputDir, '02_A4纸张矫正结果.json');
     const a4ConstraintImagePath = path.join(step02_0Dir, '02_0_2_A4规格约束检测图.png');
     const a4ConstraintMetaPath = path.join(step02_0Dir, '02_0_A4规格约束检测.json');

@@ -253,9 +253,9 @@ class HanziPipelinePlugin {
     const rectifyA4ConstraintMetaPath = path.join(rectifyDir, '02_0_A4规格约束检测', '02_0_A4规格约束检测.json');
     const quadDebugPath = path.join(rectifyDir, '02_1_纸张角点检测', '02_1_1_纸张角点调试图.png');
     const quadMetaPath = path.join(rectifyDir, '02_1_纸张角点检测', '02_1_纸张角点检测.json');
-    const preprocessPath = path.join(rectifyDir, '02_3_去底纹', '02_3_2_矫正预处理输出', '02_3_2_矫正预处理图.png');
-    const preprocessWarpedPath = path.join(rectifyDir, '02_2_透视矫正', '02_2_透视矫正图.png');
-    const preprocessNeutralGuideRemovedPath = path.join(rectifyDir, '02_3_去底纹', '02_3_1_去底纹输出', '02_3_1_检测去底纹图.png');
+    const preprocessPath = path.join(rectifyDir, '02_3_去底纹', '02_3_2_矫正预处理输出', '02_3_2_1_矫正预处理图.png');
+    const preprocessWarpedPath = path.join(rectifyDir, '02_2_透视矫正', '02_2_1_透视矫正图.png');
+    const preprocessNeutralGuideRemovedPath = path.join(rectifyDir, '02_3_去底纹', '02_3_1_去底纹输出', '02_3_1_1_检测去底纹图.png');
     const preprocessGuideRemovedPath = preprocessNeutralGuideRemovedPath;
     const preprocessMetaPath = path.join(rectifyDir, '02_A4纸张矫正结果.json');
     const textRectGridStageDir = path.join(textRectDir, '03_0_方格背景与边界检测');
@@ -407,9 +407,9 @@ class HanziPipelinePlugin {
         '01_2_稿纸裁切图 -> 02_0_1_A4内切清边图',
         '02_0_1_A4内切清边图 -> 02_0_2_A4规格约束检测图',
         '02_0_2_A4规格约束检测图 -> 02_1_1_纸张角点调试图',
-        '02_1_1_纸张角点调试图 -> 02_2_透视矫正图',
-        '02_2_透视矫正图 -> 02_3_1_检测去底纹图',
-        '02_3_1_检测去底纹图 -> 02_3_2_矫正预处理图'
+        '02_1_1_纸张角点调试图 -> 02_2_1_透视矫正图',
+        '02_2_1_透视矫正图 -> 02_3_1_1_检测去底纹图',
+        '02_3_1_1_检测去底纹图 -> 02_3_2_1_矫正预处理图'
       ]
     });
     if (maxStep <= 2) {
@@ -504,7 +504,7 @@ class HanziPipelinePlugin {
       imagePath,
       stageInputPath: preprocessPath,
       keyOutputs: {
-          '02_3_2_矫正预处理图': preprocessPath,
+          '02_3_2_1_矫正预处理图': preprocessPath,
           '03_0_方格背景与边界检测.json': preprocessGridStageMetaPath,
           '03_0_1_粗裁剪去外框输入图': preprocessGridStageReferencePath,
           '03_0_2_四角点定位标注图': preprocessGridCornerAnnotatedPath,
@@ -517,9 +517,9 @@ class HanziPipelinePlugin {
           '03_3_2_总方格计数参考图': textRectWarpedOutputPath
       },
       processChain: [
-        '02_3_2_矫正预处理图 -> 03_0_1_粗裁剪去外框输入图',
+        '02_3_2_1_矫正预处理图 -> 03_0_1_粗裁剪去外框输入图',
         '03_0_1_粗裁剪去外框输入图 -> 03_0_2_四角点定位标注图',
-        '03_0_1_粗裁剪去外框输入图 + 02_3_1_检测去底纹图(内部输入) -> 03_0_方格背景与边界检测.json',
+        '03_0_1_粗裁剪去外框输入图 + 02_3_1_1_检测去底纹图(内部输入) -> 03_0_方格背景与边界检测.json',
         '03_0_方格背景与边界检测.json -> 03_0_4_方格背景Mask图',
         '03_0_方格背景与边界检测.json -> 03_0_6_单格切分输入图(四角点透视矫正后)',
         '03_0_6_单格切分输入图 -> 03_1_总方格候选矩形图',
