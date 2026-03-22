@@ -3168,25 +3168,49 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
       topLine,
       edgeLineInputs.top,
       (point) => scoreOuterHorizontalBoundaryAt(gray, info.width, info.height, point[1], point[0] - 10, point[0] + 10, 1),
-      140
+      140,
+      {
+        axis: 'x',
+        expectedStart: guideLeft,
+        expectedEnd: guideRight,
+        binSize: 18
+      }
     ),
     bottom: evaluateBoundaryLineQuality(
       bottomLine,
       edgeLineInputs.bottom,
       (point) => scoreOuterHorizontalBoundaryAt(gray, info.width, info.height, point[1], point[0] - 10, point[0] + 10, -1),
-      140
+      140,
+      {
+        axis: 'x',
+        expectedStart: guideLeft,
+        expectedEnd: guideRight,
+        binSize: 18
+      }
     ),
     left: evaluateBoundaryLineQuality(
       leftLine,
       edgeLineInputs.left,
       (point) => scoreOuterVerticalBoundaryAt(gray, info.width, info.height, point[0], point[1] - 10, point[1] + 10, 1),
-      170
+      170,
+      {
+        axis: 'y',
+        expectedStart: guideTop,
+        expectedEnd: guideBottom,
+        binSize: 18
+      }
     ),
     right: evaluateBoundaryLineQuality(
       rightLine,
       edgeLineInputs.right,
       (point) => scoreOuterVerticalBoundaryAt(gray, info.width, info.height, point[0], point[1] - 10, point[1] + 10, -1),
-      170
+      170,
+      {
+        axis: 'y',
+        expectedStart: guideTop,
+        expectedEnd: guideBottom,
+        binSize: 18
+      }
     )
   };
   const extremeTopPoints = extractExtremeSupportPoints(
@@ -3276,6 +3300,25 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
   const effectiveLeftBottomAnchor = probedLeftBottom || leftBottomAnchor;
   let effectiveRightTopAnchor = probedRightTop || rightTopAnchor;
   const effectiveRightBottomAnchor = probedRightBottom || rightBottomAnchor;
+  const coarseVerticalEndpointTopCandidates = [
+    coarseGuideBounds?.diagnostics?.verticalEndpoints?.leftTop?.[1],
+    coarseGuideBounds?.diagnostics?.verticalEndpoints?.rightTop?.[1]
+  ].map(Number).filter(Number.isFinite);
+  const coarseVerticalEndpointTopY = coarseVerticalEndpointTopCandidates.length
+    ? average(coarseVerticalEndpointTopCandidates)
+    : null;
+  const topContinuityWeak = (
+    (edgeLineQuality.top.continuity?.longestRunRatio ?? 0) < 0.58
+    || (edgeLineQuality.top.continuity?.maxGapRatio ?? 1) > 0.12
+  );
+  if (
+    Number.isFinite(coarseVerticalEndpointTopY)
+    && Number.isFinite(preferredTopBandY)
+    && preferredTopBandY < coarseVerticalEndpointTopY - Math.max(22, cellHeight * 0.28)
+    && topContinuityWeak
+  ) {
+    preferredTopBandY = coarseVerticalEndpointTopY;
+  }
   const topAnchorTolerance = Math.max(18, Math.round(cellHeight * 0.16));
   if (
     topLeftAnchor
@@ -3407,6 +3450,14 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
     && edgeLineQuality.bottom.supportRatio >= 0.5
     && edgeLineQuality.left.supportRatio >= 0.5
     && edgeLineQuality.right.supportRatio >= 0.5
+    && (edgeLineQuality.top.continuity?.longestRunRatio ?? 0) >= 0.58
+    && (edgeLineQuality.top.continuity?.endpointCoverage ?? 0) >= 0.5
+    && (edgeLineQuality.bottom.continuity?.longestRunRatio ?? 0) >= 0.58
+    && (edgeLineQuality.bottom.continuity?.endpointCoverage ?? 0) >= 0.5
+    && (edgeLineQuality.left.continuity?.longestRunRatio ?? 0) >= 0.6
+    && (edgeLineQuality.left.continuity?.endpointCoverage ?? 0) >= 0.5
+    && (edgeLineQuality.right.continuity?.longestRunRatio ?? 0) >= 0.6
+    && (edgeLineQuality.right.continuity?.endpointCoverage ?? 0) >= 0.5
     && finalGuard.dominantTopWithinLocalTolerance
     && finalGuard.dominantBottomWithinLocalTolerance
     && finalGuard.dominantSidesWithinLocalTolerance
@@ -3594,9 +3645,27 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
       );
       const rectangleScore = rectangularity?.score ?? 0;
       const guideScore = rectangularity?.guideSpanScore;
+      const topBandAlignmentScore = Number.isFinite(preferredTopBandY)
+        ? clamp01(
+            1 - (
+              average([normalizedCandidate[0][1], normalizedCandidate[1][1]].map((value) => Math.abs(value - preferredTopBandY)))
+              / Math.max(16, cellHeight * 0.22)
+            )
+          )
+        : 1;
+      const bottomBandAlignmentScore = Number.isFinite(preferredBottomBandY)
+        ? clamp01(
+            1 - (
+              average([normalizedCandidate[2][1], normalizedCandidate[3][1]].map((value) => Math.abs(value - preferredBottomBandY)))
+              / Math.max(18, cellHeight * 0.24)
+            )
+          )
+        : 1;
+      const bandAlignmentScore = average([topBandAlignmentScore, bottomBandAlignmentScore]);
       const totalScore = clamp01(
-        rectangleScore * 0.58
-        + (Number.isFinite(entry.supportScore) ? entry.supportScore : 0) * 0.2
+        rectangleScore * 0.46
+        + bandAlignmentScore * 0.18
+        + (Number.isFinite(entry.supportScore) ? entry.supportScore : 0) * 0.18
         + (Number.isFinite(guideScore) ? guideScore : rectangleScore) * 0.08
         + cornerRetentionScore * 0.1
         + (1 - distancePenalty) * 0.04
@@ -3608,6 +3677,9 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
         maxShift,
         weightedCornerShift,
         cornerRetentionScore,
+        bandAlignmentScore,
+        topBandAlignmentScore,
+        bottomBandAlignmentScore,
         distancePenalty,
         rectangularity,
         totalScore
@@ -3663,6 +3735,9 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
         maxShift: Number((entry.maxShift || 0).toFixed(3)),
         weightedCornerShift: Number((entry.weightedCornerShift || 0).toFixed(3)),
         cornerRetentionScore: Number((entry.cornerRetentionScore || 0).toFixed(4)),
+        bandAlignmentScore: Number((entry.bandAlignmentScore || 0).toFixed(4)),
+        topBandAlignmentScore: Number((entry.topBandAlignmentScore || 0).toFixed(4)),
+        bottomBandAlignmentScore: Number((entry.bottomBandAlignmentScore || 0).toFixed(4)),
         parallelDotTopBottom: Number((entry.rectangularity?.parallelDotTopBottom || 0).toFixed(4)),
         parallelDotLeftRight: Number((entry.rectangularity?.parallelDotLeftRight || 0).toFixed(4)),
         rightAngleScore: Number((entry.rectangularity?.rightAngleScore || 0).toFixed(4)),
@@ -3759,6 +3834,7 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
           rawBottom: Number.isFinite(bottomBandY) ? Number(bottomBandY.toFixed(3)) : null,
           coarseTop: Number.isFinite(coarseTopY) ? Number(coarseTopY.toFixed(3)) : null,
           coarseBottom: Number.isFinite(coarseBottomY) ? Number(coarseBottomY.toFixed(3)) : null,
+          coarseVerticalEndpointTop: Number.isFinite(coarseVerticalEndpointTopY) ? Number(coarseVerticalEndpointTopY.toFixed(3)) : null,
           localTop: Number.isFinite(finalGuard.localTopBandY) ? Number(finalGuard.localTopBandY.toFixed(3)) : null,
           localBottom: Number.isFinite(finalGuard.localBottomBandY) ? Number(finalGuard.localBottomBandY.toFixed(3)) : null,
           rejectProjectedTopAnchors: finalGuard.rejectProjectedTopAnchors,
@@ -3781,25 +3857,57 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
             confidence: Number(edgeLineQuality.top.confidence.toFixed(3)),
             residual: Number(edgeLineQuality.top.residual.toFixed(3)),
             averageScore: Number(edgeLineQuality.top.averageScore.toFixed(3)),
-            supportRatio: Number(edgeLineQuality.top.supportRatio.toFixed(3))
+            supportRatio: Number(edgeLineQuality.top.supportRatio.toFixed(3)),
+            continuity: edgeLineQuality.top.continuity
+              ? {
+                  coverageRatio: Number(edgeLineQuality.top.continuity.coverageRatio.toFixed(3)),
+                  longestRunRatio: Number(edgeLineQuality.top.continuity.longestRunRatio.toFixed(3)),
+                  endpointCoverage: Number(edgeLineQuality.top.continuity.endpointCoverage.toFixed(3)),
+                  maxGapRatio: Number(edgeLineQuality.top.continuity.maxGapRatio.toFixed(3))
+                }
+              : null
           },
           bottom: {
             confidence: Number(edgeLineQuality.bottom.confidence.toFixed(3)),
             residual: Number(edgeLineQuality.bottom.residual.toFixed(3)),
             averageScore: Number(edgeLineQuality.bottom.averageScore.toFixed(3)),
-            supportRatio: Number(edgeLineQuality.bottom.supportRatio.toFixed(3))
+            supportRatio: Number(edgeLineQuality.bottom.supportRatio.toFixed(3)),
+            continuity: edgeLineQuality.bottom.continuity
+              ? {
+                  coverageRatio: Number(edgeLineQuality.bottom.continuity.coverageRatio.toFixed(3)),
+                  longestRunRatio: Number(edgeLineQuality.bottom.continuity.longestRunRatio.toFixed(3)),
+                  endpointCoverage: Number(edgeLineQuality.bottom.continuity.endpointCoverage.toFixed(3)),
+                  maxGapRatio: Number(edgeLineQuality.bottom.continuity.maxGapRatio.toFixed(3))
+                }
+              : null
           },
           left: {
             confidence: Number(edgeLineQuality.left.confidence.toFixed(3)),
             residual: Number(edgeLineQuality.left.residual.toFixed(3)),
             averageScore: Number(edgeLineQuality.left.averageScore.toFixed(3)),
-            supportRatio: Number(edgeLineQuality.left.supportRatio.toFixed(3))
+            supportRatio: Number(edgeLineQuality.left.supportRatio.toFixed(3)),
+            continuity: edgeLineQuality.left.continuity
+              ? {
+                  coverageRatio: Number(edgeLineQuality.left.continuity.coverageRatio.toFixed(3)),
+                  longestRunRatio: Number(edgeLineQuality.left.continuity.longestRunRatio.toFixed(3)),
+                  endpointCoverage: Number(edgeLineQuality.left.continuity.endpointCoverage.toFixed(3)),
+                  maxGapRatio: Number(edgeLineQuality.left.continuity.maxGapRatio.toFixed(3))
+                }
+              : null
           },
           right: {
             confidence: Number(edgeLineQuality.right.confidence.toFixed(3)),
             residual: Number(edgeLineQuality.right.residual.toFixed(3)),
             averageScore: Number(edgeLineQuality.right.averageScore.toFixed(3)),
-            supportRatio: Number(edgeLineQuality.right.supportRatio.toFixed(3))
+            supportRatio: Number(edgeLineQuality.right.supportRatio.toFixed(3)),
+            continuity: edgeLineQuality.right.continuity
+              ? {
+                  coverageRatio: Number(edgeLineQuality.right.continuity.coverageRatio.toFixed(3)),
+                  longestRunRatio: Number(edgeLineQuality.right.continuity.longestRunRatio.toFixed(3)),
+                  endpointCoverage: Number(edgeLineQuality.right.continuity.endpointCoverage.toFixed(3)),
+                  maxGapRatio: Number(edgeLineQuality.right.continuity.maxGapRatio.toFixed(3))
+                }
+              : null
           }
         },
         quadSelection: quadSelectionDiagnostics
@@ -5926,30 +6034,101 @@ function evaluateBoundaryLineQuality(line, points, scoreAtPoint, targetPointCoun
       residual: Number.POSITIVE_INFINITY,
       averageScore: 0,
       pointCount: 0,
-      supportRatio: 0
+      supportRatio: 0,
+      continuity: null
     };
   }
+  const continuityOptions = arguments[4] || {};
   const residual = computeLineFitResidual(line, points);
   const pointScores = points.map((point) => scoreAtPoint(point));
   const averageScore = average(pointScores);
   const pointCount = points.length;
   const distanceTolerance = Math.max(8, residual * 1.85);
   const scoreThreshold = Math.max(28, averageScore * 0.3);
-  const supportCount = points.filter((point, index) => (
+  const supportPoints = points.filter((point, index) => (
     linePointDistance(line, point) <= distanceTolerance
     && pointScores[index] >= scoreThreshold
-  )).length;
+  ));
+  const supportCount = supportPoints.length;
   const supportRatio = supportCount / Math.max(1, pointCount);
+  const continuity = evaluateBoundarySupportContinuity(supportPoints, continuityOptions);
   const countConfidence = clamp01(pointCount / Math.max(1, targetPointCount));
   const residualConfidence = clamp01(1 - (residual / 5.5));
   const scoreConfidence = clamp01(averageScore / 135);
   const supportConfidence = clamp01((supportRatio - 0.18) / 0.52);
+  const continuityConfidence = continuity
+    ? clamp01(
+        continuity.coverageRatio * 0.26
+        + continuity.longestRunRatio * 0.36
+        + continuity.endpointCoverage * 0.28
+        + (1 - continuity.maxGapRatio) * 0.1
+      )
+    : 0;
   return {
-    confidence: countConfidence * 0.18 + residualConfidence * 0.28 + scoreConfidence * 0.18 + supportConfidence * 0.36,
+    confidence: countConfidence * 0.14 + residualConfidence * 0.22 + scoreConfidence * 0.14 + supportConfidence * 0.22 + continuityConfidence * 0.28,
     residual,
     averageScore,
     pointCount,
-    supportRatio
+    supportRatio,
+    continuity
+  };
+}
+
+function evaluateBoundarySupportContinuity(points, options = {}) {
+  if (!Array.isArray(points) || !points.length) {
+    return null;
+  }
+  const axis = options.axis === 'y' ? 'y' : 'x';
+  const expectedStart = Number.isFinite(options.expectedStart) ? Number(options.expectedStart) : null;
+  const expectedEnd = Number.isFinite(options.expectedEnd) ? Number(options.expectedEnd) : null;
+  const coordinates = points
+    .map((point) => axis === 'x' ? Number(point[0]) : Number(point[1]))
+    .filter(Number.isFinite)
+    .sort((a, b) => a - b);
+  if (!coordinates.length) {
+    return null;
+  }
+  const observedStart = coordinates[0];
+  const observedEnd = coordinates[coordinates.length - 1];
+  const spanStart = Number.isFinite(expectedStart) ? Math.min(expectedStart, expectedEnd) : observedStart;
+  const spanEnd = Number.isFinite(expectedEnd) ? Math.max(expectedStart, expectedEnd) : observedEnd;
+  const span = Math.max(1, spanEnd - spanStart);
+  const binSize = Math.max(8, Number.isFinite(options.binSize) ? Number(options.binSize) : Math.round(span / 42));
+  const totalBins = Math.max(1, Math.round(span / binSize));
+  const occupied = new Array(totalBins).fill(false);
+  for (const coordinate of coordinates) {
+    const index = clamp(Math.round((coordinate - spanStart) / Math.max(binSize, 1)), 0, totalBins - 1);
+    occupied[index] = true;
+  }
+  const occupiedCount = occupied.filter(Boolean).length;
+  let longestRun = 0;
+  let currentRun = 0;
+  let maxGap = 0;
+  let currentGap = 0;
+  for (const filled of occupied) {
+    if (filled) {
+      currentRun += 1;
+      longestRun = Math.max(longestRun, currentRun);
+      currentGap = 0;
+    } else {
+      currentGap += 1;
+      maxGap = Math.max(maxGap, currentGap);
+      currentRun = 0;
+    }
+  }
+  const endpointBandBins = Math.max(1, Math.round(totalBins * 0.14));
+  const leftEndpointCoverage = occupied.slice(0, endpointBandBins).some(Boolean) ? 1 : 0;
+  const rightEndpointCoverage = occupied.slice(Math.max(0, totalBins - endpointBandBins)).some(Boolean) ? 1 : 0;
+  return {
+    coverageRatio: occupiedCount / Math.max(1, totalBins),
+    longestRunRatio: longestRun / Math.max(1, totalBins),
+    endpointCoverage: (leftEndpointCoverage + rightEndpointCoverage) / 2,
+    maxGapRatio: maxGap / Math.max(1, totalBins),
+    spanStart,
+    spanEnd,
+    binSize,
+    totalBins,
+    occupiedCount
   };
 }
 
