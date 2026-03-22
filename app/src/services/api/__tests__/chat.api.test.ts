@@ -247,6 +247,22 @@ describe('chatApi', () => {
           data: {
             conversationId: 1,
             answer: 'ok',
+            structuredData: {
+              overallGrade: 'A',
+              characters: [{ score: 92 }]
+            },
+            renderType: 'calligraphy_scoring',
+            renderVersion: 'v1',
+            interactionMode: 'flow_first',
+            processingFlow: {
+              route: 'calligraphy_scoring',
+              degraded: false,
+              steps: [
+                { id: 'input_normalize', status: 'done', detail: 'ok' },
+                { id: 'agent_route', status: 'done', detail: 'ok' }
+              ],
+              nextActions: ['继续逐字点评']
+            },
             createdAt: '2026-03-09T00:00:00.000Z'
           },
           error: null,
@@ -263,6 +279,13 @@ describe('chatApi', () => {
 
     expect(result.message.status).toBe('delivered')
     expect(result.aiMessage?.content).toBe('ok')
+    expect(result.aiMessage?.meta?.renderType).toBe('calligraphy_scoring')
+    expect(result.aiMessage?.meta?.structuredData).toMatchObject({
+      overallGrade: 'A'
+    })
+    expect(result.aiMessage?.meta?.processingFlow?.route).toBe('calligraphy_scoring')
+    expect(result.aiMessage?.meta?.processingFlow?.steps?.length).toBe(2)
+    expect(result.aiMessage?.meta?.interactionMode).toBe('flow_first')
     expect(postSpy).toHaveBeenNthCalledWith(2, '/chat', expect.any(Object), expect.any(Object))
     expect(postSpy).not.toHaveBeenCalledWith(expect.stringContaining('/v1/conversations/'), expect.anything(), expect.anything())
   })
@@ -307,5 +330,64 @@ describe('chatApi', () => {
     expect(postSpy).toHaveBeenCalledTimes(3)
     expect(postSpy).toHaveBeenNthCalledWith(2, '/chat', expect.any(Object), expect.any(Object))
     expect(postSpy).toHaveBeenNthCalledWith(3, '/chat', expect.any(Object), expect.any(Object))
+  })
+
+  it('sends files payload to /chat in MVP path', async () => {
+    const postSpy = vi.spyOn(apiClient, 'post')
+      .mockResolvedValueOnce({
+        data: {
+          success: true,
+          data: {
+            id: 'u_1',
+            deviceId: 'dev_1',
+            createdAt: '2026-03-09T00:00:00.000Z',
+            lastActive: '2026-03-09T00:00:00.000Z'
+          },
+          error: null,
+          traceId: 'trc_0'
+        }
+      } as never)
+      .mockResolvedValueOnce({
+        data: {
+          success: true,
+          data: {
+            conversationId: 1,
+            answer: 'ok',
+            createdAt: '2026-03-09T00:00:00.000Z'
+          },
+          error: null,
+          traceId: 'trc_1'
+        }
+      } as never)
+
+    await chatApi.sendMessage({
+      roomId: 'r_mvp_main',
+      clientMessageId: 'cm_with_file',
+      messageType: 'image',
+      content: '[附件] demo.png',
+      files: [
+        {
+          name: 'demo.png',
+          type: 'image/png',
+          size: 123,
+          url: 'https://example.com/demo.png'
+        }
+      ]
+    })
+
+    expect(postSpy).toHaveBeenNthCalledWith(
+      2,
+      '/chat',
+      expect.objectContaining({
+        message: '[附件] demo.png',
+        files: [
+          expect.objectContaining({
+            name: 'demo.png',
+            url: 'https://example.com/demo.png'
+          })
+        ]
+      }),
+      expect.any(Object)
+    )
   })
 })

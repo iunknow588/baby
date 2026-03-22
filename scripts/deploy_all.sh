@@ -17,6 +17,10 @@ log_error() {
   echo -e "${RED}[ERROR]${NC} $1"
 }
 
+log_warn() {
+  echo -e "${CYAN}[WARN]${NC} $1"
+}
+
 log_section() {
   echo ""
   echo -e "${CYAN}════════════════════════════════════${NC}"
@@ -34,7 +38,7 @@ Baby 项目完整部署脚本（deploy_all）
 
 说明:
   - 该脚本不接收业务参数，执行即完整部署所有代码
-  - 完整流程: docs-check -> test -> build -> github -> vercel
+  - 完整流程: docs-check -> coze-gate -> test -> build -> github -> vercel
   - 可通过环境变量控制细节（见下）
 
 可选环境变量:
@@ -44,6 +48,7 @@ Baby 项目完整部署脚本（deploy_all）
   BABY_RUN_BUILD            true|false，默认 true
   BABY_DEPLOY_VERCEL        true|false，默认 true
   BABY_SKIP_DOCS_CHECK      true|false，默认 false
+  BABY_RUN_COZE_GATE        true|false，默认 true
 EOF
 }
 
@@ -62,6 +67,7 @@ BABY_RUN_TEST="${BABY_RUN_TEST:-true}"
 BABY_RUN_BUILD="${BABY_RUN_BUILD:-true}"
 BABY_DEPLOY_VERCEL="${BABY_DEPLOY_VERCEL:-true}"
 BABY_SKIP_DOCS_CHECK="${BABY_SKIP_DOCS_CHECK:-false}"
+BABY_RUN_COZE_GATE="${BABY_RUN_COZE_GATE:-true}"
 BABY_DEPLOY_BRANCH="${BABY_DEPLOY_BRANCH:-main}"
 BABY_ALLOW_NON_MAIN="${BABY_ALLOW_NON_MAIN:-false}"
 
@@ -135,26 +141,32 @@ run_full_pipeline() {
   log_info "环境: $BABY_DEPLOY_ENVIRONMENT"
   log_info "执行测试: $BABY_RUN_TEST"
   log_info "执行构建: $BABY_RUN_BUILD"
+  log_info "执行 Coze Gate: $BABY_RUN_COZE_GATE"
   log_info "部署 Vercel: $BABY_DEPLOY_VERCEL"
   if [ "$BABY_DEPLOY_VERCEL" != "true" ]; then
     log_info "提示: 当前已关闭 Vercel 部署（BABY_DEPLOY_VERCEL=false）"
   fi
 
+  if [ "$BABY_RUN_COZE_GATE" = "true" ]; then
+    log_section "步骤 1: 执行 Coze Gate（配置+协议+回归）"
+    "$SCRIPT_DIR/coze_gate.sh"
+  fi
+
   if [ "$BABY_RUN_TEST" = "true" ]; then
-    log_section "步骤 1: 执行测试"
+    log_section "步骤 2: 执行测试"
     cd "$APP_DIR"
     npm test
     cd "$PROJECT_ROOT"
   fi
 
   if [ "$BABY_RUN_BUILD" = "true" ]; then
-    log_section "步骤 2: 执行构建"
+    log_section "步骤 3: 执行构建"
     cd "$APP_DIR"
     npm run build
     cd "$PROJECT_ROOT"
   fi
 
-  log_section "步骤 3: 上传到 GitHub"
+  log_section "步骤 4: 上传到 GitHub"
   if [ -n "$BABY_COMMIT_MSG" ]; then
     "$SCRIPT_DIR/upload_to_github.sh" "$BABY_COMMIT_MSG"
   else
@@ -162,7 +174,7 @@ run_full_pipeline() {
   fi
 
   if [ "$BABY_DEPLOY_VERCEL" = "true" ]; then
-    log_section "步骤 4: 部署到 Vercel"
+    log_section "步骤 5: 部署到 Vercel"
     "$SCRIPT_DIR/deploy_vercel.sh" "$BABY_DEPLOY_ENVIRONMENT"
   fi
 

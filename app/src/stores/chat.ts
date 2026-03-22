@@ -53,6 +53,60 @@ function mergeUniqueByKey<T>(base: T[], incoming: T[], keyGetter: (item: T) => s
   return [...map.values()]
 }
 
+function getFlowSteps(flow: unknown): Array<{ id?: string; status?: string; detail?: string }> {
+  if (!flow || typeof flow !== 'object') return []
+  const steps = (flow as { steps?: unknown }).steps
+  if (!Array.isArray(steps)) return []
+  return steps
+    .filter(step => step && typeof step === 'object')
+    .map(step => {
+      const row = step as Record<string, unknown>
+      return {
+        id: typeof row.id === 'string' ? row.id : '',
+        status: typeof row.status === 'string' ? row.status : '',
+        detail: typeof row.detail === 'string' ? row.detail : ''
+      }
+    })
+}
+
+function buildFlowPreviewText(aiMessage: MessageEntity): string {
+  const flow = aiMessage.meta?.processingFlow
+  const route = flow?.route || 'general_chat'
+  const steps = getFlowSteps(flow)
+  const lines = [`将按以下流程处理（${route}）：`]
+  steps.forEach((step, index) => {
+    lines.push(`${index + 1}. [${step.status || '-'}] ${step.id || 'step'} - ${step.detail || ''}`)
+  })
+  if (flow?.nextActions?.length) {
+    lines.push(`可继续：${flow.nextActions.join('；')}`)
+  }
+  return lines.join('\n')
+}
+
+function buildPlannerMessage(aiMessage: MessageEntity): MessageEntity | null {
+  if (aiMessage.senderType !== 'ai') return null
+  if (aiMessage.meta?.interactionMode !== 'flow_first') return null
+  const flow = aiMessage.meta?.processingFlow
+  if (!flow) return null
+  const steps = getFlowSteps(flow)
+  if (!steps.length) return null
+
+  return {
+    _id: `plan_${aiMessage._id}`,
+    roomId: aiMessage.roomId,
+    senderId: aiMessage.senderId,
+    senderType: 'ai',
+    messageType: 'text',
+    content: buildFlowPreviewText(aiMessage),
+    createdAt: aiMessage.createdAt,
+    status: 'delivered',
+    meta: {
+      processingFlow: flow,
+      interactionMode: 'flow_first'
+    }
+  }
+}
+
 function resolveEventData(input: unknown): Record<string, unknown> {
   if (!input || typeof input !== 'object') return {}
   const obj = input as Record<string, unknown>
@@ -433,6 +487,10 @@ export const useChatStore = defineStore('chat', {
         const saved = result.message
         this.messages = this.messages.map(item => (item._id === message._id ? saved : item))
         if (result.aiMessage) {
+          const planner = buildPlannerMessage(result.aiMessage)
+          if (planner) {
+            this.messages = upsertMessage(this.messages, planner)
+          }
           this.messages = upsertMessage(this.messages, result.aiMessage)
         }
       } catch (error) {

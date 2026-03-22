@@ -93,6 +93,57 @@ function buildFallbackAnswer(message) {
   return `已收到你的消息：${preview}\n\n当前 AI 服务暂时繁忙，我先帮你记录问题。请稍后再试一次，我会尽快给出完整回复。`
 }
 
+function buildProcessingFlow({ message, files, coze, degraded, degradedReason }) {
+  const steps = []
+  steps.push({
+    id: 'input_normalize',
+    status: 'done',
+    detail: `已接收输入，文本长度=${message.length}，附件数量=${Array.isArray(files) ? files.length : 0}`
+  })
+  if (Array.isArray(files) && files.length) {
+    const withUrl = files.filter(file => file && file.url).length
+    steps.push({
+      id: 'attachment_context',
+      status: 'done',
+      detail: `附件上下文已注入（可访问URL ${withUrl}/${files.length}）`
+    })
+  }
+  steps.push({
+    id: 'agent_route',
+    status: degraded ? 'fallback' : 'done',
+    detail: degraded
+      ? `Coze 调用降级：${degradedReason || 'unknown'}`
+      : `已完成 Agent 路由（renderType=${coze?.renderType || 'general_chat'}）`
+  })
+  steps.push({
+    id: 'response_finalize',
+    status: 'done',
+    detail: '已输出可展示回复并写入历史记录'
+  })
+
+  const nextActions = []
+  const renderType = typeof coze?.renderType === 'string' ? coze.renderType : ''
+  if (renderType === 'calligraphy_scoring') {
+    nextActions.push('可继续调用：逐字改进建议')
+    nextActions.push('可继续调用：生成下一轮练习字帖')
+  } else {
+    nextActions.push('可继续调用：追问细节')
+    nextActions.push('可继续调用：切换到作文/英语等能力问题')
+  }
+
+  return {
+    route: renderType || 'general_chat',
+    degraded: Boolean(degraded),
+    steps,
+    nextActions
+  }
+}
+
+function resolveInteractionMode(processingFlow) {
+  const route = typeof processingFlow?.route === 'string' ? processingFlow.route : ''
+  return route && route !== 'general_chat' ? 'flow_first' : 'direct'
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') return methodNotAllowed(res)
 
@@ -147,9 +198,22 @@ export default async function handler(req, res) {
         'representation'
       )
       const row = Array.isArray(inserted) ? inserted[0] : inserted
+      const processingFlow = buildProcessingFlow({
+        message,
+        files,
+        coze,
+        degraded: fallbackUsed,
+        degradedReason: fallbackReason
+      })
+      const interactionMode = resolveInteractionMode(processingFlow)
       return ok(res, {
         conversationId: row.id,
         answer: row.answer,
+        structuredData: coze.structuredData || null,
+        renderType: typeof coze.renderType === 'string' ? coze.renderType : '',
+        renderVersion: typeof coze.renderVersion === 'string' ? coze.renderVersion : '',
+        processingFlow,
+        interactionMode,
         createdAt: row.created_at,
         degraded: fallbackUsed,
         degradedReason: fallbackUsed ? fallbackReason : ''

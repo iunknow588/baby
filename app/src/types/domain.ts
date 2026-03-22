@@ -35,6 +35,20 @@ export interface MessageEntity {
     aiAnswer?: string
     degraded?: boolean
     degradedReason?: string
+    structuredData?: Record<string, unknown>
+    renderType?: string
+    renderVersion?: string
+    interactionMode?: 'direct' | 'flow_first'
+    processingFlow?: {
+      route?: string
+      degraded?: boolean
+      steps?: Array<{
+        id?: string
+        status?: string
+        detail?: string
+      }>
+      nextActions?: string[]
+    }
     cardType?: 'advice' | 'task' | 'summary'
     taskId?: string
     traceId?: string

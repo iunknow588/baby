@@ -419,6 +419,20 @@ export const chatApi = {
       const answer = ensureString(data.answer, 'sendMessage.data.answer')
       const degraded = typeof data.degraded === 'boolean' ? data.degraded : false
       const degradedReason = typeof data.degradedReason === 'string' ? data.degradedReason : ''
+      const structuredData =
+        data.structuredData && typeof data.structuredData === 'object' && !Array.isArray(data.structuredData)
+          ? (data.structuredData as Record<string, unknown>)
+          : undefined
+      const renderType = typeof data.renderType === 'string' ? data.renderType : ''
+      const renderVersion = typeof data.renderVersion === 'string' ? data.renderVersion : ''
+      const interactionMode =
+        data.interactionMode === 'flow_first' || data.interactionMode === 'direct'
+          ? data.interactionMode
+          : undefined
+      const processingFlow =
+        data.processingFlow && typeof data.processingFlow === 'object' && !Array.isArray(data.processingFlow)
+          ? (data.processingFlow as NonNullable<MessageEntity['meta']>['processingFlow'])
+          : undefined
       const userMessage: MessageEntity = {
         _id: payload.clientMessageId,
         roomId: payload.roomId || MVP_ROOM_ID,
@@ -429,7 +443,21 @@ export const chatApi = {
         createdAt: ensureString(data.createdAt, 'sendMessage.data.createdAt'),
         status: 'delivered',
         files: payload.files,
-        meta: { ...(payload.meta || {}), aiAnswer: answer, degraded, degradedReason }
+        meta: {
+          ...(payload.meta || {}),
+          aiAnswer: answer,
+          degraded,
+          degradedReason,
+          ...(structuredData
+            ? {
+                structuredData,
+                renderType,
+                renderVersion
+              }
+            : {}),
+          ...(interactionMode ? { interactionMode } : {}),
+          ...(processingFlow ? { processingFlow } : {})
+        }
       }
       const aiMessage: MessageEntity | undefined = answer
         ? {
@@ -441,7 +469,19 @@ export const chatApi = {
             content: answer,
             createdAt: userMessage.createdAt,
             status: 'delivered',
-            meta: { degraded, degradedReason }
+            meta: {
+              degraded,
+              degradedReason,
+              ...(structuredData
+                ? {
+                    structuredData,
+                    renderType,
+                    renderVersion
+                  }
+                : {}),
+              ...(interactionMode ? { interactionMode } : {}),
+              ...(processingFlow ? { processingFlow } : {})
+            }
           }
         : undefined
       return { message: userMessage, aiMessage }

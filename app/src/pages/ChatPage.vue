@@ -53,6 +53,66 @@
           <span v-else-if="item.status === 'failed'" style="color: #b42318">发送失败</span>
         </div>
         <div class="bubble">{{ formatMessageContent(item.content) }}</div>
+        <div v-if="item.files?.length" class="file-list">
+          <template v-for="(file, idx) in item.files" :key="`${item._id}_f_${idx}`">
+            <a
+              v-if="isHttpUrl(file.url)"
+              class="file-item"
+              :href="file.url"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <img
+                v-if="isImageLikeFile(file)"
+                class="file-thumb"
+                :src="file.url"
+                :alt="file.name || 'image'"
+              />
+              <span>{{ file.name || file.url }}</span>
+            </a>
+            <div v-else class="file-item" role="note" aria-live="polite">
+              <span>{{ file.name || '附件（无可访问地址）' }}</span>
+            </div>
+          </template>
+        </div>
+        <div v-if="item.senderType === 'ai' && item.meta?.structuredData" class="structured-preview">
+          <template v-if="isCalligraphyScoring(item.meta.structuredData)">
+            <div class="calligraphy-card">
+              <div class="calligraphy-title">
+                书法评分
+                <span v-if="getCalligraphyOverall(item.meta.structuredData)">
+                  （{{ getCalligraphyOverall(item.meta.structuredData) }}）
+                </span>
+              </div>
+              <canvas
+                class="calligraphy-canvas"
+                :ref="el => bindCalligraphyCanvas(el, item.meta?.structuredData)"
+              />
+              <p v-if="getCalligraphyFeedback(item.meta.structuredData)" class="calligraphy-feedback">
+                {{ getCalligraphyFeedback(item.meta.structuredData) }}
+              </p>
+            </div>
+          </template>
+          <details v-else>
+            <summary>结构化结果</summary>
+            <pre>{{ formatStructuredData(item.meta.structuredData) }}</pre>
+          </details>
+        </div>
+        <div v-if="item.senderType === 'ai' && item.meta?.processingFlow" class="flow-preview">
+          <details>
+            <summary>
+              处理流程（{{ item.meta.processingFlow.route || 'general_chat' }} / {{ item.meta?.interactionMode || 'direct' }}）
+            </summary>
+            <ol>
+              <li v-for="(step, idx) in getProcessingFlowSteps(item.meta.processingFlow)" :key="`${item._id}_s_${idx}`">
+                <strong>[{{ step.status || '-' }}]</strong> {{ step.id || 'step' }} - {{ step.detail || '' }}
+              </li>
+            </ol>
+            <p v-if="item.meta.processingFlow.nextActions?.length" class="flow-next">
+              下一步：{{ item.meta.processingFlow.nextActions.join('；') }}
+            </p>
+          </details>
+        </div>
         <div v-if="isToolCallLeak(item.content)" class="degraded-note">
           已拦截工具中间消息，等待最终答案...
         </div>
@@ -181,7 +241,7 @@ import { useChatStore } from '../stores/chat'
 import { chatApi } from '../services/api/chat.api'
 import { voiceApi } from '../services/api/voice.api'
 import { requestMicPermission } from '../platform/media'
-import type { MessageEntity } from '../types/domain'
+import type { ChatFile, MessageEntity } from '../types/domain'
 
 type SpeechRecognitionLike = {
   lang: string
@@ -766,6 +826,192 @@ function formatTime(input: string): string {
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
 }
 
+function isHttpUrl(input: unknown): input is string {
+  return typeof input === 'string' && /^https?:\/\/.+/i.test(input.trim())
+}
+
+function isImageLikeFile(file: ChatFile): boolean {
+  const type = typeof file?.type === 'string' ? file.type.toLowerCase() : ''
+  if (type.startsWith('image/')) return isHttpUrl(file.url)
+  const ext = typeof file?.extension === 'string' ? file.extension.toLowerCase() : ''
+  return ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'].includes(ext) && isHttpUrl(file.url)
+}
+
+function formatStructuredData(input: unknown): string {
+  try {
+    return JSON.stringify(input, null, 2)
+  } catch {
+    return '[结构化数据无法展示]'
+  }
+}
+
+function getProcessingFlowSteps(input: unknown): Array<{ id?: string; status?: string; detail?: string }> {
+  if (!input || typeof input !== 'object') return []
+  const obj = input as { steps?: unknown[] }
+  if (!Array.isArray(obj.steps)) return []
+  return obj.steps
+    .filter(step => step && typeof step === 'object')
+    .map(step => {
+      const row = step as Record<string, unknown>
+      return {
+        id: typeof row.id === 'string' ? row.id : '',
+        status: typeof row.status === 'string' ? row.status : '',
+        detail: typeof row.detail === 'string' ? row.detail : ''
+      }
+    })
+}
+
+type CalligraphyCharacter = {
+  bbox: number[]
+  score?: number
+  comment?: string
+}
+
+type CalligraphyPayload = {
+  sourceImageUrl: string
+  overall: string
+  feedback: string
+  characters: CalligraphyCharacter[]
+}
+
+function toSafeNumberArray(input: unknown): number[] {
+  if (!Array.isArray(input)) return []
+  return input
+    .map(item => Number(item))
+    .filter(item => Number.isFinite(item))
+}
+
+function normalizeCalligraphyPayload(input: unknown): CalligraphyPayload | null {
+  if (!input || typeof input !== 'object') return null
+  const obj = input as Record<string, unknown>
+  const sourceImageUrlRaw =
+    (typeof obj.sourceImageUrl === 'string' && obj.sourceImageUrl) ||
+    (typeof obj.source_image_url === 'string' && obj.source_image_url) ||
+    (typeof obj.imageUrl === 'string' && obj.imageUrl) ||
+    (typeof obj.url === 'string' && obj.url) ||
+    ''
+  const sourceImageUrl = isHttpUrl(sourceImageUrlRaw) ? sourceImageUrlRaw.trim() : ''
+  const charactersRaw = Array.isArray(obj.characters) ? obj.characters : []
+  const characters: CalligraphyCharacter[] = charactersRaw
+    .filter(row => row && typeof row === 'object')
+    .map(row => {
+      const item = row as Record<string, unknown>
+      const bbox = toSafeNumberArray(item.bbox)
+      const scoreRaw = Number(item.score)
+      return {
+        bbox,
+        score: Number.isFinite(scoreRaw) ? scoreRaw : undefined,
+        comment: typeof item.comment === 'string' ? item.comment.trim() : undefined
+      }
+    })
+    .filter(row => row.bbox.length >= 8)
+
+  if (!sourceImageUrl || characters.length === 0) return null
+  return {
+    sourceImageUrl,
+    overall:
+      (typeof obj.overallGrade === 'string' && obj.overallGrade.trim()) ||
+      (typeof obj.overall_grade === 'string' && obj.overall_grade.trim()) ||
+      '',
+    feedback: typeof obj.feedback === 'string' ? obj.feedback.trim() : '',
+    characters
+  }
+}
+
+function isCalligraphyScoring(input: unknown): boolean {
+  return Boolean(normalizeCalligraphyPayload(input))
+}
+
+function getCalligraphyOverall(input: unknown): string {
+  return normalizeCalligraphyPayload(input)?.overall || ''
+}
+
+function getCalligraphyFeedback(input: unknown): string {
+  return normalizeCalligraphyPayload(input)?.feedback || ''
+}
+
+function scoreToStrokeColor(score?: number): string {
+  if (!Number.isFinite(score)) return '#1570ef'
+  if (score >= 90) return '#067647'
+  if (score >= 75) return '#175cd3'
+  if (score >= 60) return '#b54708'
+  return '#b42318'
+}
+
+function drawPolygon(
+  ctx: CanvasRenderingContext2D,
+  points: number[],
+  scaleX: number,
+  scaleY: number,
+  color: string
+) {
+  ctx.strokeStyle = color
+  ctx.lineWidth = 2
+  ctx.beginPath()
+  ctx.moveTo(points[0] * scaleX, points[1] * scaleY)
+  for (let i = 2; i < points.length; i += 2) {
+    ctx.lineTo(points[i] * scaleX, points[i + 1] * scaleY)
+  }
+  ctx.closePath()
+  ctx.stroke()
+}
+
+async function renderCalligraphyCanvas(canvas: HTMLCanvasElement, payload: CalligraphyPayload) {
+  const image = new Image()
+  image.crossOrigin = 'anonymous'
+
+  await new Promise<void>((resolve, reject) => {
+    image.onload = () => resolve()
+    image.onerror = () => reject(new Error('image load failed'))
+    image.src = payload.sourceImageUrl
+  })
+
+  const maxWidth = 320
+  const ratio = image.naturalWidth > maxWidth ? maxWidth / image.naturalWidth : 1
+  canvas.width = Math.max(1, Math.floor(image.naturalWidth * ratio))
+  canvas.height = Math.max(1, Math.floor(image.naturalHeight * ratio))
+
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return
+  ctx.clearRect(0, 0, canvas.width, canvas.height)
+  ctx.drawImage(image, 0, 0, canvas.width, canvas.height)
+
+  const scaleX = canvas.width / image.naturalWidth
+  const scaleY = canvas.height / image.naturalHeight
+  ctx.font = '12px sans-serif'
+  ctx.textBaseline = 'bottom'
+
+  payload.characters.forEach(item => {
+    const color = scoreToStrokeColor(item.score)
+    drawPolygon(ctx, item.bbox, scaleX, scaleY, color)
+    if (Number.isFinite(item.score)) {
+      const minX = Math.min(item.bbox[0], item.bbox[2], item.bbox[4], item.bbox[6]) * scaleX
+      const minY = Math.min(item.bbox[1], item.bbox[3], item.bbox[5], item.bbox[7]) * scaleY
+      const label = `${Math.round(item.score || 0)}`
+      ctx.fillStyle = color
+      ctx.fillRect(minX, Math.max(0, minY - 16), 22, 14)
+      ctx.fillStyle = '#ffffff'
+      ctx.fillText(label, minX + 4, Math.max(10, minY - 4))
+    }
+  })
+}
+
+function bindCalligraphyCanvas(el: Element | null, input: unknown) {
+  if (!(el instanceof HTMLCanvasElement)) return
+  const payload = normalizeCalligraphyPayload(input)
+  if (!payload) return
+  void renderCalligraphyCanvas(el, payload).catch(() => {
+    const ctx = el.getContext('2d')
+    if (!ctx) return
+    el.width = 280
+    el.height = 48
+    ctx.clearRect(0, 0, el.width, el.height)
+    ctx.fillStyle = '#b42318'
+    ctx.font = '12px sans-serif'
+    ctx.fillText('评分图像渲染失败，请检查图片地址可访问性。', 8, 28)
+  })
+}
+
 function isToolCallLeak(content: string): boolean {
   const text = typeof content === 'string' ? content.trim() : ''
   if (!text.startsWith('{') || !text.endsWith('}')) return false
@@ -884,6 +1130,120 @@ function formatStructuredAnswer(content: string): string {
   margin-top: 4px;
   font-size: 12px;
   color: #b54708;
+}
+
+.file-list {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.file-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 90%;
+  font-size: 12px;
+  color: #175cd3;
+  text-decoration: none;
+}
+
+.file-thumb {
+  width: 42px;
+  height: 42px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid #d0d5dd;
+  background: #fff;
+}
+
+.structured-preview {
+  margin-top: 6px;
+}
+
+.structured-preview details {
+  max-width: 90%;
+}
+
+.structured-preview summary {
+  font-size: 12px;
+  color: #475467;
+  cursor: pointer;
+}
+
+.structured-preview pre {
+  margin: 6px 0 0;
+  padding: 8px;
+  border-radius: 8px;
+  background: #f2f4f7;
+  border: 1px solid #eaecf0;
+  font-size: 12px;
+  color: #1d2939;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.calligraphy-card {
+  max-width: 90%;
+  margin-top: 2px;
+  padding: 8px;
+  border: 1px solid #d0d5dd;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.calligraphy-title {
+  font-size: 12px;
+  color: #344054;
+  margin-bottom: 6px;
+}
+
+.calligraphy-canvas {
+  width: 100%;
+  max-width: 320px;
+  height: auto;
+  border: 1px solid #eaecf0;
+  border-radius: 6px;
+  background: #f9fafb;
+}
+
+.calligraphy-feedback {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: #475467;
+  line-height: 1.45;
+}
+
+.flow-preview {
+  margin-top: 6px;
+}
+
+.flow-preview details {
+  max-width: 90%;
+}
+
+.flow-preview summary {
+  font-size: 12px;
+  color: #475467;
+  cursor: pointer;
+}
+
+.flow-preview ol {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: #344054;
+}
+
+.flow-preview li + li {
+  margin-top: 4px;
+}
+
+.flow-next {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: #667085;
 }
 
 .msg.me {

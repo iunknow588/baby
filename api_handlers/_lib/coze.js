@@ -117,20 +117,78 @@ function renderJsonErrorAnswer(obj) {
   return `服务调用失败：${msg}`
 }
 
-function normalizeAssistantAnswer(content) {
-  if (typeof content !== 'string') return ''
+function detectRenderMeta(obj) {
+  const renderType = typeof obj.renderType === 'string' ? obj.renderType.trim() : ''
+  const renderVersion = typeof obj.renderVersion === 'string' ? obj.renderVersion.trim() : ''
+  if (renderType) {
+    return { renderType, renderVersion: renderVersion || 'v1' }
+  }
+
+  const hasCalligraphyShape =
+    Array.isArray(obj.characters) &&
+    (Object.prototype.hasOwnProperty.call(obj, 'overall_grade') ||
+      Object.prototype.hasOwnProperty.call(obj, 'overallGrade') ||
+      Object.prototype.hasOwnProperty.call(obj, 'feedback'))
+  if (hasCalligraphyShape) {
+    return { renderType: 'calligraphy_scoring', renderVersion: 'v1' }
+  }
+
+  return { renderType: '', renderVersion: '' }
+}
+
+function renderCalligraphySummary(obj) {
+  if (!obj || typeof obj !== 'object') return ''
+  const overall = typeof obj.overall_grade === 'string'
+    ? obj.overall_grade.trim()
+    : typeof obj.overallGrade === 'string'
+      ? obj.overallGrade.trim()
+      : ''
+  const feedback = typeof obj.feedback === 'string' ? obj.feedback.trim() : ''
+  const count = Array.isArray(obj.characters) ? obj.characters.length : 0
+  if (!overall && !feedback && count <= 0) return ''
+
+  const lines = ['【书法评分结果】']
+  if (overall) lines.push(`总体等级：${overall}`)
+  if (count > 0) lines.push(`识别字数：${count}`)
+  if (feedback) lines.push(feedback)
+  return lines.join('\n')
+}
+
+function normalizeAssistantPayload(content) {
+  if (typeof content !== 'string') return null
   const normalized = unwrapCodeFence(content)
-  if (!normalized) return ''
-  if (isToolCallPayload(normalized)) return ''
+  if (!normalized) return null
+  if (isToolCallPayload(normalized)) return null
 
   const parsed = parseJsonObject(normalized)
-  if (!parsed) return normalized
-  if (isToolCallPayload(normalized)) return ''
+  if (!parsed) {
+    return {
+      answer: normalized,
+      structuredData: null,
+      renderType: '',
+      renderVersion: ''
+    }
+  }
+  if (isToolCallPayload(normalized)) return null
 
-  const structured = renderStructuredAnswer(parsed)
-  if (structured) return structured
   const errorText = renderJsonErrorAnswer(parsed)
-  return errorText || normalized
+  if (errorText) {
+    return {
+      answer: errorText,
+      structuredData: null,
+      renderType: '',
+      renderVersion: ''
+    }
+  }
+
+  const renderMeta = detectRenderMeta(parsed)
+  const structuredAnswer = renderStructuredAnswer(parsed) || renderCalligraphySummary(parsed)
+  return {
+    answer: structuredAnswer || normalized,
+    structuredData: renderMeta.renderType ? parsed : null,
+    renderType: renderMeta.renderType,
+    renderVersion: renderMeta.renderVersion
+  }
 }
 
 function extractAnswerFromMessages(messages) {
@@ -139,12 +197,10 @@ function extractAnswerFromMessages(messages) {
     const role = typeof msg?.role === 'string' ? msg.role : ''
     if (role && role !== 'assistant') continue
     const content = typeof msg?.content === 'string' ? msg.content : ''
-    const normalized = normalizeAssistantAnswer(content)
-    if (normalized) {
-      return normalized
-    }
+    const normalized = normalizeAssistantPayload(content)
+    if (normalized?.answer) return normalized
   }
-  return ''
+  return null
 }
 
 async function cozeV3Complete({ message, conversationId }) {
@@ -188,12 +244,15 @@ async function cozeV3Complete({ message, conversationId }) {
       `/v3/chat/message/list?chat_id=${encodeURIComponent(chatId)}&conversation_id=${encodeURIComponent(convId)}`,
       env
     )
-    const answer = extractAnswerFromMessages(lastListed?.data)
-    if (answer) {
+    const payload = extractAnswerFromMessages(lastListed?.data)
+    if (payload?.answer) {
       return {
         chatId,
         conversationId: convId,
-        answer,
+        answer: payload.answer,
+        structuredData: payload.structuredData,
+        renderType: payload.renderType,
+        renderVersion: payload.renderVersion,
         raw: lastListed
       }
     }
@@ -206,12 +265,15 @@ async function cozeV3Complete({ message, conversationId }) {
       `/v3/chat/message/list?chat_id=${encodeURIComponent(chatId)}&conversation_id=${encodeURIComponent(convId)}`,
       env
     )
-    const finalAnswer = extractAnswerFromMessages(lastListed?.data)
-    if (finalAnswer) {
+    const finalPayload = extractAnswerFromMessages(lastListed?.data)
+    if (finalPayload?.answer) {
       return {
         chatId,
         conversationId: convId,
-        answer: finalAnswer,
+        answer: finalPayload.answer,
+        structuredData: finalPayload.structuredData,
+        renderType: finalPayload.renderType,
+        renderVersion: finalPayload.renderVersion,
         raw: lastListed
       }
     }

@@ -8,6 +8,10 @@
 - `deploy.sh`：兼容别名入口（等价转发到 `deploy_all.sh`）
 - `upload_to_github.sh`：提交并推送到 GitHub
 - `deploy_vercel.sh`：部署前后端一体到 Vercel（根目录 `vercel.json` + `api/*` Functions）
+- `coze_gate.sh`：Coze 自动化门禁（配置体检 + 协议检查 + 路由回归）
+- `coze_create_preflight.sh`：Coze 自动创建前置检查（聊天连通 + CozeLoop 创建凭证检查）
+- `cozeloop_probe.sh`：CozeLoop JWT + API 实连探测（验证私钥可解析并调用 `/v1/loop/prompts/mget`）
+- `coze_sync_check.sh`：校验本地工作流绑定清单与 CozeLoop 资源一致性（当前仅检查 Prompt 资源）
 - `smoke_api.sh`：MVP 接口冒烟检查（`/api/user`、`/api/chat`、`/api/history`、`/api/coze/chat`）
 - `smoke_realtime.sh`：实时链路冒烟检查（`/api/chat/sessions`、`/api/chat/stream`、`/api/v1/conversations/*`）
 - `smoke_platform.sh`：平台能力冒烟检查（`/api/v1/groups/*`、`/api/v1/assets/upload`、`/api/v1/capabilities/execute`）
@@ -25,6 +29,8 @@
 - 兼容别名：`deploy.sh`（仅转发到 `deploy_all.sh`，不承载独立业务逻辑）
 - 完整发布会在 `deploy_all.sh` 内依次调用：
   - `docs-check`
+  - `coze-gate`
+  - `test + build`
   - `upload_to_github.sh`
   - `deploy_vercel.sh`（可通过 `BABY_DEPLOY_VERCEL=false` 跳过）
 - `deploy_all.sh` 不接收业务参数；执行即开始完整流程。
@@ -41,7 +47,7 @@
 ```bash
 cd /home/lc/luckee_dao/baby
 
-# 直接执行完整部署（docs-check -> test -> build -> github -> vercel）
+# 直接执行完整部署（docs-check -> coze-gate -> test -> build -> github -> vercel）
 ./scripts/deploy_all.sh
 
 # 兼容别名（等价）
@@ -60,6 +66,15 @@ BABY_DEPLOY_VERCEL=true \
 ./scripts/smoke_api.sh
 ./scripts/smoke_realtime.sh
 ./scripts/smoke_platform.sh
+
+# Coze 自动创建前置检查
+./scripts/coze_create_preflight.sh
+
+# CozeLoop 实连探测（JWT + API）
+./scripts/cozeloop_probe.sh
+
+# Coze 绑定同步检查（registry -> CozeLoop）
+./scripts/coze_sync_check.sh
 ```
 
 ## 环境变量
@@ -67,6 +82,7 @@ BABY_DEPLOY_VERCEL=true \
 - 脚本默认读取 `baby/.env.local`（后端配置源）。
 - `BABY_RUN_TEST`：`true|false`，默认 `true`
 - `BABY_RUN_BUILD`：`true|false`，默认 `true`
+- `BABY_RUN_COZE_GATE`：`true|false`，默认 `true`
 - `BABY_DEPLOY_VERCEL`：`true|false`，默认 `true`
 - `BABY_DEPLOY_ENVIRONMENT`：`production|preview`，默认 `production`
 - `BABY_COMMIT_MSG`：提交信息（默认由脚本自动生成）

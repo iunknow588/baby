@@ -221,4 +221,54 @@ describe('chat store state machine', () => {
     expect(store.messages).toHaveLength(1)
     expect(store.messages[0].status).toBe('failed')
   })
+
+  it('inserts planner preview before ai result when interactionMode is flow_first', async () => {
+    const { useChatStore } = await import('../chat')
+    const store = useChatStore()
+    store.roomId = 'r_mvp_main'
+
+    sendMessageMock.mockResolvedValueOnce({
+      message: {
+        _id: 'cm_100',
+        roomId: 'r_mvp_main',
+        senderId: 'u_current',
+        senderType: 'user',
+        messageType: 'text',
+        content: '请帮我看这张书法',
+        createdAt: '2026-03-12T00:00:00.000Z',
+        status: 'delivered'
+      },
+      aiMessage: {
+        _id: 'ai_cm_100',
+        roomId: 'r_mvp_main',
+        senderId: 'u_ai',
+        senderType: 'ai',
+        messageType: 'text',
+        content: '评分完成',
+        createdAt: '2026-03-12T00:00:00.000Z',
+        status: 'delivered',
+        meta: {
+          interactionMode: 'flow_first',
+          processingFlow: {
+            route: 'calligraphy_scoring',
+            steps: [
+              { id: 'input_normalize', status: 'done', detail: 'ok' },
+              { id: 'agent_route', status: 'done', detail: 'ok' }
+            ]
+          }
+        }
+      }
+    })
+
+    await store.sendText('请帮我看这张书法')
+
+    const planner = store.messages.find(item => item._id === 'plan_ai_cm_100')
+    const ai = store.messages.find(item => item._id === 'ai_cm_100')
+    expect(planner).toBeTruthy()
+    expect(planner?.content).toContain('将按以下流程处理（calligraphy_scoring）')
+    expect(ai?.content).toBe('评分完成')
+    const plannerIndex = store.messages.findIndex(item => item._id === 'plan_ai_cm_100')
+    const aiIndex = store.messages.findIndex(item => item._id === 'ai_cm_100')
+    expect(plannerIndex).toBeLessThan(aiIndex)
+  })
 })
