@@ -205,16 +205,102 @@ function buildEdgeCleanupHintFromImage(rawData, info, baseBounds) {
     return 0;
   };
 
+  const detectInsetHorizontalFrameLine = (side, maxInset) => {
+    if (side !== 'top' && side !== 'bottom') {
+      return null;
+    }
+    const sampleStrideX = 2;
+    const sampleDepth = 3;
+    const darkThreshold = paperColor.luma - Math.max(18, Math.min(42, paperLumaDropLimit + 8));
+    const minRunCoverage = 0.62;
+    const minInsetMargin = Math.max(12, Math.round(width0 * 0.018));
+    const maxInsetToInspect = clamp(maxInset + Math.max(6, Math.round(height0 * 0.02)), 0, maxInsetY);
+
+    for (let inset = 0; inset <= maxInsetToInspect; inset += 1) {
+      let bestRunStart = null;
+      let bestRunEnd = null;
+      let currentRunStart = null;
+      let strongRows = 0;
+
+      for (let band = 0; band < sampleDepth; band += 1) {
+        const y = side === 'top'
+          ? clamp(top0 + inset + band, top0, bottom0 - 1)
+          : clamp(bottom0 - 1 - inset - band, top0, bottom0 - 1);
+        let rowBestStart = null;
+        let rowBestEnd = null;
+        let rowCurrentStart = null;
+        for (let x = left0; x < right0; x += sampleStrideX) {
+          const offset = (y * imageWidth + x) * channels;
+          const luma = 0.299 * rawData[offset] + 0.587 * rawData[offset + 1] + 0.114 * rawData[offset + 2];
+          const dark = luma <= darkThreshold;
+          if (dark) {
+            if (rowCurrentStart === null) {
+              rowCurrentStart = x;
+            }
+          } else if (rowCurrentStart !== null) {
+            const rowRunEnd = x - sampleStrideX;
+            if (rowBestStart === null || (rowRunEnd - rowCurrentStart) > (rowBestEnd - rowBestStart)) {
+              rowBestStart = rowCurrentStart;
+              rowBestEnd = rowRunEnd;
+            }
+            rowCurrentStart = null;
+          }
+        }
+        if (rowCurrentStart !== null) {
+          const rowRunEnd = right0 - 1;
+          if (rowBestStart === null || (rowRunEnd - rowCurrentStart) > (rowBestEnd - rowBestStart)) {
+            rowBestStart = rowCurrentStart;
+            rowBestEnd = rowRunEnd;
+          }
+        }
+        if (Number.isFinite(rowBestStart) && Number.isFinite(rowBestEnd)) {
+          const rowRunWidth = rowBestEnd - rowBestStart;
+          if (rowRunWidth >= width0 * minRunCoverage) {
+            strongRows += 1;
+            if (bestRunStart === null || rowBestStart < bestRunStart) {
+              bestRunStart = rowBestStart;
+            }
+            if (bestRunEnd === null || rowBestEnd > bestRunEnd) {
+              bestRunEnd = rowBestEnd;
+            }
+          }
+        }
+      }
+
+      if (strongRows >= 2 && Number.isFinite(bestRunStart) && Number.isFinite(bestRunEnd)) {
+        const leftMargin = bestRunStart - left0;
+        const rightMargin = right0 - 1 - bestRunEnd;
+        const runWidth = bestRunEnd - bestRunStart;
+        if (
+          runWidth >= width0 * minRunCoverage
+          && leftMargin >= minInsetMargin
+          && rightMargin >= minInsetMargin
+        ) {
+          return {
+            inset,
+            runWidth,
+            leftMargin,
+            rightMargin,
+            strongRows
+          };
+        }
+      }
+    }
+    return null;
+  };
+
   const baseInsetLeft = Math.max(scanSideByColor('left'), scanSideByBrightness('left'));
   const baseInsetRight = Math.max(scanSideByColor('right'), scanSideByBrightness('right'));
   const baseInsetTop = Math.max(scanSideByColor('top'), scanSideByBrightness('top'));
   const baseInsetBottom = Math.max(scanSideByColor('bottom'), scanSideByBrightness('bottom'));
+  const protectedTopFrameLine = baseInsetTop > 0 ? detectInsetHorizontalFrameLine('top', baseInsetTop) : null;
+  const protectedBottomFrameLine = baseInsetBottom > 0 ? detectInsetHorizontalFrameLine('bottom', baseInsetBottom) : null;
   const safetyInsetX = Math.max(1, Math.min(6, Math.round(width0 * 0.0025)));
   const safetyInsetY = Math.max(1, Math.min(8, Math.round(height0 * 0.0025)));
   const insetLeft = baseInsetLeft > 0 ? baseInsetLeft + safetyInsetX : 0;
   const insetRight = baseInsetRight > 0 ? baseInsetRight + safetyInsetX : 0;
-  const insetTop = baseInsetTop > 0 ? baseInsetTop + safetyInsetY : 0;
-  const insetBottom = baseInsetBottom > 0 ? baseInsetBottom + safetyInsetY : 0;
+  const insetTop = protectedTopFrameLine ? 0 : (baseInsetTop > 0 ? baseInsetTop + safetyInsetY : 0);
+  const insetBottom = protectedBottomFrameLine ? 0 : (baseInsetBottom > 0 ? baseInsetBottom + safetyInsetY : 0);
   const cleanLeft = clamp(left0 + insetLeft, left0, right0 - 2);
   const cleanTop = clamp(top0 + insetTop, top0, bottom0 - 2);
   const cleanRight = clamp(right0 - insetRight, cleanLeft + 2, right0);
@@ -235,6 +321,10 @@ function buildEdgeCleanupHintFromImage(rawData, info, baseBounds) {
       right: insetRight,
       top: insetTop,
       bottom: insetBottom
+    },
+    protectedFrameLines: {
+      top: protectedTopFrameLine,
+      bottom: protectedBottomFrameLine
     },
     cleanBounds: {
       left: cleanLeft,
