@@ -337,28 +337,36 @@ class A4ConstraintDetectPlugin {
     }
 
     if (outputImagePath) {
-      const width = metadata.width || 0;
-      const height = metadata.height || 0;
-      const rawBoundsRect = rawPaperBounds
-        ? `<rect x="${Math.round(rawPaperBounds.left || 0)}" y="${Math.round(rawPaperBounds.top || 0)}" width="${Math.max(1, Math.round(rawPaperBounds.width || 0))}" height="${Math.max(1, Math.round(rawPaperBounds.height || 0))}" fill="none" stroke="#16a34a" stroke-width="4" stroke-dasharray="14 10"/>`
-        : '';
-      const cleanBoundsRect = paperBounds
-        ? `<rect x="${Math.round(paperBounds.left || 0)}" y="${Math.round(paperBounds.top || 0)}" width="${Math.max(1, Math.round(paperBounds.width || 0))}" height="${Math.max(1, Math.round(paperBounds.height || 0))}" fill="none" stroke="#f59e0b" stroke-width="6"/>`
-        : '';
+      const useCleanedBase = Boolean(cleanedImagePath && edgeCleanup?.applied && fs.existsSync(cleanedImagePath));
+      const renderBasePath = useCleanedBase ? cleanedImagePath : imagePath;
+      const renderMeta = await sharp(renderBasePath).metadata();
+      const width = renderMeta.width || metadata.width || 0;
+      const height = renderMeta.height || metadata.height || 0;
+      const rawBoundsRect = useCleanedBase
+        ? ''
+        : rawPaperBounds
+          ? `<rect x="${Math.round(rawPaperBounds.left || 0)}" y="${Math.round(rawPaperBounds.top || 0)}" width="${Math.max(1, Math.round(rawPaperBounds.width || 0))}" height="${Math.max(1, Math.round(rawPaperBounds.height || 0))}" fill="none" stroke="#16a34a" stroke-width="4" stroke-dasharray="14 10"/>`
+          : '';
+      const cleanBoundsRect = useCleanedBase
+        ? `<rect x="2" y="2" width="${Math.max(1, width - 4)}" height="${Math.max(1, height - 4)}" fill="none" stroke="#f59e0b" stroke-width="6"/>`
+        : paperBounds
+          ? `<rect x="${Math.round(paperBounds.left || 0)}" y="${Math.round(paperBounds.top || 0)}" width="${Math.max(1, Math.round(paperBounds.width || 0))}" height="${Math.max(1, Math.round(paperBounds.height || 0))}" fill="none" stroke="#f59e0b" stroke-width="6"/>`
+          : '';
       const statusColor = isLikelyA4 ? '#22c55e' : '#ef4444';
       const svg = `
         <svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
           ${rawBoundsRect}
           ${cleanBoundsRect}
-          <rect x="18" y="18" width="${Math.min(560, Math.max(260, width - 36))}" height="144" rx="12" ry="12" fill="rgba(17,24,39,0.84)"/>
+          <rect x="18" y="18" width="${Math.min(680, Math.max(320, width - 36))}" height="170" rx="12" ry="12" fill="rgba(17,24,39,0.84)"/>
           <text x="34" y="50" font-size="24" fill="#ffffff">01_0 A4规格约束检测</text>
           <text x="34" y="82" font-size="18" fill="${statusColor}">A4匹配=${isLikelyA4 ? '是' : '否'}  置信度=${confidence}</text>
           <text x="34" y="110" font-size="18" fill="#d1fae5">检测比例=${detectedRatio}  标准比例=${a4Ratio}</text>
           <text x="34" y="138" font-size="18" fill="#fde68a">清边内切=${edgeCleanup?.applied ? `L${edgeCleanup.insets.left}/R${edgeCleanup.insets.right}/T${edgeCleanup.insets.top}/B${edgeCleanup.insets.bottom}` : '未触发'}</text>
+          <text x="34" y="166" font-size="18" fill="#93c5fd">当前输入=${useCleanedBase ? '02_0_1_A4内切清边图' : '01_2_稿纸裁切图'}</text>
         </svg>
       `;
       await fs.promises.mkdir(path.dirname(outputImagePath), { recursive: true });
-      await sharp(imagePath).composite([{ input: Buffer.from(svg), top: 0, left: 0 }]).png().toFile(outputImagePath);
+      await sharp(renderBasePath).composite([{ input: Buffer.from(svg), top: 0, left: 0 }]).png().toFile(outputImagePath);
     }
 
     if (outputMetaPath) {

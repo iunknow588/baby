@@ -20,6 +20,57 @@ class A4RectifyPlugin {
     this.version = '1.0.0';
   }
 
+  buildCornerDebugSvg(width, height, cornerPayload) {
+    const toPolygon = (points, stroke, dashArray = '', label = '') => {
+      if (!Array.isArray(points) || points.length !== 4) return '';
+      const normalized = points
+        .map((point) => Array.isArray(point) ? [Number(point[0]), Number(point[1])] : null)
+        .filter((point) => point && Number.isFinite(point[0]) && Number.isFinite(point[1]));
+      if (normalized.length !== 4) return '';
+      const polygon = normalized.map(([x, y]) => `${Math.round(x)},${Math.round(y)}`).join(' ');
+      const labelPoint = normalized[0];
+      return `
+        <polygon points="${polygon}" fill="none" stroke="${stroke}" stroke-width="6" ${dashArray ? `stroke-dasharray="${dashArray}"` : ''}/>
+        ${label ? `<text x="${Math.round(labelPoint[0]) + 10}" y="${Math.max(24, Math.round(labelPoint[1]) - 10)}" font-size="22" fill="${stroke}">${label}</text>` : ''}
+      `;
+    };
+
+    const selectedCorners = cornerPayload?.paperCorners || null;
+    const roughCorners = cornerPayload?.roughPaperCorners || null;
+    const refinedCorners = cornerPayload?.refinedPaperCorners || null;
+    const selection = cornerPayload?.cornerSelection || null;
+
+    return `
+      <svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
+        ${toPolygon(roughCorners, '#22c55e', '16 10', 'rough')}
+        ${toPolygon(refinedCorners, '#38bdf8', '12 8', 'refined')}
+        ${toPolygon(selectedCorners, '#ef4444', '', 'selected')}
+        <rect x="18" y="18" width="${Math.min(720, Math.max(340, width - 36))}" height="144" rx="12" ry="12" fill="rgba(17,24,39,0.84)"/>
+        <text x="34" y="50" font-size="24" fill="#ffffff">02_1 纸张角点检测</text>
+        <text x="34" y="82" font-size="18" fill="#fde68a">当前输入=02_0_A4规格约束检测图</text>
+        <text x="34" y="110" font-size="18" fill="#d1fae5">输出=02_1_纸张角点调试图</text>
+        <text x="34" y="138" font-size="18" fill="#93c5fd">角点选择=${selection?.selected || 'unknown'} ${selection?.reason ? `(${selection.reason})` : ''}</text>
+      </svg>
+    `;
+  }
+
+  async renderCornerDebugImage(baseImagePath, outputImagePath, cornerPayload) {
+    if (!baseImagePath || !outputImagePath || !fs.existsSync(baseImagePath)) {
+      return;
+    }
+    const baseMeta = await sharp(baseImagePath).metadata();
+    const width = baseMeta.width || 0;
+    const height = baseMeta.height || 0;
+    if (width <= 0 || height <= 0) {
+      return;
+    }
+    const svg = this.buildCornerDebugSvg(width, height, cornerPayload);
+    await sharp(baseImagePath)
+      .composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
+      .png()
+      .toFile(outputImagePath);
+  }
+
   async execute(params) {
     const { imagePath, outputDir, gridRows = 11, gridCols = 7, gridType = 'square', preprocessOptions = {} } = params || {};
     if (!imagePath) {
@@ -96,6 +147,11 @@ class A4RectifyPlugin {
       preprocessResult: result,
       outputMetaPath: cornerMetaPath
     });
+    await this.renderCornerDebugImage(
+      fs.existsSync(a4ConstraintImagePath) ? a4ConstraintImagePath : effectiveImagePath,
+      outputDebugPath,
+      step02_1
+    );
     const step02_2 = await perspectiveRectifyPlugin.execute({
       imagePath: effectiveImagePath,
       preprocessResult: result,
