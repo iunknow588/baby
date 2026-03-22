@@ -3412,9 +3412,23 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
     && finalGuard.dominantSidesWithinLocalTolerance
   );
   const uniformSpanEstimate = edgeQuad ? estimateUniformGridSpan(edgeQuad, guides) : null;
+  const localCornerConfidence = average(
+    Object.values(diagnostics)
+      .map((detail) => clamp01(((Number(detail?.cornerScore) || 0) - 44) / 42))
+      .filter((value) => Number.isFinite(value))
+  );
+  const edgeConfidence = average([
+    edgeLineQuality.top.confidence,
+    edgeLineQuality.bottom.confidence,
+    edgeLineQuality.left.confidence,
+    edgeLineQuality.right.confidence
+  ].filter((value) => Number.isFinite(value)));
   let finalRefined = normalizedRefined;
+  let outputSource = 'local-corner-fallback';
+  let quadSelectionDiagnostics = null;
   if (dominantLineReady) {
     finalRefined = stabilizeQuadGeometry(edgeQuad, { blend: 0.32 }) || edgeQuad;
+    outputSource = 'dominant-edge-lines';
   } else if (edgeQuad) {
     const baseBlend = 0.18;
     const topDownPenalty = Math.max(10, Math.round(cellHeight * 0.08));
@@ -3439,12 +3453,135 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
       }
       return clamp01(weight);
     });
-    finalRefined = mergeCornerQuadsWithConfidence(
+    const mergedQuad = mergeCornerQuadsWithConfidence(
       normalizedRefined,
       edgeQuad,
       cornerWeights,
       { maxShift: Math.max(18, Math.round(cellHeight * 0.22)), defaultBlend: 0.26 }
     );
+    const localStabilizedQuad = stabilizeQuadGeometry(normalizedRefined, { blend: 0.24 }) || normalizedRefined;
+    const edgeStabilizedQuad = stabilizeQuadGeometry(edgeQuad, { blend: 0.32 }) || edgeQuad;
+    const candidateEntries = [
+      {
+        name: 'local-corner-fallback',
+        quad: normalizedRefined,
+        supportScore: localCornerConfidence,
+        distancePenaltyScale: Math.max(20, cellHeight * 0.18)
+      },
+      {
+        name: 'local-corner-stabilized',
+        quad: localStabilizedQuad,
+        supportScore: localCornerConfidence * 0.98,
+        distancePenaltyScale: Math.max(20, cellHeight * 0.18)
+      },
+      {
+        name: 'dominant-edge-lines',
+        quad: edgeQuad,
+        supportScore: edgeConfidence,
+        distancePenaltyScale: Math.max(18, cellHeight * 0.16)
+      },
+      {
+        name: 'dominant-edge-stabilized',
+        quad: edgeStabilizedQuad,
+        supportScore: edgeConfidence * 0.99,
+        distancePenaltyScale: Math.max(18, cellHeight * 0.16)
+      },
+      {
+        name: 'blended-geometry',
+        quad: mergedQuad,
+        supportScore: average([localCornerConfidence, edgeConfidence].filter((value) => Number.isFinite(value))),
+        distancePenaltyScale: Math.max(18, cellHeight * 0.17)
+      }
+    ].filter((entry) => normalizeCornerQuad(entry.quad));
+
+    const scoredCandidates = candidateEntries.map((entry) => {
+      const normalizedCandidate = normalizeCornerQuad(entry.quad);
+      const rectangularity = evaluateRectangularQuadQuality(normalizedCandidate, { guides });
+      const meanShift = average(
+        normalizedCandidate.map((point, index) => Math.hypot(
+          point[0] - normalizedRefined[index][0],
+          point[1] - normalizedRefined[index][1]
+        ))
+      );
+      const maxShift = Math.max(
+        ...normalizedCandidate.map((point, index) => Math.hypot(
+          point[0] - normalizedRefined[index][0],
+          point[1] - normalizedRefined[index][1]
+        ))
+      );
+      const distancePenalty = clamp01(meanShift / Math.max(1, entry.distancePenaltyScale));
+      const rectangleScore = rectangularity?.score ?? 0;
+      const guideScore = rectangularity?.guideSpanScore;
+      const totalScore = clamp01(
+        rectangleScore * 0.62
+        + (Number.isFinite(entry.supportScore) ? entry.supportScore : 0) * 0.24
+        + (Number.isFinite(guideScore) ? guideScore : rectangleScore) * 0.08
+        + (1 - distancePenalty) * 0.06
+      );
+      return {
+        ...entry,
+        quad: normalizedCandidate,
+        meanShift,
+        maxShift,
+        distancePenalty,
+        rectangularity,
+        totalScore
+      };
+    });
+    scoredCandidates.sort((a, b) => b.totalScore - a.totalScore);
+    let bestCandidate = scoredCandidates[0] || null;
+    const localFallbackCandidate = scoredCandidates.find((entry) => entry.name === 'local-corner-fallback') || null;
+    const rectanglePriorityCandidate = scoredCandidates
+      .filter((entry) => entry.name !== 'local-corner-fallback' && entry.name !== 'local-corner-stabilized')
+      .sort((a, b) => {
+        const rectangleDelta = (b.rectangularity?.score || 0) - (a.rectangularity?.score || 0);
+        if (Math.abs(rectangleDelta) > 1e-6) {
+          return rectangleDelta;
+        }
+        return (b.supportScore || 0) - (a.supportScore || 0);
+      })[0] || null;
+    let overrideReason = null;
+    if (
+      bestCandidate?.name === 'local-corner-fallback'
+      && localFallbackCandidate
+      && rectanglePriorityCandidate
+      && (rectanglePriorityCandidate.rectangularity?.score || 0) >= (localFallbackCandidate.rectangularity?.score || 0) + 0.015
+      && (rectanglePriorityCandidate.supportScore || 0) >= Math.max(0.55, (localFallbackCandidate.supportScore || 0) - 0.28)
+      && rectanglePriorityCandidate.maxShift <= Math.max(64, cellHeight * 0.42)
+    ) {
+      bestCandidate = rectanglePriorityCandidate;
+      overrideReason = 'prefer-more-rectangular-quad-when-local-evidence-is-ambiguous';
+    }
+    if (bestCandidate?.quad) {
+      finalRefined = bestCandidate.quad;
+      outputSource = bestCandidate.name;
+    } else {
+      finalRefined = mergedQuad;
+    }
+    quadSelectionDiagnostics = {
+      localCornerConfidence: Number((localCornerConfidence || 0).toFixed(3)),
+      edgeConfidence: Number((edgeConfidence || 0).toFixed(3)),
+      winner: outputSource,
+      overrideReason,
+      candidates: scoredCandidates.map((entry) => ({
+        name: entry.name,
+        totalScore: Number((entry.totalScore || 0).toFixed(4)),
+        supportScore: Number((entry.supportScore || 0).toFixed(4)),
+        rectangleScore: Number((entry.rectangularity?.score || 0).toFixed(4)),
+        guideSpanScore: Number.isFinite(entry.rectangularity?.guideSpanScore)
+          ? Number(entry.rectangularity.guideSpanScore.toFixed(4))
+          : null,
+        meanShift: Number((entry.meanShift || 0).toFixed(3)),
+        maxShift: Number((entry.maxShift || 0).toFixed(3)),
+        parallelDotTopBottom: Number((entry.rectangularity?.parallelDotTopBottom || 0).toFixed(4)),
+        parallelDotLeftRight: Number((entry.rectangularity?.parallelDotLeftRight || 0).toFixed(4)),
+        rightAngleScore: Number((entry.rectangularity?.rightAngleScore || 0).toFixed(4)),
+        oppositeWidthRatio: Number((entry.rectangularity?.oppositeWidthRatio || 0).toFixed(4)),
+        oppositeHeightRatio: Number((entry.rectangularity?.oppositeHeightRatio || 0).toFixed(4)),
+        diagonalRatio: Number((entry.rectangularity?.diagonalRatio || 0).toFixed(4)),
+        midpointGap: Number((entry.rectangularity?.midpointGap || 0).toFixed(3))
+      }))
+    };
   }
 
   const applied = finalRefined.some((point, index) => (
@@ -3456,7 +3593,7 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
     applied,
     diagnostics: {
       method: 'per-corner local line search',
-      outputSource: dominantLineReady ? 'dominant-edge-lines' : 'local-corner-fallback',
+      outputSource,
       rawGuideHints: rawGuideHints
         ? {
             left: rawGuideHints.left,
@@ -3569,7 +3706,8 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
             averageScore: Number(edgeLineQuality.right.averageScore.toFixed(3)),
             supportRatio: Number(edgeLineQuality.right.supportRatio.toFixed(3))
           }
-        }
+        },
+        quadSelection: quadSelectionDiagnostics
       },
       corners: diagnostics
     }
@@ -6419,6 +6557,90 @@ function stabilizeQuadGeometry(corners, options = {}) {
   ];
 
   return normalizeCornerQuad(corrected) || quad;
+}
+
+function evaluateRectangularQuadQuality(corners, options = {}) {
+  const quad = normalizeCornerQuad(corners);
+  if (!quad) {
+    return null;
+  }
+  const [lt, rt, rb, lb] = quad.map(([x, y]) => [Number(x), Number(y)]);
+  const vectors = [
+    [rt[0] - lt[0], rt[1] - lt[1]],
+    [rb[0] - rt[0], rb[1] - rt[1]],
+    [lb[0] - rb[0], lb[1] - rb[1]],
+    [lt[0] - lb[0], lt[1] - lb[1]]
+  ];
+  const lengths = vectors.map(([dx, dy]) => Math.hypot(dx, dy));
+  if (lengths.some((value) => !Number.isFinite(value) || value < 1e-6)) {
+    return null;
+  }
+  const area = Math.abs(
+    quad.reduce((sum, point, index) => {
+      const next = quad[(index + 1) % quad.length];
+      return sum + point[0] * next[1] - next[0] * point[1];
+    }, 0) / 2
+  );
+  const guideWidth = Number(options.guides?.right) - Number(options.guides?.left);
+  const guideHeight = Number(options.guides?.bottom) - Number(options.guides?.top);
+  const diagonalA = Math.hypot(rb[0] - lt[0], rb[1] - lt[1]);
+  const diagonalB = Math.hypot(lb[0] - rt[0], lb[1] - rt[1]);
+  const topLength = lengths[0];
+  const rightLength = lengths[1];
+  const bottomLength = lengths[2];
+  const leftLength = lengths[3];
+  const unitVectors = vectors.map(([dx, dy], index) => [dx / lengths[index], dy / lengths[index]]);
+  const parallelDotTopBottom = Math.abs(unitVectors[0][0] * unitVectors[2][0] + unitVectors[0][1] * unitVectors[2][1]);
+  const parallelDotLeftRight = Math.abs(unitVectors[1][0] * unitVectors[3][0] + unitVectors[1][1] * unitVectors[3][1]);
+  const rightAngles = [
+    Math.abs(unitVectors[0][0] * unitVectors[1][0] + unitVectors[0][1] * unitVectors[1][1]),
+    Math.abs(unitVectors[1][0] * unitVectors[2][0] + unitVectors[1][1] * unitVectors[2][1]),
+    Math.abs(unitVectors[2][0] * unitVectors[3][0] + unitVectors[2][1] * unitVectors[3][1]),
+    Math.abs(unitVectors[3][0] * unitVectors[0][0] + unitVectors[3][1] * unitVectors[0][1])
+  ];
+  const oppositeWidthRatio = Math.min(topLength, bottomLength) / Math.max(topLength, bottomLength, 1e-6);
+  const oppositeHeightRatio = Math.min(leftLength, rightLength) / Math.max(leftLength, rightLength, 1e-6);
+  const diagonalRatio = Math.min(diagonalA, diagonalB) / Math.max(diagonalA, diagonalB, 1e-6);
+  const midpointA = [(lt[0] + rb[0]) / 2, (lt[1] + rb[1]) / 2];
+  const midpointB = [(rt[0] + lb[0]) / 2, (rt[1] + lb[1]) / 2];
+  const midpointGap = Math.hypot(midpointA[0] - midpointB[0], midpointA[1] - midpointB[1]);
+  const referenceSize = Math.max(1, average([topLength, bottomLength, leftLength, rightLength]));
+  const midpointScore = clamp01(1 - midpointGap / Math.max(8, referenceSize * 0.025));
+  const guideWidthRatio = Number.isFinite(guideWidth) && guideWidth > 1
+    ? Math.min(topLength, bottomLength) / Math.max(Math.max(topLength, bottomLength), guideWidth)
+    : null;
+  const guideHeightRatio = Number.isFinite(guideHeight) && guideHeight > 1
+    ? Math.min(leftLength, rightLength) / Math.max(Math.max(leftLength, rightLength), guideHeight)
+    : null;
+  const guideSpanScore = average(
+    [guideWidthRatio, guideHeightRatio].filter((value) => Number.isFinite(value)).map((value) => clamp01(value))
+  );
+  const rightAngleScore = 1 - average(rightAngles);
+  const score = clamp01(
+    parallelDotTopBottom * 0.24
+    + parallelDotLeftRight * 0.24
+    + rightAngleScore * 0.26
+    + oppositeWidthRatio * 0.1
+    + oppositeHeightRatio * 0.1
+    + diagonalRatio * 0.04
+    + midpointScore * 0.02
+  );
+  return {
+    score,
+    area,
+    topLength,
+    rightLength,
+    bottomLength,
+    leftLength,
+    guideSpanScore: Number.isFinite(guideSpanScore) ? guideSpanScore : null,
+    parallelDotTopBottom,
+    parallelDotLeftRight,
+    rightAngleScore,
+    oppositeWidthRatio,
+    oppositeHeightRatio,
+    diagonalRatio,
+    midpointGap
+  };
 }
 
 function estimateUniformGridSpan(quad, guides = null) {
