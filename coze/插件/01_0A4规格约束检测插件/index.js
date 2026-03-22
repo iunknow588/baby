@@ -538,20 +538,37 @@ class A4ConstraintDetectPlugin {
         .filter((side) => edgeCleanup?.protectedFrameLines?.[side]);
       const protectText = protectedSides.length ? protectedSides.join(',') : 'none';
       const protectMarks = [];
+      const protectedLineOverlays = [];
       if (edgeCleanup?.protectedFrameLines?.top) {
         const detail = edgeCleanup.protectedFrameLines.top;
+        const x1 = clamp(Math.round(detail.leftMargin || 0), 0, Math.max(0, width - 1));
+        const x2 = clamp(Math.round(width - (detail.rightMargin || 0)), x1 + 1, Math.max(x1 + 1, width));
+        const y = clamp(Math.round(detail.inset || 0), 0, Math.max(0, height - 1));
+        protectedLineOverlays.push(`<line x1="${x1}" y1="${y}" x2="${x2}" y2="${y}" stroke="#f97316" stroke-width="4" stroke-opacity="0.95"/>`);
         protectMarks.push(`<text x="${Math.max(26, Math.round(width * 0.3))}" y="34" font-size="18" fill="#f97316">protect-top i=${detail.inset} run=${Math.round(detail.runWidth || 0)} rows=${detail.strongRows || 0} plan=${edgeCleanup?.plannedInsets?.top || 0} keep=${edgeCleanup?.insets?.top || 0}</text>`);
       }
       if (edgeCleanup?.protectedFrameLines?.bottom) {
         const detail = edgeCleanup.protectedFrameLines.bottom;
+        const x1 = clamp(Math.round(detail.leftMargin || 0), 0, Math.max(0, width - 1));
+        const x2 = clamp(Math.round(width - (detail.rightMargin || 0)), x1 + 1, Math.max(x1 + 1, width));
+        const y = clamp(Math.round(height - 1 - (detail.inset || 0)), 0, Math.max(0, height - 1));
+        protectedLineOverlays.push(`<line x1="${x1}" y1="${y}" x2="${x2}" y2="${y}" stroke="#f97316" stroke-width="4" stroke-opacity="0.95"/>`);
         protectMarks.push(`<text x="${Math.max(26, Math.round(width * 0.12))}" y="${Math.max(24, height - 18)}" font-size="18" fill="#f97316">protect-bottom i=${detail.inset} run=${Math.round(detail.runWidth || 0)} rows=${detail.strongRows || 0} plan=${edgeCleanup?.plannedInsets?.bottom || 0} keep=${edgeCleanup?.insets?.bottom || 0}</text>`);
       }
       if (edgeCleanup?.protectedFrameLines?.left) {
         const detail = edgeCleanup.protectedFrameLines.left;
+        const x = clamp(Math.round(detail.inset || 0), 0, Math.max(0, width - 1));
+        const y1 = clamp(Math.round(detail.topMargin || 0), 0, Math.max(0, height - 1));
+        const y2 = clamp(Math.round(height - (detail.bottomMargin || 0)), y1 + 1, Math.max(y1 + 1, height));
+        protectedLineOverlays.push(`<line x1="${x}" y1="${y1}" x2="${x}" y2="${y2}" stroke="#f97316" stroke-width="4" stroke-opacity="0.95"/>`);
         protectMarks.push(`<text x="18" y="${Math.max(64, Math.round(height * 0.5))}" font-size="18" fill="#f97316">protect-left i=${detail.inset} run=${Math.round(detail.runHeight || 0)} cols=${detail.strongCols || 0} plan=${edgeCleanup?.plannedInsets?.left || 0} keep=${edgeCleanup?.insets?.left || 0}</text>`);
       }
       if (edgeCleanup?.protectedFrameLines?.right) {
         const detail = edgeCleanup.protectedFrameLines.right;
+        const x = clamp(Math.round(width - 1 - (detail.inset || 0)), 0, Math.max(0, width - 1));
+        const y1 = clamp(Math.round(detail.topMargin || 0), 0, Math.max(0, height - 1));
+        const y2 = clamp(Math.round(height - (detail.bottomMargin || 0)), y1 + 1, Math.max(y1 + 1, height));
+        protectedLineOverlays.push(`<line x1="${x}" y1="${y1}" x2="${x}" y2="${y2}" stroke="#f97316" stroke-width="4" stroke-opacity="0.95"/>`);
         protectMarks.push(`<text x="${Math.max(24, width - 520)}" y="${Math.max(64, Math.round(height * 0.5))}" font-size="18" fill="#f97316">protect-right i=${detail.inset} run=${Math.round(detail.runHeight || 0)} cols=${detail.strongCols || 0} plan=${edgeCleanup?.plannedInsets?.right || 0} keep=${edgeCleanup?.insets?.right || 0}</text>`);
       }
       const statusColor = isLikelyA4 ? '#22c55e' : '#ef4444';
@@ -559,6 +576,7 @@ class A4ConstraintDetectPlugin {
         <svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
           ${rawBoundsRect}
           ${cleanBoundsRect}
+          ${protectedLineOverlays.join('\n')}
           ${protectMarks.join('\n')}
           <rect x="18" y="18" width="${Math.min(680, Math.max(320, width - 36))}" height="170" rx="12" ry="12" fill="rgba(17,24,39,0.84)"/>
           <text x="34" y="50" font-size="24" fill="#ffffff">01_0 A4规格约束检测</text>
