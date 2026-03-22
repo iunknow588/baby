@@ -528,17 +528,34 @@ class A4ConstraintDetectPlugin {
         : paperBounds
           ? `<rect x="${Math.round(paperBounds.left || 0)}" y="${Math.round(paperBounds.top || 0)}" width="${Math.max(1, Math.round(paperBounds.width || 0))}" height="${Math.max(1, Math.round(paperBounds.height || 0))}" fill="none" stroke="#f59e0b" stroke-width="6"/>`
           : '';
+      const protectedSides = ['left', 'right', 'top', 'bottom']
+        .filter((side) => edgeCleanup?.protectedFrameLines?.[side]);
+      const protectText = protectedSides.length ? protectedSides.join(',') : 'none';
+      const protectMarks = [];
+      if (edgeCleanup?.protectedFrameLines?.top) {
+        protectMarks.push(`<text x="${Math.max(26, Math.round(width * 0.45))}" y="34" font-size="18" fill="#f97316">protect-top</text>`);
+      }
+      if (edgeCleanup?.protectedFrameLines?.bottom) {
+        protectMarks.push(`<text x="${Math.max(26, Math.round(width * 0.42))}" y="${Math.max(24, height - 18)}" font-size="18" fill="#f97316">protect-bottom</text>`);
+      }
+      if (edgeCleanup?.protectedFrameLines?.left) {
+        protectMarks.push(`<text x="18" y="${Math.max(64, Math.round(height * 0.5))}" font-size="18" fill="#f97316">protect-left</text>`);
+      }
+      if (edgeCleanup?.protectedFrameLines?.right) {
+        protectMarks.push(`<text x="${Math.max(24, width - 124)}" y="${Math.max(64, Math.round(height * 0.5))}" font-size="18" fill="#f97316">protect-right</text>`);
+      }
       const statusColor = isLikelyA4 ? '#22c55e' : '#ef4444';
       const svg = `
         <svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
           ${rawBoundsRect}
           ${cleanBoundsRect}
+          ${protectMarks.join('\n')}
           <rect x="18" y="18" width="${Math.min(680, Math.max(320, width - 36))}" height="170" rx="12" ry="12" fill="rgba(17,24,39,0.84)"/>
           <text x="34" y="50" font-size="24" fill="#ffffff">01_0 A4规格约束检测</text>
           <text x="34" y="82" font-size="18" fill="${statusColor}">A4匹配=${isLikelyA4 ? '是' : '否'}  置信度=${confidence}</text>
           <text x="34" y="110" font-size="18" fill="#d1fae5">检测比例=${detectedRatio}  标准比例=${a4Ratio}</text>
           <text x="34" y="138" font-size="18" fill="#fde68a">清边内切=${edgeCleanup?.applied ? `L${edgeCleanup.insets.left}/R${edgeCleanup.insets.right}/T${edgeCleanup.insets.top}/B${edgeCleanup.insets.bottom}` : '未触发'}</text>
-          <text x="34" y="166" font-size="18" fill="#93c5fd">当前输入=${useCleanedBase ? '02_0_1_A4内切清边图' : '01_2_稿纸裁切图'}</text>
+          <text x="34" y="166" font-size="18" fill="#93c5fd">当前输入=${useCleanedBase ? '02_0_1_A4内切清边图' : '01_2_稿纸裁切图'}  protect=${protectText}</text>
         </svg>
       `;
       await fs.promises.mkdir(path.dirname(outputImagePath), { recursive: true });
