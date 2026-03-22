@@ -3417,6 +3417,12 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
       .map((detail) => clamp01(((Number(detail?.cornerScore) || 0) - 44) / 42))
       .filter((value) => Number.isFinite(value))
   );
+  const perCornerConfidence = [
+    diagnostics.leftTop,
+    diagnostics.rightTop,
+    diagnostics.rightBottom,
+    diagnostics.leftBottom
+  ].map((detail) => clamp01(((Number(detail?.cornerScore) || 0) - 44) / 42));
   const edgeConfidence = average([
     edgeLineQuality.top.confidence,
     edgeLineQuality.bottom.confidence,
@@ -3509,20 +3515,36 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
           point[1] - normalizedRefined[index][1]
         ))
       );
+      const weightedCornerShift = average(
+        normalizedCandidate.map((point, index) => {
+          const shift = Math.hypot(
+            point[0] - normalizedRefined[index][0],
+            point[1] - normalizedRefined[index][1]
+          );
+          const confidence = perCornerConfidence[index];
+          return shift * (0.35 + confidence * 0.65);
+        })
+      );
       const distancePenalty = clamp01(meanShift / Math.max(1, entry.distancePenaltyScale));
+      const cornerRetentionScore = clamp01(
+        1 - weightedCornerShift / Math.max(8, cellHeight * 0.22)
+      );
       const rectangleScore = rectangularity?.score ?? 0;
       const guideScore = rectangularity?.guideSpanScore;
       const totalScore = clamp01(
-        rectangleScore * 0.62
-        + (Number.isFinite(entry.supportScore) ? entry.supportScore : 0) * 0.24
+        rectangleScore * 0.58
+        + (Number.isFinite(entry.supportScore) ? entry.supportScore : 0) * 0.2
         + (Number.isFinite(guideScore) ? guideScore : rectangleScore) * 0.08
-        + (1 - distancePenalty) * 0.06
+        + cornerRetentionScore * 0.1
+        + (1 - distancePenalty) * 0.04
       );
       return {
         ...entry,
         quad: normalizedCandidate,
         meanShift,
         maxShift,
+        weightedCornerShift,
+        cornerRetentionScore,
         distancePenalty,
         rectangularity,
         totalScore
@@ -3546,11 +3568,13 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
       && localFallbackCandidate
       && rectanglePriorityCandidate
       && (rectanglePriorityCandidate.rectangularity?.score || 0) >= (localFallbackCandidate.rectangularity?.score || 0) + 0.015
+      && (rectanglePriorityCandidate.rectangularity?.rotatedRectangleScore || 0) >= (localFallbackCandidate.rectangularity?.rotatedRectangleScore || 0) + 0.18
       && (rectanglePriorityCandidate.supportScore || 0) >= Math.max(0.55, (localFallbackCandidate.supportScore || 0) - 0.28)
+      && (rectanglePriorityCandidate.cornerRetentionScore || 0) >= 0.18
       && rectanglePriorityCandidate.maxShift <= Math.max(64, cellHeight * 0.42)
     ) {
       bestCandidate = rectanglePriorityCandidate;
-      overrideReason = 'prefer-more-rectangular-quad-when-local-evidence-is-ambiguous';
+      overrideReason = 'prefer-rotated-rectangle-fit-when-it-clearly-outweighs-local-corner-drift';
     }
     if (bestCandidate?.quad) {
       finalRefined = bestCandidate.quad;
@@ -3573,6 +3597,8 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
           : null,
         meanShift: Number((entry.meanShift || 0).toFixed(3)),
         maxShift: Number((entry.maxShift || 0).toFixed(3)),
+        weightedCornerShift: Number((entry.weightedCornerShift || 0).toFixed(3)),
+        cornerRetentionScore: Number((entry.cornerRetentionScore || 0).toFixed(4)),
         parallelDotTopBottom: Number((entry.rectangularity?.parallelDotTopBottom || 0).toFixed(4)),
         parallelDotLeftRight: Number((entry.rectangularity?.parallelDotLeftRight || 0).toFixed(4)),
         rightAngleScore: Number((entry.rectangularity?.rightAngleScore || 0).toFixed(4)),
