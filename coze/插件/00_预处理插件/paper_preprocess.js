@@ -3467,6 +3467,13 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
     );
     const localStabilizedQuad = stabilizeQuadGeometry(normalizedRefined, { blend: 0.24 }) || normalizedRefined;
     const edgeStabilizedQuad = stabilizeQuadGeometry(edgeQuad, { blend: 0.32 }) || edgeQuad;
+    const uncertaintyRetainedQuad = blendQuadByCornerStability(
+      normalizedRefined,
+      edgeStabilizedQuad,
+      perCornerConfidence,
+      cornerWeights,
+      { maxShift: Math.max(28, Math.round(cellHeight * 0.32)), minBlend: 0.03, maxBlend: 0.82 }
+    ) || mergedQuad;
     const candidateEntries = [
       {
         name: 'local-corner-fallback',
@@ -3491,6 +3498,15 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
         quad: edgeStabilizedQuad,
         supportScore: edgeConfidence * 0.99,
         distancePenaltyScale: Math.max(18, cellHeight * 0.16)
+      },
+      {
+        name: 'uncertain-corner-geometry',
+        quad: uncertaintyRetainedQuad,
+        supportScore: average([
+          localCornerConfidence * 0.96,
+          edgeConfidence * 0.88
+        ].filter((value) => Number.isFinite(value))),
+        distancePenaltyScale: Math.max(18, cellHeight * 0.15)
       },
       {
         name: 'blended-geometry',
@@ -5877,6 +5893,37 @@ function mergeCornerQuadsWithConfidence(baseQuad, refinedQuad, cornerWeights, op
     ];
   });
   return normalizeCornerQuad(merged) || base;
+}
+
+function blendQuadByCornerStability(baseQuad, targetQuad, cornerConfidences, cornerTargetSupports, options = {}) {
+  const base = normalizeCornerQuad(baseQuad);
+  const target = normalizeCornerQuad(targetQuad);
+  if (!base || !target) {
+    return target || base || null;
+  }
+  const maxShift = Number.isFinite(options.maxShift) ? options.maxShift : 64;
+  const minBlend = Number.isFinite(options.minBlend) ? options.minBlend : 0.04;
+  const maxBlend = Number.isFinite(options.maxBlend) ? options.maxBlend : 0.9;
+  const blended = base.map(([bx, by], index) => {
+    const [tx, ty] = target[index];
+    const dx = tx - bx;
+    const dy = ty - by;
+    const distance = Math.hypot(dx, dy);
+    const targetSupport = clamp01(Number.isFinite(cornerTargetSupports?.[index]) ? cornerTargetSupports[index] : 0.5);
+    const cornerConfidence = clamp01(Number.isFinite(cornerConfidences?.[index]) ? cornerConfidences[index] : 0.5);
+    const blend = clamp(
+      minBlend + (1 - cornerConfidence) * 0.58 + targetSupport * 0.26,
+      minBlend,
+      maxBlend
+    );
+    const limitedScale = distance > maxShift ? (maxShift / Math.max(distance, 1e-6)) : 1;
+    return [
+      bx + dx * blend * limitedScale,
+      by + dy * blend * limitedScale
+    ];
+  });
+  const stabilized = stabilizeQuadGeometry(blended, { blend: 0.18 }) || blended;
+  return normalizeCornerQuad(stabilized) || base;
 }
 
 function mergeTopCornerRecoveryHint(baseQuad, recoveredQuad, diagnostics, cellHeight) {
