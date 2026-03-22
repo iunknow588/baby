@@ -400,6 +400,12 @@ function buildEdgeCleanupHintFromImage(rawData, info, baseBounds) {
       b: Number(paperColor.b.toFixed(1)),
       luma: Number(paperColor.luma.toFixed(1))
     },
+    plannedInsets: {
+      left: baseInsetLeft > 0 ? baseInsetLeft + safetyInsetX : 0,
+      right: baseInsetRight > 0 ? baseInsetRight + safetyInsetX : 0,
+      top: baseInsetTop > 0 ? baseInsetTop + safetyInsetY : 0,
+      bottom: baseInsetBottom > 0 ? baseInsetBottom + safetyInsetY : 0
+    },
     insets: {
       left: insetLeft,
       right: insetRight,
@@ -534,19 +540,19 @@ class A4ConstraintDetectPlugin {
       const protectMarks = [];
       if (edgeCleanup?.protectedFrameLines?.top) {
         const detail = edgeCleanup.protectedFrameLines.top;
-        protectMarks.push(`<text x="${Math.max(26, Math.round(width * 0.45))}" y="34" font-size="18" fill="#f97316">protect-top i=${detail.inset} run=${Math.round(detail.runWidth || 0)} rows=${detail.strongRows || 0}</text>`);
+        protectMarks.push(`<text x="${Math.max(26, Math.round(width * 0.3))}" y="34" font-size="18" fill="#f97316">protect-top i=${detail.inset} run=${Math.round(detail.runWidth || 0)} rows=${detail.strongRows || 0} plan=${edgeCleanup?.plannedInsets?.top || 0} keep=${edgeCleanup?.insets?.top || 0}</text>`);
       }
       if (edgeCleanup?.protectedFrameLines?.bottom) {
         const detail = edgeCleanup.protectedFrameLines.bottom;
-        protectMarks.push(`<text x="${Math.max(26, Math.round(width * 0.32))}" y="${Math.max(24, height - 18)}" font-size="18" fill="#f97316">protect-bottom i=${detail.inset} run=${Math.round(detail.runWidth || 0)} rows=${detail.strongRows || 0}</text>`);
+        protectMarks.push(`<text x="${Math.max(26, Math.round(width * 0.12))}" y="${Math.max(24, height - 18)}" font-size="18" fill="#f97316">protect-bottom i=${detail.inset} run=${Math.round(detail.runWidth || 0)} rows=${detail.strongRows || 0} plan=${edgeCleanup?.plannedInsets?.bottom || 0} keep=${edgeCleanup?.insets?.bottom || 0}</text>`);
       }
       if (edgeCleanup?.protectedFrameLines?.left) {
         const detail = edgeCleanup.protectedFrameLines.left;
-        protectMarks.push(`<text x="18" y="${Math.max(64, Math.round(height * 0.5))}" font-size="18" fill="#f97316">protect-left i=${detail.inset} run=${Math.round(detail.runHeight || 0)} cols=${detail.strongCols || 0}</text>`);
+        protectMarks.push(`<text x="18" y="${Math.max(64, Math.round(height * 0.5))}" font-size="18" fill="#f97316">protect-left i=${detail.inset} run=${Math.round(detail.runHeight || 0)} cols=${detail.strongCols || 0} plan=${edgeCleanup?.plannedInsets?.left || 0} keep=${edgeCleanup?.insets?.left || 0}</text>`);
       }
       if (edgeCleanup?.protectedFrameLines?.right) {
         const detail = edgeCleanup.protectedFrameLines.right;
-        protectMarks.push(`<text x="${Math.max(24, width - 320)}" y="${Math.max(64, Math.round(height * 0.5))}" font-size="18" fill="#f97316">protect-right i=${detail.inset} run=${Math.round(detail.runHeight || 0)} cols=${detail.strongCols || 0}</text>`);
+        protectMarks.push(`<text x="${Math.max(24, width - 520)}" y="${Math.max(64, Math.round(height * 0.5))}" font-size="18" fill="#f97316">protect-right i=${detail.inset} run=${Math.round(detail.runHeight || 0)} cols=${detail.strongCols || 0} plan=${edgeCleanup?.plannedInsets?.right || 0} keep=${edgeCleanup?.insets?.right || 0}</text>`);
       }
       const statusColor = isLikelyA4 ? '#22c55e' : '#ef4444';
       const svg = `
