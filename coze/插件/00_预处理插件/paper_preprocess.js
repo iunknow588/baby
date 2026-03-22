@@ -4597,6 +4597,20 @@ async function renderDetectedGridAnnotation(imagePath, outputPath, gridRectifica
     }
   }
 
+  const replacementTrails = selectiveCornerReplacement.map((item) => {
+    if (!item?.applied || !Array.isArray(item.from) || !Array.isArray(item.to)) {
+      return '';
+    }
+    const fromX = clamp(Math.round(item.from[0]), 0, Math.max(0, width - 1));
+    const fromY = clamp(Math.round(item.from[1]), 0, Math.max(0, height - 1));
+    const toX = clamp(Math.round(item.to[0]), 0, Math.max(0, width - 1));
+    const toY = clamp(Math.round(item.to[1]), 0, Math.max(0, height - 1));
+    return `
+      <line x1="${fromX}" y1="${fromY}" x2="${toX}" y2="${toY}" stroke="#991b1b" stroke-width="3" stroke-dasharray="10 8" stroke-opacity="0.9"/>
+      <circle cx="${fromX}" cy="${fromY}" r="8" fill="none" stroke="#991b1b" stroke-width="3" stroke-dasharray="6 4"/>
+    `;
+  }).join('\n');
+
   const cornerPoints = corners.map((point, index) => {
     const x = clamp(Math.round(point[0]), 0, Math.max(0, width - 1));
     const y = clamp(Math.round(point[1]), 0, Math.max(0, height - 1));
@@ -4634,6 +4648,7 @@ async function renderDetectedGridAnnotation(imagePath, outputPath, gridRectifica
       ${polygon}
       ${guidesRect}
       ${peakLines.join('\n')}
+      ${replacementTrails}
       ${cornerPoints}
       <rect x="14" y="14" width="${infoPanelWidth}" height="${infoPanelHeight}" rx="10" ry="10" fill="rgba(229,231,235,0.92)"/>
       <text x="30" y="46" font-size="24" fill="#111827">${annotationTitle}</text>
@@ -6008,7 +6023,9 @@ function buildSelectiveCornerReplacementQuad(baseQuad, targetQuad, cornerConfide
         index,
         applied: false,
         reason: 'corner-confidence-too-high',
-        confidence: Number(confidence.toFixed(4))
+        confidence: Number(confidence.toFixed(4)),
+        from: working[index].map((value) => Number(value.toFixed(3))),
+        to: candidatePoint.map((value) => Number(value.toFixed(3)))
       });
       continue;
     }
@@ -6020,7 +6037,9 @@ function buildSelectiveCornerReplacementQuad(baseQuad, targetQuad, cornerConfide
         applied: false,
         reason: 'corner-shift-too-large',
         confidence: Number(confidence.toFixed(4)),
-        shift: Number(shift.toFixed(3))
+        shift: Number(shift.toFixed(3)),
+        from: working[index].map((value) => Number(value.toFixed(3))),
+        to: candidatePoint.map((value) => Number(value.toFixed(3)))
       });
       continue;
     }
@@ -6037,7 +6056,9 @@ function buildSelectiveCornerReplacementQuad(baseQuad, targetQuad, cornerConfide
         reason: 'rotated-rectangle-score-improved',
         confidence: Number(confidence.toFixed(4)),
         shift: Number(shift.toFixed(3)),
-        improvement: Number(improvement.toFixed(4))
+        improvement: Number(improvement.toFixed(4)),
+        from: base[index].map((value) => Number(value.toFixed(3))),
+        to: candidatePoint.map((value) => Number(value.toFixed(3)))
       });
     } else {
       replacements.push({
@@ -6046,7 +6067,9 @@ function buildSelectiveCornerReplacementQuad(baseQuad, targetQuad, cornerConfide
         reason: 'improvement-too-small',
         confidence: Number(confidence.toFixed(4)),
         shift: Number(shift.toFixed(3)),
-        improvement: Number(improvement.toFixed(4))
+        improvement: Number(improvement.toFixed(4)),
+        from: working[index].map((value) => Number(value.toFixed(3))),
+        to: candidatePoint.map((value) => Number(value.toFixed(3)))
       });
     }
   }
