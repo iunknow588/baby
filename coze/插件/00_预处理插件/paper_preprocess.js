@@ -3417,7 +3417,7 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
       .map((detail) => clamp01(((Number(detail?.cornerScore) || 0) - 44) / 42))
       .filter((value) => Number.isFinite(value))
   );
-  const perCornerConfidence = [
+  const rawPerCornerConfidence = [
     diagnostics.leftTop,
     diagnostics.rightTop,
     diagnostics.rightBottom,
@@ -3436,6 +3436,32 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
     finalRefined = stabilizeQuadGeometry(edgeQuad, { blend: 0.32 }) || edgeQuad;
     outputSource = 'dominant-edge-lines';
   } else if (edgeQuad) {
+    const cornerNames = ['leftTop', 'rightTop', 'rightBottom', 'leftBottom'];
+    const perCornerConfidence = rawPerCornerConfidence.map((confidence, index) => {
+      const detail = diagnostics[cornerNames[index]] || null;
+      const localPoint = normalizedRefined[index];
+      const edgePoint = edgeQuad[index];
+      const expectedPoint = detail?.expected;
+      const expectedDrift = Array.isArray(expectedPoint)
+        ? Math.hypot(localPoint[0] - expectedPoint[0], localPoint[1] - expectedPoint[1])
+        : 0;
+      const edgeDrift = Math.hypot(localPoint[0] - edgePoint[0], localPoint[1] - edgePoint[1]);
+      const anchorAppliedPenalty = detail?.bottomCornerAnchor?.applied ? 0.28 : 0;
+      const confirmationRejectedPenalty = (
+        detail?.bottomCornerConfirmation
+        && detail.bottomCornerConfirmation.applied === false
+        && Number(detail.bottomCornerConfirmation.confirmedY) > Number(localPoint[1]) + Math.max(8, cellHeight * 0.08)
+      ) ? 0.08 : 0;
+      const expectedDriftPenalty = clamp01(expectedDrift / Math.max(18, cellHeight * 0.22)) * 0.24;
+      const edgeDriftPenalty = clamp01(edgeDrift / Math.max(24, cellHeight * 0.28)) * 0.34;
+      return clamp01(
+        confidence
+        - anchorAppliedPenalty
+        - confirmationRejectedPenalty
+        - expectedDriftPenalty
+        - edgeDriftPenalty
+      );
+    });
     const baseBlend = 0.18;
     const topDownPenalty = Math.max(10, Math.round(cellHeight * 0.08));
     const bottomUpPenalty = Math.max(10, Math.round(cellHeight * 0.08));
@@ -3474,6 +3500,18 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
       cornerWeights,
       { maxShift: Math.max(28, Math.round(cellHeight * 0.32)), minBlend: 0.03, maxBlend: 0.82 }
     ) || mergedQuad;
+    const selectiveCornerReplacement = buildSelectiveCornerReplacementQuad(
+      normalizedRefined,
+      edgeStabilizedQuad,
+      perCornerConfidence,
+      {
+        guides,
+        minImprovement: 0.1,
+        maxCornerConfidence: 0.84,
+        maxShift: Math.max(34, Math.round(cellHeight * 0.36))
+      }
+    );
+    const selectiveReplacementQuad = selectiveCornerReplacement?.quad || uncertaintyRetainedQuad;
     const candidateEntries = [
       {
         name: 'local-corner-fallback',
@@ -3507,6 +3545,15 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
           edgeConfidence * 0.88
         ].filter((value) => Number.isFinite(value))),
         distancePenaltyScale: Math.max(18, cellHeight * 0.15)
+      },
+      {
+        name: 'selective-corner-replacement',
+        quad: selectiveReplacementQuad,
+        supportScore: average([
+          localCornerConfidence * 0.97,
+          edgeConfidence * 0.9
+        ].filter((value) => Number.isFinite(value))),
+        distancePenaltyScale: Math.max(18, cellHeight * 0.14)
       },
       {
         name: 'blended-geometry',
@@ -3603,6 +3650,7 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
       edgeConfidence: Number((edgeConfidence || 0).toFixed(3)),
       winner: outputSource,
       overrideReason,
+      selectiveCornerReplacement: selectiveCornerReplacement?.replacements || null,
       candidates: scoredCandidates.map((entry) => ({
         name: entry.name,
         totalScore: Number((entry.totalScore || 0).toFixed(4)),
@@ -5924,6 +5972,77 @@ function blendQuadByCornerStability(baseQuad, targetQuad, cornerConfidences, cor
   });
   const stabilized = stabilizeQuadGeometry(blended, { blend: 0.18 }) || blended;
   return normalizeCornerQuad(stabilized) || base;
+}
+
+function buildSelectiveCornerReplacementQuad(baseQuad, targetQuad, cornerConfidences, options = {}) {
+  const base = normalizeCornerQuad(baseQuad);
+  const target = normalizeCornerQuad(targetQuad);
+  if (!base || !target) {
+    return target || base || null;
+  }
+  const minImprovement = Number.isFinite(options.minImprovement) ? options.minImprovement : 0.08;
+  const maxCornerConfidence = Number.isFinite(options.maxCornerConfidence) ? options.maxCornerConfidence : 0.82;
+  const maxShift = Number.isFinite(options.maxShift) ? options.maxShift : 72;
+  const working = base.map((point) => [...point]);
+  const baseQuality = evaluateRectangularQuadQuality(base, { guides: options.guides });
+  let currentScore = baseQuality?.rotatedRectangleScore ?? 0;
+  const replacements = [];
+
+  for (let index = 0; index < base.length; index += 1) {
+    const confidence = clamp01(Number.isFinite(cornerConfidences?.[index]) ? cornerConfidences[index] : 0.5);
+    if (confidence > maxCornerConfidence) {
+      replacements.push({
+        index,
+        applied: false,
+        reason: 'corner-confidence-too-high',
+        confidence: Number(confidence.toFixed(4))
+      });
+      continue;
+    }
+    const candidatePoint = target[index];
+    const shift = Math.hypot(candidatePoint[0] - working[index][0], candidatePoint[1] - working[index][1]);
+    if (shift > maxShift) {
+      replacements.push({
+        index,
+        applied: false,
+        reason: 'corner-shift-too-large',
+        confidence: Number(confidence.toFixed(4)),
+        shift: Number(shift.toFixed(3))
+      });
+      continue;
+    }
+    const candidateQuad = working.map((point, pointIndex) => pointIndex === index ? [...candidatePoint] : [...point]);
+    const candidateQuality = evaluateRectangularQuadQuality(candidateQuad, { guides: options.guides });
+    const candidateScore = candidateQuality?.rotatedRectangleScore ?? 0;
+    const improvement = candidateScore - currentScore;
+    if (improvement >= minImprovement) {
+      working[index] = [...candidatePoint];
+      currentScore = candidateScore;
+      replacements.push({
+        index,
+        applied: true,
+        reason: 'rotated-rectangle-score-improved',
+        confidence: Number(confidence.toFixed(4)),
+        shift: Number(shift.toFixed(3)),
+        improvement: Number(improvement.toFixed(4))
+      });
+    } else {
+      replacements.push({
+        index,
+        applied: false,
+        reason: 'improvement-too-small',
+        confidence: Number(confidence.toFixed(4)),
+        shift: Number(shift.toFixed(3)),
+        improvement: Number(improvement.toFixed(4))
+      });
+    }
+  }
+
+  const stabilized = stabilizeQuadGeometry(working, { blend: 0.12 }) || working;
+  return {
+    quad: normalizeCornerQuad(stabilized) || base,
+    replacements
+  };
 }
 
 function mergeTopCornerRecoveryHint(baseQuad, recoveredQuad, diagnostics, cellHeight) {
