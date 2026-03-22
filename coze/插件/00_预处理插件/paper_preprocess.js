@@ -4564,6 +4564,9 @@ async function renderDetectedGridAnnotation(imagePath, outputPath, gridRectifica
   const annotationTitle = String(options.annotationTitle || `${processNo} 真实方格边界 ${gridRows}x${gridCols}`);
   const annotationSubtitle = String(options.annotationSubtitle || (showGuides ? '外边界 + 规范化方格引导线' : '仅显示四角点与外边界'));
   const annotationDetail = String(options.annotationDetail || '');
+  const selectiveCornerReplacement = Array.isArray(options.selectiveCornerReplacement)
+    ? options.selectiveCornerReplacement
+    : [];
   const hasExactGuideCounts =
     Array.isArray(guides.xPeaks) &&
     Array.isArray(guides.yPeaks) &&
@@ -4597,9 +4600,19 @@ async function renderDetectedGridAnnotation(imagePath, outputPath, gridRectifica
   const cornerPoints = corners.map((point, index) => {
     const x = clamp(Math.round(point[0]), 0, Math.max(0, width - 1));
     const y = clamp(Math.round(point[1]), 0, Math.max(0, height - 1));
+    const replacementDetail = selectiveCornerReplacement.find((item) => Number(item?.index) === index) || null;
+    const cornerStroke = replacementDetail?.applied ? '#b91c1c' : '#ea580c';
+    const cornerFill = replacementDetail?.applied ? '#ef4444' : '#f97316';
+    const statusText = replacementDetail?.applied ? 'R' : 'K';
+    const statusFill = replacementDetail?.applied ? '#7f1d1d' : '#9a3412';
+    const statusLabel = replacementDetail
+      ? `${statusText}:${String(replacementDetail.reason || 'keep').slice(0, 16)}`
+      : 'K:default';
     return `
-      <circle cx="${x}" cy="${y}" r="8" fill="#f97316"/>
-      <text x="${x + 10}" y="${y - 10}" font-size="18" fill="#111827">C${index}</text>
+      <circle cx="${x}" cy="${y}" r="9" fill="${cornerFill}" stroke="${cornerStroke}" stroke-width="3"/>
+      <rect x="${x + 10}" y="${y - 34}" width="162" height="24" rx="8" ry="8" fill="rgba(255,255,255,0.92)" stroke="${cornerStroke}" stroke-width="2"/>
+      <text x="${x + 18}" y="${y - 17}" font-size="16" fill="#111827">C${index}</text>
+      <text x="${x + 46}" y="${y - 17}" font-size="15" fill="${statusFill}">${statusLabel}</text>
     `;
   }).join('\n');
 
@@ -8866,7 +8879,8 @@ async function extractGridArtifactsFromWarpedImages(options = {}) {
         gridRows: Math.max(1, (gridBoundaryDetection.guides?.yPeaks || []).length - 1),
         gridCols: Math.max(1, (gridBoundaryDetection.guides?.xPeaks || []).length - 1),
         showGuides: false,
-        annotationDetail
+        annotationDetail,
+        selectiveCornerReplacement: cornerRefinement?.edgeLineFit?.quadSelection?.selectiveCornerReplacement || null
       }
     );
   }
