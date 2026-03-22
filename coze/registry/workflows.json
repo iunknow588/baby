@@ -1,0 +1,42 @@
+{
+  "version": "1.0.0",
+  "defaultRoute": "general_chat",
+  "workflows": [
+    {
+      "id": "wf_general_chat_v1",
+      "route": "general_chat",
+      "provider": "coze",
+      "version": "1.0.0",
+      "executionType": "direct_reply",
+      "interactionMode": "direct",
+      "keywords": []
+    },
+    {
+      "id": "wf_calligraphy_scoring_v1",
+      "route": "calligraphy_scoring",
+      "provider": "local",
+      "version": "1.0.0",
+      "executionType": "requires_user_interaction",
+      "interactionMode": "flow_first",
+      "keywords": ["书法", "字", "硬笔", "毛笔", "打分", "评分"]
+    },
+    {
+      "id": "wf_essay_scoring_v1",
+      "route": "essay_scoring",
+      "provider": "local",
+      "version": "1.0.0",
+      "executionType": "requires_user_interaction",
+      "interactionMode": "flow_first",
+      "keywords": ["作文", "批改", "评分", "写作"]
+    },
+    {
+      "id": "wf_psych_support_v1",
+      "route": "psych_support",
+      "provider": "local",
+      "version": "1.0.0",
+      "executionType": "requires_user_interaction",
+      "interactionMode": "flow_first",
+      "keywords": ["焦虑", "难过", "压力", "情绪", "心理"]
+    }
+  ]
+}

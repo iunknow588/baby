@@ -18,6 +18,7 @@ yarn-error.log*
 !app/.env.local.example
 /app/.env.local
 /.env.local
+/private_key.pem
 
 # tooling cache
 app/.vite/
@@ -33,3 +34,22 @@ Thumbs.db
 # local cloned references (not source-of-truth)
 ref/
 .vercel
+
+# coze local deps / caches / generated outputs
+coze/**/node_modules/
+coze/**/__pycache__/
+coze/插件/test/out/
+coze/插件/05_切分插件/test/output/
+coze/插件/05_切分插件/test/02_cells_overview.png
+coze/插件/05_切分插件/test/02_segmentation_summary.json
+coze/插件/05_切分插件/test/05_1_网格范围检测/
+coze/插件/05_切分插件/test/05_2_边界引导切分/
+coze/插件/05_切分插件/test/05_3_切分调试渲染/
+coze/插件/05_切分插件/test/05_4_单格裁切/
+coze/插件/05_切分插件/test/cells_overview.png
+coze/插件/05_切分插件/test/segmentation_summary.json
+coze/插件/05_切分插件/test/fixtures/test_a4.png
+coze/插件/05_切分插件/test/fixtures/test_a4_shifted.png
+coze/插件/07_评分插件/test/preprocess_trials/
+coze/插件/07_评分插件/test/real_output/
+coze/runtime/state.json

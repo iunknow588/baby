@@ -1,0 +1,14 @@
+{
+  "name": "coze-hanzi-score-plugin",
+  "version": "1.0.0",
+  "description": "Rule-based Hanzi scoring plugin for segmented grid cells",
+  "main": "index.js",
+  "scripts": {
+    "test": "node test/test.js",
+    "test:real": "node test/process_real_images.js"
+  },
+  "dependencies": {
+    "sharp": "^0.33.5"
+  },
+  "license": "ISC"
+}

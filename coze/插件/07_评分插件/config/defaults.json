@@ -1,0 +1,96 @@
+{
+  "image": {
+    "threshold": 180,
+    "template_size": 128,
+    "analysis_inset_ratio": 0.18,
+    "ignore_red_grid": true,
+    "grid_type": "square"
+  },
+  "components": {
+    "ignore_edge_touching_components": true,
+    "edge_margin_px": 2,
+    "edge_component_max_area_ratio": 0.08
+  },
+  "blank": {
+    "ink_ratio_max": 0.006,
+    "primary_area_ratio_max": 0.004,
+    "bbox_ratio_max": 0.015,
+    "component_count_max": 2,
+    "strong_ink_ratio_max": 0.012,
+    "strong_primary_area_ratio_max": 0.001,
+    "strong_bbox_ratio_max": 0.002,
+    "center_ink_ratio_max": 0.01,
+    "strong_center_ink_ratio_max": 0.004,
+    "ink_ratio_weight": 40,
+    "primary_area_ratio_weight": 50,
+    "bbox_ratio_weight": 20,
+    "component_count_weight": 0.12
+  },
+  "blank_cleanup": {
+    "enabled": true,
+    "column_coverage_min": 0.12,
+    "row_coverage_min": 0.2,
+    "max_line_run_px": 8,
+    "line_run_edge_ratio": 0.3,
+    "guide_component_min_aspect_ratio": 4,
+    "guide_component_max_thickness_ratio": 0.06,
+    "guide_component_max_thickness_px": 12,
+    "guide_component_min_length_ratio": 0.22,
+    "guide_component_edge_ratio": 0.2,
+    "guide_component_max_area_ratio": 0.08
+  },
+  "layout": {
+    "center_penalty_scale": 900,
+    "center_weight": 0.55,
+    "margin_weight": 0.45
+  },
+  "size": {
+    "ideal_bbox_ratio_low": 0.3,
+    "ideal_bbox_ratio_high": 0.55,
+    "penalty_scale": 400
+  },
+  "stability": {
+    "noise_component_penalty": 3,
+    "noise_component_penalty_max": 25,
+    "component_overflow_penalty": 4,
+    "component_overflow_penalty_max": 15,
+    "stroke_density_target": 0.45,
+    "stroke_density_penalty_scale": 100,
+    "stroke_density_penalty_max": 20
+  },
+  "weights": {
+    "rule_only": {
+      "layout": 0.45,
+      "size": 0.35,
+      "stability": 0.2
+    },
+    "with_target": {
+      "layout": 0.28,
+      "size": 0.2,
+      "stability": 0.14,
+      "structure": 0.18,
+      "similarity": 0.2
+    }
+  },
+  "structure": {
+    "score_scale": 2.2,
+    "template_mismatch_score_threshold": 95,
+    "left_right_diff_threshold": 0.12,
+    "up_down_diff_threshold": 0.12,
+    "diagonal_diff_threshold": 0.14
+  },
+  "penalties": {
+    "center_offset_threshold": 0.06,
+    "margin_balance_threshold": 0.65,
+    "noise_component_threshold": 3
+  },
+  "review": {
+    "low_score_threshold": 60,
+    "blank_prob_review_threshold": 0.6
+  },
+  "display": {
+    "excellent_min": 90,
+    "good_min": 75,
+    "pass_min": 60
+  }
+}

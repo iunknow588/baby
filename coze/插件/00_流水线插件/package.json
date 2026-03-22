@@ -1,0 +1,10 @@
+{
+  "name": "coze-hanzi-pipeline-plugin",
+  "version": "1.0.0",
+  "description": "Pipeline plugin for paper preprocess, segmentation and scoring",
+  "main": "index.js",
+  "scripts": {
+    "test": "node -e \"console.log('no standalone tests')\""
+  },
+  "license": "ISC"
+}

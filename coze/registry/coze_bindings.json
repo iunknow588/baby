@@ -1,0 +1,33 @@
+{
+  "version": "0.0.1",
+  "bindings": [
+    {
+      "workflowId": "wf_general_chat_v1",
+      "resourceType": "prompt",
+      "resourceKey": "baby_general_chat_v1",
+      "required": false,
+      "description": "通用聊天工作流对应的 CozeLoop Prompt Key（示例占位）"
+    },
+    {
+      "workflowId": "wf_calligraphy_scoring_v1",
+      "resourceType": "prompt",
+      "resourceKey": "baby_calligraphy_scoring_v1",
+      "required": false,
+      "description": "书法评分工作流对应的 CozeLoop Prompt Key（示例占位）"
+    },
+    {
+      "workflowId": "wf_essay_scoring_v1",
+      "resourceType": "prompt",
+      "resourceKey": "baby_essay_scoring_v1",
+      "required": false,
+      "description": "作文评分工作流对应的 CozeLoop Prompt Key（示例占位）"
+    },
+    {
+      "workflowId": "wf_psych_support_v1",
+      "resourceType": "prompt",
+      "resourceKey": "baby_psych_support_v1",
+      "required": false,
+      "description": "心理支持工作流对应的 CozeLoop Prompt Key（示例占位）"
+    }
+  ]
+}

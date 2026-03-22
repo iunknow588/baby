@@ -1,0 +1,12 @@
+{
+  "name": "coze-paper-preprocess-plugin",
+  "version": "1.0.0",
+  "description": "Coze plugin for handwriting paper preprocessing",
+  "main": "index.js",
+  "scripts": {
+    "test": "node test_guard.js"
+  },
+  "dependencies": {
+    "sharp": "^0.33.5"
+  }
+}

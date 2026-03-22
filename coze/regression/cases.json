@@ -1,0 +1,26 @@
+[
+  {
+    "name": "calligraphy route",
+    "message": "可以帮我对这张硬笔书法练习打分吗",
+    "expectRoute": "calligraphy_scoring",
+    "expectInteractionMode": "flow_first"
+  },
+  {
+    "name": "essay route",
+    "message": "请帮我批改作文并给建议",
+    "expectRoute": "essay_scoring",
+    "expectInteractionMode": "flow_first"
+  },
+  {
+    "name": "psych route",
+    "message": "我最近很焦虑，学习压力很大",
+    "expectRoute": "psych_support",
+    "expectInteractionMode": "flow_first"
+  },
+  {
+    "name": "fallback general",
+    "message": "今天上海天气怎样",
+    "expectRoute": "general_chat",
+    "expectInteractionMode": "direct"
+  }
+]

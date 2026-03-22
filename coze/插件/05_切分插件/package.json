@@ -1,0 +1,16 @@
+{
+  "name": "coze-plugins",
+  "version": "1.0.0",
+  "description": "Coze platform plugins for various functionalities",
+  "main": "index.js",
+  "scripts": {
+    "test": "node test/test.js",
+    "generate:test-image": "node test/generate_test_image.js"
+  },
+  "dependencies": {
+    "sharp": "^0.33.5"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}
