@@ -4607,11 +4607,11 @@ async function renderDetectedGridAnnotation(imagePath, outputPath, gridRectifica
     const toY = clamp(Math.round(item.to[1]), 0, Math.max(0, height - 1));
     const labelX = clamp(Math.round((fromX + toX) / 2) + 10, 0, Math.max(0, width - 180));
     const labelY = clamp(Math.round((fromY + toY) / 2) - 12, 24, Math.max(24, height - 10));
-    const coordLabel = `(${fromX},${fromY})->(${toX},${toY})`;
+    const coordLabel = `(${fromX},${fromY})->(${toX},${toY}) d=${Number(item.shift || 0).toFixed(1)} c=${Number(item.confidence || 0).toFixed(2)}`;
     return `
       <line x1="${fromX}" y1="${fromY}" x2="${toX}" y2="${toY}" stroke="#991b1b" stroke-width="3" stroke-dasharray="10 8" stroke-opacity="0.9"/>
       <circle cx="${fromX}" cy="${fromY}" r="8" fill="none" stroke="#991b1b" stroke-width="3" stroke-dasharray="6 4"/>
-      <rect x="${labelX}" y="${labelY - 16}" width="170" height="20" rx="6" ry="6" fill="rgba(255,255,255,0.9)" stroke="#991b1b" stroke-width="2"/>
+      <rect x="${labelX}" y="${labelY - 16}" width="290" height="20" rx="6" ry="6" fill="rgba(255,255,255,0.9)" stroke="#991b1b" stroke-width="2"/>
       <text x="${labelX + 8}" y="${labelY - 2}" font-size="13" fill="#7f1d1d">${coordLabel}</text>
     `;
   }).join('\n');
