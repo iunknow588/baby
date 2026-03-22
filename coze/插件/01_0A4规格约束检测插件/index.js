@@ -533,16 +533,20 @@ class A4ConstraintDetectPlugin {
       const protectText = protectedSides.length ? protectedSides.join(',') : 'none';
       const protectMarks = [];
       if (edgeCleanup?.protectedFrameLines?.top) {
-        protectMarks.push(`<text x="${Math.max(26, Math.round(width * 0.45))}" y="34" font-size="18" fill="#f97316">protect-top</text>`);
+        const detail = edgeCleanup.protectedFrameLines.top;
+        protectMarks.push(`<text x="${Math.max(26, Math.round(width * 0.45))}" y="34" font-size="18" fill="#f97316">protect-top i=${detail.inset} run=${Math.round(detail.runWidth || 0)} rows=${detail.strongRows || 0}</text>`);
       }
       if (edgeCleanup?.protectedFrameLines?.bottom) {
-        protectMarks.push(`<text x="${Math.max(26, Math.round(width * 0.42))}" y="${Math.max(24, height - 18)}" font-size="18" fill="#f97316">protect-bottom</text>`);
+        const detail = edgeCleanup.protectedFrameLines.bottom;
+        protectMarks.push(`<text x="${Math.max(26, Math.round(width * 0.32))}" y="${Math.max(24, height - 18)}" font-size="18" fill="#f97316">protect-bottom i=${detail.inset} run=${Math.round(detail.runWidth || 0)} rows=${detail.strongRows || 0}</text>`);
       }
       if (edgeCleanup?.protectedFrameLines?.left) {
-        protectMarks.push(`<text x="18" y="${Math.max(64, Math.round(height * 0.5))}" font-size="18" fill="#f97316">protect-left</text>`);
+        const detail = edgeCleanup.protectedFrameLines.left;
+        protectMarks.push(`<text x="18" y="${Math.max(64, Math.round(height * 0.5))}" font-size="18" fill="#f97316">protect-left i=${detail.inset} run=${Math.round(detail.runHeight || 0)} cols=${detail.strongCols || 0}</text>`);
       }
       if (edgeCleanup?.protectedFrameLines?.right) {
-        protectMarks.push(`<text x="${Math.max(24, width - 124)}" y="${Math.max(64, Math.round(height * 0.5))}" font-size="18" fill="#f97316">protect-right</text>`);
+        const detail = edgeCleanup.protectedFrameLines.right;
+        protectMarks.push(`<text x="${Math.max(24, width - 320)}" y="${Math.max(64, Math.round(height * 0.5))}" font-size="18" fill="#f97316">protect-right i=${detail.inset} run=${Math.round(detail.runHeight || 0)} cols=${detail.strongCols || 0}</text>`);
       }
       const statusColor = isLikelyA4 ? '#22c55e' : '#ef4444';
       const svg = `
