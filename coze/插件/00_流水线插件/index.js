@@ -251,7 +251,7 @@ class HanziPipelinePlugin {
     const locatePaperCropPath = path.join(locateDir, '01_2_纸张裁切导出', '01_2_稿纸裁切图.png');
     const locateMetaPath = path.join(locateDir, '01_稿纸提取结果.json');
     const rectifyA4ConstraintMetaPath = path.join(rectifyDir, '02_0_A4规格约束检测', '02_0_A4规格约束检测.json');
-    const quadDebugPath = path.join(rectifyDir, '02_1_纸张角点检测', '02_1_纸张角点调试图.png');
+    const quadDebugPath = path.join(rectifyDir, '02_1_纸张角点检测', '02_1_1_纸张角点调试图.png');
     const quadMetaPath = path.join(rectifyDir, '02_1_纸张角点检测', '02_1_纸张角点检测.json');
     const preprocessPath = path.join(rectifyDir, '02_3_去底纹', '02_3_2_矫正预处理输出', '02_3_2_矫正预处理图.png');
     const preprocessWarpedPath = path.join(rectifyDir, '02_2_透视矫正', '02_2_透视矫正图.png');
@@ -406,8 +406,8 @@ class HanziPipelinePlugin {
       processChain: [
         '01_2_稿纸裁切图 -> 02_0_1_A4内切清边图',
         '02_0_1_A4内切清边图 -> 02_0_2_A4规格约束检测图',
-        '02_0_2_A4规格约束检测图 -> 02_1_纸张角点调试图',
-        '02_1_纸张角点调试图 -> 02_2_透视矫正图',
+        '02_0_2_A4规格约束检测图 -> 02_1_1_纸张角点调试图',
+        '02_1_1_纸张角点调试图 -> 02_2_透视矫正图',
         '02_2_透视矫正图 -> 02_3_1_检测去底纹图',
         '02_3_1_检测去底纹图 -> 02_3_2_矫正预处理图'
       ]
