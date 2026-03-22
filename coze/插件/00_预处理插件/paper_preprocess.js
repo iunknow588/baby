@@ -3576,6 +3576,11 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
         parallelDotTopBottom: Number((entry.rectangularity?.parallelDotTopBottom || 0).toFixed(4)),
         parallelDotLeftRight: Number((entry.rectangularity?.parallelDotLeftRight || 0).toFixed(4)),
         rightAngleScore: Number((entry.rectangularity?.rightAngleScore || 0).toFixed(4)),
+        rotatedRectangleScore: Number((entry.rectangularity?.rotatedRectangleScore || 0).toFixed(4)),
+        rotatedRectangleTightScore: Number((entry.rectangularity?.rotatedRectangleTightScore || 0).toFixed(4)),
+        rotatedMeanResidual: Number((entry.rectangularity?.rotatedMeanResidual || 0).toFixed(3)),
+        rotatedMaxResidual: Number((entry.rectangularity?.rotatedMaxResidual || 0).toFixed(3)),
+        rotationAngleDeg: Number((((entry.rectangularity?.rotationAngle || 0) * 180) / Math.PI).toFixed(3)),
         oppositeWidthRatio: Number((entry.rectangularity?.oppositeWidthRatio || 0).toFixed(4)),
         oppositeHeightRatio: Number((entry.rectangularity?.oppositeHeightRatio || 0).toFixed(4)),
         diagonalRatio: Number((entry.rectangularity?.diagonalRatio || 0).toFixed(4)),
@@ -6565,13 +6570,22 @@ function evaluateRectangularQuadQuality(corners, options = {}) {
     return null;
   }
   const [lt, rt, rb, lb] = quad.map(([x, y]) => [Number(x), Number(y)]);
+  const topVector = [rt[0] - lt[0], rt[1] - lt[1]];
+  const rightVector = [rb[0] - rt[0], rb[1] - rt[1]];
+  const bottomVector = [rb[0] - lb[0], rb[1] - lb[1]];
+  const leftVector = [lb[0] - lt[0], lb[1] - lt[1]];
   const vectors = [
-    [rt[0] - lt[0], rt[1] - lt[1]],
-    [rb[0] - rt[0], rb[1] - rt[1]],
-    [lb[0] - rb[0], lb[1] - rb[1]],
-    [lt[0] - lb[0], lt[1] - lb[1]]
+    topVector,
+    rightVector,
+    [-bottomVector[0], -bottomVector[1]],
+    [-leftVector[0], -leftVector[1]]
   ];
-  const lengths = vectors.map(([dx, dy]) => Math.hypot(dx, dy));
+  const lengths = [
+    Math.hypot(topVector[0], topVector[1]),
+    Math.hypot(rightVector[0], rightVector[1]),
+    Math.hypot(bottomVector[0], bottomVector[1]),
+    Math.hypot(leftVector[0], leftVector[1])
+  ];
   if (lengths.some((value) => !Number.isFinite(value) || value < 1e-6)) {
     return null;
   }
@@ -6616,14 +6630,60 @@ function evaluateRectangularQuadQuality(corners, options = {}) {
     [guideWidthRatio, guideHeightRatio].filter((value) => Number.isFinite(value)).map((value) => clamp01(value))
   );
   const rightAngleScore = 1 - average(rightAngles);
+  const centroid = [
+    average(quad.map((point) => point[0])),
+    average(quad.map((point) => point[1]))
+  ];
+  const horizontalDirection = [
+    topVector[0] / Math.max(topLength, 1e-6) + bottomVector[0] / Math.max(bottomLength, 1e-6),
+    topVector[1] / Math.max(topLength, 1e-6) + bottomVector[1] / Math.max(bottomLength, 1e-6)
+  ];
+  const rotationAngle = Math.atan2(horizontalDirection[1], horizontalDirection[0]);
+  const cosTheta = Math.cos(-rotationAngle);
+  const sinTheta = Math.sin(-rotationAngle);
+  const rotated = quad.map(([x, y]) => {
+    const dx = x - centroid[0];
+    const dy = y - centroid[1];
+    return [
+      dx * cosTheta - dy * sinTheta,
+      dx * sinTheta + dy * cosTheta
+    ];
+  });
+  const rotatedLeftX = average([rotated[0][0], rotated[3][0]]);
+  const rotatedRightX = average([rotated[1][0], rotated[2][0]]);
+  const rotatedTopY = average([rotated[0][1], rotated[1][1]]);
+  const rotatedBottomY = average([rotated[2][1], rotated[3][1]]);
+  const fittedRectangle = [
+    [rotatedLeftX, rotatedTopY],
+    [rotatedRightX, rotatedTopY],
+    [rotatedRightX, rotatedBottomY],
+    [rotatedLeftX, rotatedBottomY]
+  ];
+  const rotatedResiduals = rotated.map((point, index) => Math.hypot(
+    point[0] - fittedRectangle[index][0],
+    point[1] - fittedRectangle[index][1]
+  ));
+  const rotatedMeanResidual = average(rotatedResiduals);
+  const rotatedMaxResidual = Math.max(...rotatedResiduals);
+  const rotatedWidth = Math.abs(rotatedRightX - rotatedLeftX);
+  const rotatedHeight = Math.abs(rotatedBottomY - rotatedTopY);
+  const rotatedReferenceSize = Math.max(1, average([rotatedWidth, rotatedHeight]));
+  const rotatedRectangleScore = clamp01(
+    1 - rotatedMeanResidual / Math.max(6, rotatedReferenceSize * 0.035)
+  );
+  const rotatedRectangleTightScore = clamp01(
+    1 - rotatedMaxResidual / Math.max(8, rotatedReferenceSize * 0.05)
+  );
   const score = clamp01(
-    parallelDotTopBottom * 0.24
-    + parallelDotLeftRight * 0.24
-    + rightAngleScore * 0.26
-    + oppositeWidthRatio * 0.1
-    + oppositeHeightRatio * 0.1
-    + diagonalRatio * 0.04
-    + midpointScore * 0.02
+    rotatedRectangleScore * 0.42
+    + rotatedRectangleTightScore * 0.18
+    + parallelDotTopBottom * 0.12
+    + parallelDotLeftRight * 0.12
+    + rightAngleScore * 0.08
+    + oppositeWidthRatio * 0.03
+    + oppositeHeightRatio * 0.03
+    + diagonalRatio * 0.01
+    + midpointScore * 0.01
   );
   return {
     score,
@@ -6639,7 +6699,14 @@ function evaluateRectangularQuadQuality(corners, options = {}) {
     oppositeWidthRatio,
     oppositeHeightRatio,
     diagonalRatio,
-    midpointGap
+    midpointGap,
+    rotationAngle,
+    rotatedRectangleScore,
+    rotatedRectangleTightScore,
+    rotatedMeanResidual,
+    rotatedMaxResidual,
+    rotatedWidth,
+    rotatedHeight
   };
 }
 
