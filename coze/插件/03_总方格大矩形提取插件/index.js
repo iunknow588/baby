@@ -112,6 +112,7 @@ class GridOuterRectExtractPlugin {
       gridCols,
       a4Constraint,
       enableA4GuideConstraint: false,
+      disableOuterFrameCleanup: true,
       processNo: '03'
     });
     const gridStagePayload = {
@@ -131,7 +132,7 @@ class GridOuterRectExtractPlugin {
         gridRectifiedSourceStep: gridStage.gridRectifiedSourceStep || null,
         gridRectifiedMetaPath: gridStageRectifiedMetaPath || path.join(step03_0_6Dir, '03_0_6_单格切分输入信息.json')
       },
-      diagnosticsNote: '03_0_1 为粗裁剪去外框输入图，只负责把外层黑框裁掉并作为后续唯一输入；03_0_2 仅负责四角点定位。03阶段已禁用A4约束，03_0_6 透视矫正以已确认四角点为主，内部均分线仅作诊断辅助。',
+      diagnosticsNote: '03_0_1 粗裁剪去外框功能已暂时关闭，当前直接沿用 02_3_2 输入图；03_0_2 仅负责四角点定位。03阶段已禁用A4约束，03_0_6 透视矫正以已确认四角点为主，内部均分线仅作诊断辅助。',
       outerFrameCleanup: gridStage.outerFrameCleanup || null,
       cornerLocalization: buildCornerLocalizationResult(gridStage),
       gridGuideDiagnostics: buildGridGuideDiagnostics(gridStage),

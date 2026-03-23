@@ -9,6 +9,13 @@ try {
   sharp = require('../05_切分插件/node_modules/sharp');
 }
 
+const DEFAULT_NEUTRAL_PAPER_COLOR = {
+  r: 216,
+  g: 216,
+  b: 216,
+  luma: 216
+};
+
 function buildEdgeCleanupHintFromImage(rawData, info, baseBounds) {
   if (!rawData || !info?.width || !info?.height || !baseBounds) {
     return null;
@@ -395,6 +402,9 @@ function buildEdgeCleanupHintFromImage(rawData, info, baseBounds) {
 
   return {
     paperColor: {
+      ...DEFAULT_NEUTRAL_PAPER_COLOR
+    },
+    sampledPaperColor: {
       r: Number(paperColor.r.toFixed(1)),
       g: Number(paperColor.g.toFixed(1)),
       b: Number(paperColor.b.toFixed(1)),
@@ -427,6 +437,41 @@ function buildEdgeCleanupHintFromImage(rawData, info, baseBounds) {
     shrinkRatio: Number(shrinkRatio.toFixed(4)),
     applied: (insetLeft + insetRight + insetTop + insetBottom) > 0
   };
+}
+
+async function normalizeCleanedPaperBackground(imagePath, edgeCleanup) {
+  if (!imagePath || !edgeCleanup?.paperColor) {
+    return;
+  }
+
+  const { data, info } = await sharp(imagePath).raw().toBuffer({ resolveWithObject: true });
+  const output = Buffer.from(data);
+  const targetR = Number(edgeCleanup.paperColor.r || 0);
+  const targetG = Number(edgeCleanup.paperColor.g || 0);
+  const targetB = Number(edgeCleanup.paperColor.b || 0);
+
+  for (let i = 0; i < info.width * info.height; i += 1) {
+    const offset = i * info.channels;
+    const r = output[offset];
+    const g = output[offset + 1];
+    const b = output[offset + 2];
+    const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+    const colorSpan = Math.max(r, g, b) - Math.min(r, g, b);
+    if (luma < 168 || colorSpan > 36) {
+      continue;
+    }
+    output[offset] = clamp(Math.round(r * 0.2 + targetR * 0.8), 0, 255);
+    output[offset + 1] = clamp(Math.round(g * 0.2 + targetG * 0.8), 0, 255);
+    output[offset + 2] = clamp(Math.round(b * 0.2 + targetB * 0.8), 0, 255);
+  }
+
+  await sharp(output, {
+    raw: {
+      width: info.width,
+      height: info.height,
+      channels: info.channels
+    }
+  }).png().toFile(imagePath);
 }
 
 class A4ConstraintDetectPlugin {
@@ -516,6 +561,7 @@ class A4ConstraintDetectPlugin {
         cleanedImage = cleanedImage.composite([{ input: Buffer.from(svg), top: 0, left: 0 }]);
       }
       await cleanedImage.png().toFile(cleanedImagePath);
+      await normalizeCleanedPaperBackground(cleanedImagePath, edgeCleanup);
     }
 
     if (outputImagePath) {

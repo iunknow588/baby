@@ -34,7 +34,8 @@ class PaperPreprocessPlugin {
       blurSigma,
       ignoreRedGrid = true,
       gridType = 'square',
-      a4Constraint = null
+      a4Constraint = null,
+      disableInternalGridGuideCleanup = false
     } = params || {};
 
     if (!imagePath) {
@@ -66,7 +67,8 @@ class PaperPreprocessPlugin {
       blurSigma,
       ignoreRedGrid,
       gridType,
-      a4Constraint
+      a4Constraint,
+      disableInternalGridGuideCleanup
     });
 
     let gridEstimation = null;

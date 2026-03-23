@@ -14,6 +14,12 @@ try {
 
 const execFileAsync = promisify(execFile);
 const gridBoundaryNormalizePlugin = require('../05_0方格边界规范化插件/index');
+const DEFAULT_NEUTRAL_PAPER_COLOR = Object.freeze({
+  r: 216,
+  g: 216,
+  b: 216,
+  gray: 216
+});
 
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
@@ -130,6 +136,88 @@ function adjustCornerQuadByGuideBounds(corners, beforeGuides, afterGuides) {
   rightBottom[1] += deltaBottom;
 
   return [leftTop, rightTop, rightBottom, leftBottom];
+}
+
+function preventStandaloneTopOutwardExpansion(corners, guides, topGuideConfirmation, options = {}) {
+  const quad = normalizeCornerQuad(corners);
+  if (!quad || !guides || !topGuideConfirmation) {
+    return {
+      corners: quad,
+      applied: false,
+      diagnostics: null
+    };
+  }
+
+  const confirmedTop = Number(topGuideConfirmation.refinedTop);
+  const left = Number(guides.left);
+  const right = Number(guides.right);
+  const xPeaks = Array.isArray(guides.xPeaks) ? guides.xPeaks.map(Number).filter(Number.isFinite) : [];
+  const yPeaks = Array.isArray(guides.yPeaks) ? guides.yPeaks.map(Number).filter(Number.isFinite) : [];
+  const cellWidth = Math.max(24, Math.round(options.cellWidth || getMedianGap(xPeaks, 0)));
+  const cellHeight = Math.max(24, Math.round(options.cellHeight || getMedianGap(yPeaks, 0)));
+  if (![confirmedTop, left, right].every(Number.isFinite)) {
+    return {
+      corners: quad,
+      applied: false,
+      diagnostics: null
+    };
+  }
+
+  const topOvershootThreshold = Math.max(12, Math.round(cellHeight * 0.25));
+  const sideTolerance = Math.max(12, Math.round(cellWidth * 0.08));
+  const leftTop = quad[0];
+  const rightTop = quad[1];
+  const leftOvershoot = confirmedTop - leftTop[1];
+  const rightOvershoot = confirmedTop - rightTop[1];
+  const leftSideTight = Math.abs(leftTop[0] - left) <= sideTolerance;
+  const rightSideTight = Math.abs(rightTop[0] - right) <= sideTolerance;
+  const shouldClamp = (
+    leftOvershoot > topOvershootThreshold
+    && rightOvershoot > topOvershootThreshold
+    && leftSideTight
+    && rightSideTight
+  );
+  const diagnostics = {
+    confirmedTop,
+    topOvershootThreshold,
+    sideTolerance,
+    leftOvershoot: Number(leftOvershoot.toFixed(3)),
+    rightOvershoot: Number(rightOvershoot.toFixed(3)),
+    leftSideTight,
+    rightSideTight,
+    applied: shouldClamp
+  };
+  if (!shouldClamp) {
+    return {
+      corners: quad,
+      applied: false,
+      diagnostics
+    };
+  }
+
+  const leftAnchor = Array.isArray(topGuideConfirmation.anchors?.leftTop)
+    ? topGuideConfirmation.anchors.leftTop
+    : null;
+  const rightAnchor = Array.isArray(topGuideConfirmation.anchors?.rightTop)
+    ? topGuideConfirmation.anchors.rightTop
+    : null;
+  const corrected = [
+    [
+      clamp(Number.isFinite(Number(leftAnchor?.[0])) ? Number(leftAnchor[0]) : leftTop[0], left - sideTolerance, left + sideTolerance),
+      confirmedTop
+    ],
+    [
+      clamp(Number.isFinite(Number(rightAnchor?.[0])) ? Number(rightAnchor[0]) : rightTop[0], right - sideTolerance, right + sideTolerance),
+      confirmedTop
+    ],
+    [...quad[2]],
+    [...quad[3]]
+  ];
+  return {
+    corners: normalizeCornerQuad(corrected) || quad,
+    applied: true,
+    diagnostics
+  };
 }
 
 function clampCornerQuad(corners, width, height) {
@@ -1168,6 +1256,48 @@ function pickBestDirectionalIndex(start, end, expected, scoreAt, options = {}) {
   return { index: bestIndex, score: bestScore };
 }
 
+function pickOutermostStrongDirectionalIndex(start, end, expected, scoreAt, options = {}) {
+  const {
+    distancePenalty = 0.85,
+    outwardTarget = expected,
+    outwardBias = 0,
+    strongScoreRatio = 0.9,
+    strongScoreMin = 72
+  } = options;
+  const from = Math.round(Math.min(start, end));
+  const to = Math.round(Math.max(start, end));
+  const scored = [];
+  let bestEntry = null;
+  for (let index = from; index <= to; index += 1) {
+    const distance = Math.abs(index - expected);
+    const outwardDistance = Math.abs(index - outwardTarget);
+    const rawScore = scoreAt(index);
+    const score = rawScore - distance * distancePenalty - outwardDistance * outwardBias;
+    const entry = { index, rawScore, score };
+    scored.push(entry);
+    if (!bestEntry || score > bestEntry.score) {
+      bestEntry = entry;
+    }
+  }
+  if (!bestEntry) {
+    return { index: clamp(Math.round(expected), from, to), score: -Infinity };
+  }
+  const strongThreshold = Math.max(strongScoreMin, bestEntry.rawScore * strongScoreRatio);
+  const strongCandidates = scored.filter((entry) => entry.rawScore >= strongThreshold);
+  if (!strongCandidates.length) {
+    return { index: bestEntry.index, score: bestEntry.score };
+  }
+  strongCandidates.sort((a, b) => {
+    const outwardA = Math.abs(a.index - outwardTarget);
+    const outwardB = Math.abs(b.index - outwardTarget);
+    if (Math.abs(outwardA - outwardB) > 1e-6) {
+      return outwardA - outwardB;
+    }
+    return b.score - a.score;
+  });
+  return { index: strongCandidates[0].index, score: strongCandidates[0].score };
+}
+
 async function refineTopGuideByVerticalAnchors(imagePath, guides) {
   if (!imagePath || !guides) {
     return null;
@@ -1646,7 +1776,7 @@ function collectGlobalVerticalBoundaryPoints(gray, width, height, options = {}) 
     : Math.round(expectedX + (xTo - expectedX) * 0.62);
   const points = [];
   for (let y = yFrom; y <= yTo; y += step) {
-    const xPick = pickBestDirectionalIndex(
+    const xPick = pickOutermostStrongDirectionalIndex(
       xFrom,
       xTo,
       Math.round(expectedX),
@@ -1654,7 +1784,9 @@ function collectGlobalVerticalBoundaryPoints(gray, width, height, options = {}) 
       {
         distancePenalty: 0.56,
         outwardTarget: outwardTargetX,
-        outwardBias
+        outwardBias,
+        strongScoreRatio: 0.9,
+        strongScoreMin: 84
       }
     );
     points.push([xPick.index, y]);
@@ -2021,11 +2153,12 @@ async function removeObviousOuterFrameLines(imagePath, outputPath) {
     const followGridRight = findFollowGridLine('right', nearInnerRight, quarterGapX);
     const buildRemovableSide = (outerLine, innerLine, followGridLine, quarterGapLimit, searchSpan) => {
       if (!outerLine || !innerLine) {
-        return { removable: false, distance: null, frameToGridGap: null };
+        return { removable: false, distance: null, frameToGridGap: null, minRequiredGap: quarterGapLimit };
       }
       const distance = Math.abs(innerLine.index - outerLine.index);
       const frameToGridGap = followGridLine ? Math.abs(followGridLine.index - innerLine.index) : null;
-      const validOuterInnerDistance = distance >= 4 && distance <= Math.max(12, searchSpan);
+      const minRequiredGap = Math.max(4, Math.floor(quarterGapLimit) + 1);
+      const validOuterInnerDistance = distance >= minRequiredGap && distance <= Math.max(minRequiredGap + 16, searchSpan);
       const validStrength = innerLine.score >= 22;
       const weakFollowGridBackedByStrongInner = (
         !!followGridLine
@@ -2047,6 +2180,7 @@ async function removeObviousOuterFrameLines(imagePath, outputPath) {
         distance,
         frameToGridGap,
         quarterGapLimit,
+        minRequiredGap,
         outerScore: Number(outerLine.score.toFixed(3)),
         innerScore: Number(innerLine.score.toFixed(3)),
         followGridScore: followGridLine ? Number(followGridLine.score.toFixed(3)) : null,
@@ -2062,6 +2196,22 @@ async function removeObviousOuterFrameLines(imagePath, outputPath) {
       left: buildRemovableSide(refinedLeftLine, nearInnerLeft, followGridLeft, quarterGapX, innerFrameSearchSpanX),
       right: buildRemovableSide(refinedRightLine, nearInnerRight, followGridRight, quarterGapX, innerFrameSearchSpanX)
     };
+    const removableDistances = ['top', 'bottom', 'left', 'right']
+      .map((key) => Number(removableSides[key]?.distance))
+      .filter(Number.isFinite);
+    const marginConsistency = removableDistances.length === 4
+      ? {
+          minGap: Math.min(...removableDistances),
+          maxGap: Math.max(...removableDistances),
+          ratio: Math.max(...removableDistances) / Math.max(1, Math.min(...removableDistances))
+        }
+      : null;
+    const similarOuterInnerMargin = Boolean(
+      marginConsistency
+      && marginConsistency.minGap > 0
+      && marginConsistency.ratio <= 1.35
+      && (marginConsistency.maxGap - marginConsistency.minGap) <= Math.max(12, Math.round(Math.min(estimatedCellGapX, estimatedCellGapY) * 0.18))
+    );
     const topHeaderGapEligible = (
       !removableSides.top.removable
       && removableSides.bottom.removable
@@ -2079,15 +2229,11 @@ async function removeObviousOuterFrameLines(imagePath, outputPath) {
       && removableSides.bottom.removable
       && removableSides.left.removable
       && removableSides.right.removable
+      && similarOuterInnerMargin
     );
-    const hasRelaxedImmediateInnerFrame = (
-      removableSides.bottom.removable
-      && removableSides.left.removable
-      && removableSides.right.removable
-      && (removableSides.top.removable || topHeaderGapEligible)
-    );
+    const hasRelaxedImmediateInnerFrame = hasImmediateInnerFrame;
     const structuralFrameConfirmed = (
-      hasRelaxedImmediateInnerFrame
+      hasImmediateInnerFrame
       && (
         nestedInnerSignals.length >= 2
         || regularGridConfirmed
@@ -2138,7 +2284,9 @@ async function removeObviousOuterFrameLines(imagePath, outputPath) {
           topHeaderGapEligible,
           hasImmediateInnerFrame,
           hasRelaxedImmediateInnerFrame,
-          structuralFrameConfirmed
+          structuralFrameConfirmed,
+          similarOuterInnerMargin,
+          marginConsistency
         },
         removableSides,
         regularGrid: {
@@ -2165,10 +2313,16 @@ async function removeObviousOuterFrameLines(imagePath, outputPath) {
       height,
       outerFrame,
       immediateInnerFrame: {
-        top: topHeaderGapEligible ? (followGridTop?.index ?? nearInnerTop?.index ?? outerFrame.top) : (nearInnerTop?.index ?? outerFrame.top),
+        top: nearInnerTop?.index ?? outerFrame.top,
         bottom: nearInnerBottom?.index ?? outerFrame.bottom,
         left: nearInnerLeft?.index ?? outerFrame.left,
         right: nearInnerRight?.index ?? outerFrame.right
+      },
+      requiredSideGaps: {
+        top: removableSides.top.minRequiredGap,
+        bottom: removableSides.bottom.minRequiredGap,
+        left: removableSides.left.minRequiredGap,
+        right: removableSides.right.minRequiredGap
       },
       spanX0: refineSpanX0,
       spanX1: refineSpanX1,
@@ -2224,7 +2378,7 @@ async function removeObviousOuterFrameLines(imagePath, outputPath) {
     let rectifiedCrop = null;
     let cropAspectRatio = null;
     const fallbackMargins = {
-      top: Math.max(1, Math.round(Math.abs(((topHeaderGapEligible ? followGridTop?.index : nearInnerTop?.index) ?? innerTop?.index ?? outerFrame.top) - outerFrame.top))),
+      top: Math.max(1, Math.round(Math.abs((nearInnerTop?.index ?? innerTop?.index ?? outerFrame.top) - outerFrame.top))),
       bottom: Math.max(1, Math.round(Math.abs(outerFrame.bottom - (nearInnerBottom?.index ?? innerBottom?.index ?? outerFrame.bottom)))),
       left: Math.max(1, Math.round(Math.abs((nearInnerLeft?.index ?? innerLeft?.index ?? outerFrame.left) - outerFrame.left))),
       right: Math.max(1, Math.round(Math.abs(outerFrame.right - (nearInnerRight?.index ?? innerRight?.index ?? outerFrame.right))))
@@ -2439,34 +2593,40 @@ async function removeObviousOuterFrameLines(imagePath, outputPath) {
     };
   }
 
+  const neutralPaperColor = estimateNeutralPaperColor(rgbData, info, {
+    x0: width * 0.18,
+    y0: height * 0.18,
+    x1: width * 0.82,
+    y1: height * 0.82
+  });
   const cleaned = Buffer.from(rgbData);
   const band = 7;
-  const whitenPixel = (x, y) => {
+  const fillNeutralPixel = (x, y) => {
     const px = clamp(x, 0, width - 1);
     const py = clamp(y, 0, height - 1);
     const offset = (py * width + px) * info.channels;
-    cleaned[offset] = 255;
-    cleaned[offset + 1] = 255;
-    cleaned[offset + 2] = 255;
+    cleaned[offset] = neutralPaperColor.r;
+    cleaned[offset + 1] = neutralPaperColor.g;
+    cleaned[offset + 2] = neutralPaperColor.b;
   };
   for (let y = topLine.index - band; y <= topLine.index + band; y += 1) {
     for (let x = leftLine.index - band; x <= rightLine.index + band; x += 1) {
-      whitenPixel(x, y);
+      fillNeutralPixel(x, y);
     }
   }
   for (let y = bottomLine.index - band; y <= bottomLine.index + band; y += 1) {
     for (let x = leftLine.index - band; x <= rightLine.index + band; x += 1) {
-      whitenPixel(x, y);
+      fillNeutralPixel(x, y);
     }
   }
   for (let x = leftLine.index - band; x <= leftLine.index + band; x += 1) {
     for (let y = topLine.index - band; y <= bottomLine.index + band; y += 1) {
-      whitenPixel(x, y);
+      fillNeutralPixel(x, y);
     }
   }
   for (let x = rightLine.index - band; x <= rightLine.index + band; x += 1) {
     for (let y = topLine.index - band; y <= bottomLine.index + band; y += 1) {
-      whitenPixel(x, y);
+      fillNeutralPixel(x, y);
     }
   }
 
@@ -2492,7 +2652,8 @@ async function removeObviousOuterFrameLines(imagePath, outputPath) {
       bottom: innerBottom,
       left: innerLeft,
       right: innerRight
-    }
+    },
+    neutralPaperColor
   };
 }
 
@@ -2520,7 +2681,7 @@ function deriveDominantGuideBoundsFromImage(gray, width, height, guides, options
   const hintedBottom = clamp(Math.round(Number(guides.bottom)), hintedTop, Math.max(0, height - 1));
   const cellWidth = Math.max(24, Math.round(Number(options.cellWidth) || 0));
   const cellHeight = Math.max(24, Math.round(Number(options.cellHeight) || 0));
-  const sideSearch = Math.max(12, Math.round(cellWidth * 0.22));
+  const sideSearch = Math.max(10, Math.round(cellWidth * 0.14));
   const topLift = Math.max(20, Math.round(cellHeight * 1.2));
   const topReturn = Math.max(10, Math.round(cellHeight * 0.18));
   const bottomDrop = Math.max(16, Math.round(cellHeight * 0.55));
@@ -2732,7 +2893,7 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
   const guideRight = hintedGuides.right;
   const guideTop = hintedGuides.top;
   const guideBottom = hintedGuides.bottom;
-  const searchX = Math.max(6, Math.round(cellWidth * 0.28));
+  const searchX = Math.max(6, Math.round(cellWidth * 0.16));
   const searchY = Math.max(6, Math.round(cellHeight * 0.28));
   const topSearchUpY = Math.max(searchY, Math.round(cellHeight * 0.58));
   const topSearchDownY = Math.max(4, Math.round(cellHeight * 0.08));
@@ -3354,6 +3515,65 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
   if (locallyRefinedRightTopAnchor) {
     effectiveRightTopAnchor = locallyRefinedRightTopAnchor;
   }
+  const sideAnchorXTolerance = Math.max(18, Math.round(cellWidth * 0.08));
+  const localLeftTopX = Number(normalizedRefined?.[0]?.[0]);
+  const localLeftBottomX = Number(normalizedRefined?.[3]?.[0]);
+  const localRightTopX = Number(normalizedRefined?.[1]?.[0]);
+  const localRightBottomX = Number(normalizedRefined?.[2]?.[0]);
+  if (effectiveLeftTopAnchor && Number.isFinite(localLeftTopX)) {
+    effectiveLeftTopAnchor = [
+      clamp(effectiveLeftTopAnchor[0], localLeftTopX - sideAnchorXTolerance, localLeftTopX + sideAnchorXTolerance),
+      effectiveLeftTopAnchor[1]
+    ];
+  }
+  let adjustedLeftBottomAnchor = effectiveLeftBottomAnchor;
+  if (adjustedLeftBottomAnchor && Number.isFinite(localLeftBottomX)) {
+    adjustedLeftBottomAnchor = [
+      clamp(adjustedLeftBottomAnchor[0], localLeftBottomX - sideAnchorXTolerance, localLeftBottomX + sideAnchorXTolerance),
+      adjustedLeftBottomAnchor[1]
+    ];
+  }
+  if (effectiveRightTopAnchor && Number.isFinite(localRightTopX)) {
+    effectiveRightTopAnchor = [
+      clamp(effectiveRightTopAnchor[0], localRightTopX - sideAnchorXTolerance, localRightTopX + sideAnchorXTolerance),
+      effectiveRightTopAnchor[1]
+    ];
+  }
+  let adjustedRightBottomAnchor = effectiveRightBottomAnchor;
+  if (adjustedRightBottomAnchor && Number.isFinite(localRightBottomX)) {
+    adjustedRightBottomAnchor = [
+      clamp(adjustedRightBottomAnchor[0], localRightBottomX - sideAnchorXTolerance, localRightBottomX + sideAnchorXTolerance),
+      adjustedRightBottomAnchor[1]
+    ];
+  }
+  const sideHardClampTolerance = Math.max(10, Math.round(cellWidth * 0.05));
+  const sideHardClampOutwardFlex = Math.max(8, Math.round(cellWidth * 0.03));
+  const leftHintUsable = Number.isFinite(guideLeft);
+  const rightHintUsable = Number.isFinite(guideRight);
+  if (leftHintUsable && effectiveLeftTopAnchor) {
+    effectiveLeftTopAnchor = [
+      clamp(effectiveLeftTopAnchor[0], guideLeft - sideHardClampOutwardFlex, guideLeft + sideHardClampTolerance),
+      effectiveLeftTopAnchor[1]
+    ];
+  }
+  if (leftHintUsable && adjustedLeftBottomAnchor) {
+    adjustedLeftBottomAnchor = [
+      clamp(adjustedLeftBottomAnchor[0], guideLeft - sideHardClampOutwardFlex, guideLeft + sideHardClampTolerance),
+      adjustedLeftBottomAnchor[1]
+    ];
+  }
+  if (rightHintUsable && effectiveRightTopAnchor) {
+    effectiveRightTopAnchor = [
+      clamp(effectiveRightTopAnchor[0], guideRight - sideHardClampTolerance, guideRight + sideHardClampOutwardFlex),
+      effectiveRightTopAnchor[1]
+    ];
+  }
+  if (rightHintUsable && adjustedRightBottomAnchor) {
+    adjustedRightBottomAnchor = [
+      clamp(adjustedRightBottomAnchor[0], guideRight - sideHardClampTolerance, guideRight + sideHardClampOutwardFlex),
+      adjustedRightBottomAnchor[1]
+    ];
+  }
   const projectedTopLeftAnchor = Number.isFinite(preferredTopBandY)
     ? (() => {
         const x = solveLineXAtY(leftLine, preferredTopBandY);
@@ -3375,6 +3595,26 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
         }) || [x, preferredTopBandY];
       })()
     : null;
+  const topProjectionXGuardTolerance = Math.max(18, Math.round(cellWidth * 0.08));
+  let guardedProjectedTopLeftAnchor = projectedTopLeftAnchor;
+  let guardedProjectedTopRightAnchor = projectedTopRightAnchor;
+  const topBandShouldYieldToSideAnchors = topContinuityWeak || (edgeLineQuality.top.confidence ?? 0) < 0.78;
+  if (
+    topBandShouldYieldToSideAnchors
+    && guardedProjectedTopLeftAnchor
+    && effectiveLeftTopAnchor
+    && Math.abs(guardedProjectedTopLeftAnchor[0] - effectiveLeftTopAnchor[0]) > topProjectionXGuardTolerance
+  ) {
+    guardedProjectedTopLeftAnchor = null;
+  }
+  if (
+    topBandShouldYieldToSideAnchors
+    && guardedProjectedTopRightAnchor
+    && effectiveRightTopAnchor
+    && Math.abs(guardedProjectedTopRightAnchor[0] - effectiveRightTopAnchor[0]) > topProjectionXGuardTolerance
+  ) {
+    guardedProjectedTopRightAnchor = null;
+  }
   const projectedBottomLeftAnchor = Number.isFinite(preferredBottomBandY)
     ? (() => {
         const x = solveLineXAtY(leftLine, preferredBottomBandY);
@@ -3391,27 +3631,33 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
     normalizedRefined,
     cellWidth,
     cellHeight,
-    projectedTopLeftAnchor,
-    projectedTopRightAnchor,
+    projectedTopLeftAnchor: guardedProjectedTopLeftAnchor,
+    projectedTopRightAnchor: guardedProjectedTopRightAnchor,
     projectedBottomLeftAnchor,
     projectedBottomRightAnchor
   });
-  const safeProjectedTopLeftAnchor = initialGuard.rejectProjectedTopAnchors ? null : projectedTopLeftAnchor;
-  const safeProjectedTopRightAnchor = initialGuard.rejectProjectedTopAnchors ? null : projectedTopRightAnchor;
+  const safeProjectedTopLeftAnchor = initialGuard.rejectProjectedTopAnchors ? null : guardedProjectedTopLeftAnchor;
+  const safeProjectedTopRightAnchor = initialGuard.rejectProjectedTopAnchors ? null : guardedProjectedTopRightAnchor;
   const safeProjectedBottomLeftAnchor = initialGuard.rejectProjectedBottomAnchors ? null : projectedBottomLeftAnchor;
   const safeProjectedBottomRightAnchor = initialGuard.rejectProjectedBottomAnchors ? null : projectedBottomRightAnchor;
+  const preferredTopLeftAnchor = topBandShouldYieldToSideAnchors
+    ? (effectiveLeftTopAnchor || safeProjectedTopLeftAnchor || topLeftAnchor)
+    : (safeProjectedTopLeftAnchor || topLeftAnchor || effectiveLeftTopAnchor);
+  const preferredTopRightAnchor = topBandShouldYieldToSideAnchors
+    ? (effectiveRightTopAnchor || safeProjectedTopRightAnchor || topRightAnchor)
+    : (safeProjectedTopRightAnchor || topRightAnchor || effectiveRightTopAnchor);
   const dominantTopLine = buildLineFromEndAnchors(
-    safeProjectedTopLeftAnchor || topLeftAnchor || effectiveLeftTopAnchor,
-    safeProjectedTopRightAnchor || topRightAnchor || effectiveRightTopAnchor,
+    preferredTopLeftAnchor,
+    preferredTopRightAnchor,
     topLine
   ) || topLine;
   const dominantBottomLine = buildLineFromEndAnchors(
-    safeProjectedBottomLeftAnchor || bottomLeftAnchor || effectiveLeftBottomAnchor,
-    safeProjectedBottomRightAnchor || bottomRightAnchor || effectiveRightBottomAnchor,
+    safeProjectedBottomLeftAnchor || bottomLeftAnchor || adjustedLeftBottomAnchor,
+    safeProjectedBottomRightAnchor || bottomRightAnchor || adjustedRightBottomAnchor,
     extremeBottomPoints.length ? shiftLineToPoints(bottomLine, extremeBottomPoints) : bottomLine
   ) || (extremeBottomPoints.length ? shiftLineToPoints(bottomLine, extremeBottomPoints) : bottomLine);
-  const endAnchoredLeftLine = buildLineFromEndAnchors(effectiveLeftTopAnchor, effectiveLeftBottomAnchor, leftLine) || leftLine;
-  const endAnchoredRightLine = buildLineFromEndAnchors(effectiveRightTopAnchor, effectiveRightBottomAnchor, rightLine) || rightLine;
+  const endAnchoredLeftLine = buildLineFromEndAnchors(effectiveLeftTopAnchor, adjustedLeftBottomAnchor, leftLine) || leftLine;
+  const endAnchoredRightLine = buildLineFromEndAnchors(effectiveRightTopAnchor, adjustedRightBottomAnchor, rightLine) || rightLine;
   const dominantLeftLine = blendLines(
     extremeLeftPoints.length ? shiftLineToPoints(leftLine, extremeLeftPoints) : leftLine,
     endAnchoredLeftLine,
@@ -3617,6 +3863,13 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
     const scoredCandidates = candidateEntries.map((entry) => {
       const normalizedCandidate = normalizeCornerQuad(entry.quad);
       const rectangularity = evaluateRectangularQuadQuality(normalizedCandidate, { guides });
+      const edgeInkQuality = evaluateCandidateQuadInkQuality(
+        normalizedCandidate,
+        edgeLineInputs,
+        gray,
+        info.width,
+        info.height
+      );
       const meanShift = average(
         normalizedCandidate.map((point, index) => Math.hypot(
           point[0] - normalizedRefined[index][0],
@@ -3662,17 +3915,30 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
           )
         : 1;
       const bandAlignmentScore = average([topBandAlignmentScore, bottomBandAlignmentScore]);
+      const edgeInkScore = edgeInkQuality?.overallConfidence ?? 0;
+      const edgeDarknessScore = edgeInkQuality?.overallDarkness ?? 0;
+      const structuralMinEdgeScore = edgeInkQuality?.structuralMinConfidence ?? 0;
+      const missingTopAllowedPenalty = (
+        edgeInkQuality?.weakestEdge?.name === 'top'
+        && (edgeInkQuality?.weakestEdge?.confidence ?? 0) < 0.28
+      ) ? 1 : 0;
+      const structuralPenalty = missingTopAllowedPenalty
+        ? 1
+        : clamp01((structuralMinEdgeScore - 0.18) / 0.24);
       const totalScore = clamp01(
-        rectangleScore * 0.46
-        + bandAlignmentScore * 0.18
-        + (Number.isFinite(entry.supportScore) ? entry.supportScore : 0) * 0.18
-        + (Number.isFinite(guideScore) ? guideScore : rectangleScore) * 0.08
-        + cornerRetentionScore * 0.1
-        + (1 - distancePenalty) * 0.04
-      );
+        edgeInkScore * 0.32
+        + edgeDarknessScore * 0.2
+        + rectangleScore * 0.22
+        + bandAlignmentScore * 0.08
+        + (Number.isFinite(entry.supportScore) ? entry.supportScore : 0) * 0.08
+        + (Number.isFinite(guideScore) ? guideScore : rectangleScore) * 0.04
+        + cornerRetentionScore * 0.04
+        + (1 - distancePenalty) * 0.02
+      ) * structuralPenalty;
       return {
         ...entry,
         quad: normalizedCandidate,
+        edgeInkQuality,
         meanShift,
         maxShift,
         weightedCornerShift,
@@ -3728,6 +3994,10 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
         totalScore: Number((entry.totalScore || 0).toFixed(4)),
         supportScore: Number((entry.supportScore || 0).toFixed(4)),
         rectangleScore: Number((entry.rectangularity?.score || 0).toFixed(4)),
+        edgeInkScore: Number((entry.edgeInkQuality?.overallConfidence || 0).toFixed(4)),
+        edgeDarknessScore: Number((entry.edgeInkQuality?.overallDarkness || 0).toFixed(4)),
+        weakestEdge: entry.edgeInkQuality?.weakestEdge || null,
+        structuralMinEdgeScore: Number((entry.edgeInkQuality?.structuralMinConfidence || 0).toFixed(4)),
         guideSpanScore: Number.isFinite(entry.rectangularity?.guideSpanScore)
           ? Number(entry.rectangularity.guideSpanScore.toFixed(4))
           : null,
@@ -3820,8 +4090,8 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
           right: extremeRightPoints.length
         },
         dominantTopAnchors: {
-          left: (safeProjectedTopLeftAnchor || topLeftAnchor) ? (safeProjectedTopLeftAnchor || topLeftAnchor).map((value) => Number(value.toFixed(3))) : null,
-          right: (safeProjectedTopRightAnchor || topRightAnchor) ? (safeProjectedTopRightAnchor || topRightAnchor).map((value) => Number(value.toFixed(3))) : null
+          left: preferredTopLeftAnchor ? preferredTopLeftAnchor.map((value) => Number(value.toFixed(3))) : null,
+          right: preferredTopRightAnchor ? preferredTopRightAnchor.map((value) => Number(value.toFixed(3))) : null
         },
         dominantBottomAnchors: {
           left: (safeProjectedBottomLeftAnchor || bottomLeftAnchor) ? (safeProjectedBottomLeftAnchor || bottomLeftAnchor).map((value) => Number(value.toFixed(3))) : null,
@@ -3846,11 +4116,11 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
         },
         dominantLeftAnchors: {
           top: effectiveLeftTopAnchor ? effectiveLeftTopAnchor.map((value) => Number(value.toFixed(3))) : null,
-          bottom: effectiveLeftBottomAnchor ? effectiveLeftBottomAnchor.map((value) => Number(value.toFixed(3))) : null
+          bottom: adjustedLeftBottomAnchor ? adjustedLeftBottomAnchor.map((value) => Number(value.toFixed(3))) : null
         },
         dominantRightAnchors: {
           top: effectiveRightTopAnchor ? effectiveRightTopAnchor.map((value) => Number(value.toFixed(3))) : null,
-          bottom: effectiveRightBottomAnchor ? effectiveRightBottomAnchor.map((value) => Number(value.toFixed(3))) : null
+          bottom: adjustedRightBottomAnchor ? adjustedRightBottomAnchor.map((value) => Number(value.toFixed(3))) : null
         },
         quality: {
           top: {
@@ -4086,6 +4356,13 @@ function buildRefinedGuideRemovedRgb(rgbData, blurredRgbData, info, guideMaskInf
   return output;
 }
 
+function estimateNeutralPaperColor(rgbData, info, options = {}) {
+  return {
+    ...DEFAULT_NEUTRAL_PAPER_COLOR,
+    sampleCount: 0
+  };
+}
+
 function buildNeutralGuideRemovedRgb(rgbData, blurredRgbData, info, guideMaskInfo) {
   if (!guideMaskInfo) {
     return Buffer.from(rgbData);
@@ -4093,6 +4370,13 @@ function buildNeutralGuideRemovedRgb(rgbData, blurredRgbData, info, guideMaskInf
 
   const { mask } = guideMaskInfo;
   const output = Buffer.from(rgbData);
+  const neutralPaperColor = estimateNeutralPaperColor(blurredRgbData, info, {
+    excludeMask: mask,
+    x0: info.width * 0.12,
+    y0: info.height * 0.08,
+    x1: info.width * 0.88,
+    y1: info.height * 0.92
+  });
   for (let i = 0; i < mask.length; i++) {
     if (!mask[i]) {
       continue;
@@ -4117,9 +4401,9 @@ function buildNeutralGuideRemovedRgb(rgbData, blurredRgbData, info, guideMaskInf
     if (!removable) {
       continue;
     }
-    output[offset] = clamp(Math.round(r * 0.2 + blurredR * 0.8), 0, 228);
-    output[offset + 1] = clamp(Math.round(g * 0.2 + blurredG * 0.8), 0, 228);
-    output[offset + 2] = clamp(Math.round(b * 0.2 + blurredB * 0.8), 0, 228);
+    output[offset] = clamp(Math.round((r * 0.14) + (blurredR * 0.46) + (neutralPaperColor.r * 0.4)), 0, 232);
+    output[offset + 1] = clamp(Math.round((g * 0.14) + (blurredG * 0.46) + (neutralPaperColor.g * 0.4)), 0, 232);
+    output[offset + 2] = clamp(Math.round((b * 0.14) + (blurredB * 0.46) + (neutralPaperColor.b * 0.4)), 0, 232);
   }
   return output;
 }
@@ -5343,6 +5627,7 @@ function evaluateOuterFrameInnerSeparation({
   height,
   outerFrame,
   immediateInnerFrame,
+  requiredSideGaps = null,
   spanX0,
   spanX1,
   spanY0,
@@ -5485,23 +5770,43 @@ function evaluateOuterFrameInnerSeparation({
     clamp(spanY1, 0, height - 1)
   );
 
-  const minGap = 3;
+  const resolvedRequiredSideGaps = {
+    top: Math.max(3, Math.round(Number(requiredSideGaps?.top) || 0)),
+    bottom: Math.max(3, Math.round(Number(requiredSideGaps?.bottom) || 0)),
+    left: Math.max(3, Math.round(Number(requiredSideGaps?.left) || 0)),
+    right: Math.max(3, Math.round(Number(requiredSideGaps?.right) || 0))
+  };
   const maxAdjacentUnrelatedDarkRatio = 0.035;
   const maxCandidateOverlapRatio = 0.45;
   const sides = { top: topGap, bottom: bottomGap, left: leftGap, right: rightGap };
   const sideFlags = Object.fromEntries(
     Object.entries(sides).map(([key, metrics]) => ([
       key,
-      metrics.gap >= minGap
+      metrics.gap >= resolvedRequiredSideGaps[key]
       && metrics.candidateRatio <= maxCandidateOverlapRatio
       && metrics.adjacentUnrelatedDarkRatio <= maxAdjacentUnrelatedDarkRatio
     ]))
   );
-  const passedCount = Object.values(sideFlags).filter(Boolean).length;
-  const eligible = passedCount >= 3 && sideFlags.left && sideFlags.right;
+  const gapValues = Object.values(sides).map((metrics) => metrics.gap).filter(Number.isFinite);
+  const gapConsistency = gapValues.length === 4
+    ? {
+        minGap: Math.min(...gapValues),
+        maxGap: Math.max(...gapValues),
+        ratio: Math.max(...gapValues) / Math.max(1, Math.min(...gapValues))
+      }
+    : null;
+  const similarOuterInnerMargin = Boolean(
+    gapConsistency
+    && gapConsistency.minGap > 0
+    && gapConsistency.ratio <= 1.35
+    && (gapConsistency.maxGap - gapConsistency.minGap) <= Math.max(12, Math.round(gapConsistency.minGap * 0.5))
+  );
+  const eligible = Object.values(sideFlags).every(Boolean) && similarOuterInnerMargin;
   return {
     eligible,
-    reason: eligible ? 'ok' : 'inner-content-too-close-to-outer-frame',
+    reason: eligible
+      ? 'ok'
+      : (!Object.values(sideFlags).every(Boolean) ? 'inner-content-too-close-to-outer-frame' : 'outer-inner-gap-not-similar'),
     metrics: {
       top: {
         gap: topGap.gap,
@@ -5531,7 +5836,16 @@ function evaluateOuterFrameInnerSeparation({
         candidateRatio: Number(rightGap.candidateRatio.toFixed(4)),
         adjacentUnrelatedDarkRatio: Number(rightGap.adjacentUnrelatedDarkRatio.toFixed(4))
       },
-      sideFlags
+      sideFlags,
+      requiredSideGaps: resolvedRequiredSideGaps,
+      similarOuterInnerMargin,
+      gapConsistency: gapConsistency
+        ? {
+            minGap: gapConsistency.minGap,
+            maxGap: gapConsistency.maxGap,
+            ratio: Number(gapConsistency.ratio.toFixed(4))
+          }
+        : null
     }
   };
 }
@@ -6202,6 +6516,7 @@ function buildSelectiveCornerReplacementQuad(baseQuad, targetQuad, cornerConfide
 
   for (let index = 0; index < base.length; index += 1) {
     const confidence = clamp01(Number.isFinite(cornerConfidences?.[index]) ? cornerConfidences[index] : 0.5);
+    const candidatePoint = target[index];
     if (confidence > maxCornerConfidence) {
       replacements.push({
         index,
@@ -6213,7 +6528,6 @@ function buildSelectiveCornerReplacementQuad(baseQuad, targetQuad, cornerConfide
       });
       continue;
     }
-    const candidatePoint = target[index];
     const shift = Math.hypot(candidatePoint[0] - working[index][0], candidatePoint[1] - working[index][1]);
     if (shift > maxShift) {
       replacements.push({
@@ -6277,6 +6591,7 @@ function mergeTopCornerRecoveryHint(baseQuad, recoveredQuad, diagnostics, cellHe
     { index: 1, name: 'rightTop' }
   ];
   const maxLift = Math.max(16, Math.round(cellHeight * 0.46));
+  const acceptedLifts = [];
   for (const spec of topSpecs) {
     const detail = diagnostics?.corners?.[spec.name];
     if (!detail?.applied) {
@@ -6294,8 +6609,17 @@ function mergeTopCornerRecoveryHint(baseQuad, recoveredQuad, diagnostics, cellHe
     if (confidence <= 0.22) {
       continue;
     }
-    const limitedLift = Math.min(lift, maxLift);
-    merged[spec.index][1] = currentY - limitedLift * (0.42 + confidence * 0.34);
+    acceptedLifts.push(Math.min(lift, maxLift));
+  }
+  if (!acceptedLifts.length) {
+    return base;
+  }
+  const sharedLift = Math.min(...acceptedLifts);
+  if (!(sharedLift > 4)) {
+    return base;
+  }
+  for (const spec of topSpecs) {
+    merged[spec.index][1] = Number(base[spec.index][1]) - sharedLift;
   }
   return normalizeCornerQuad(merged) || base;
 }
@@ -6341,6 +6665,147 @@ function collectEdgePointsNearSegment(boundaryPoints, start, end, options = {}) 
     ));
   }
   return points;
+}
+
+function evaluateSegmentCoverageAlongEdge(points, start, end, options = {}) {
+  if (!Array.isArray(points) || !points.length || !Array.isArray(start) || !Array.isArray(end)) {
+    return null;
+  }
+  const dx = end[0] - start[0];
+  const dy = end[1] - start[1];
+  const length = Math.max(1, Math.hypot(dx, dy));
+  const binSize = Math.max(10, Number(options.binSize) || Math.round(length / 24));
+  const binCount = Math.max(3, Math.ceil(length / Math.max(1, binSize)));
+  const occupied = new Array(binCount).fill(false);
+  for (const point of points) {
+    const tRaw = ((point[0] - start[0]) * dx + (point[1] - start[1]) * dy) / (length * length);
+    const t = clamp(tRaw, 0, 1);
+    const index = clamp(Math.floor(t * binCount), 0, binCount - 1);
+    occupied[index] = true;
+  }
+  let covered = 0;
+  let longest = 0;
+  let run = 0;
+  let maxGap = 0;
+  let gap = 0;
+  for (const flag of occupied) {
+    if (flag) {
+      covered += 1;
+      run += 1;
+      longest = Math.max(longest, run);
+      gap = 0;
+    } else {
+      run = 0;
+      gap += 1;
+      maxGap = Math.max(maxGap, gap);
+    }
+  }
+  return {
+    coverageRatio: covered / Math.max(1, binCount),
+    longestRunRatio: longest / Math.max(1, binCount),
+    endpointCoverage: (occupied[0] ? 0.5 : 0) + (occupied[binCount - 1] ? 0.5 : 0),
+    maxGapRatio: maxGap / Math.max(1, binCount)
+  };
+}
+
+function evaluateCandidateEdgeInk(points, start, end, scoreAtPoint, options = {}) {
+  if (!Array.isArray(points) || !points.length || !Array.isArray(start) || !Array.isArray(end)) {
+    return {
+      confidence: 0,
+      darknessScore: 0,
+      averageScore: 0,
+      matchedPointCount: 0,
+      supportRatio: 0,
+      continuity: null
+    };
+  }
+  const length = Math.max(1, Math.hypot(end[0] - start[0], end[1] - start[1]));
+  const baseBand = Math.max(3, length * 0.014);
+  let matched = points.filter((point) => pointSegmentDistance(point, start, end) <= baseBand);
+  if (matched.length < 12) {
+    const relaxedBand = Math.max(6, baseBand * 1.8);
+    matched = points.filter((point) => pointSegmentDistance(point, start, end) <= relaxedBand);
+  }
+  const scores = matched.map((point) => scoreAtPoint(point)).filter(Number.isFinite);
+  const averageScore = average(scores);
+  const supportRatio = matched.length / Math.max(1, points.length);
+  const continuity = evaluateSegmentCoverageAlongEdge(matched, start, end, {
+    binSize: Math.max(10, length / 22)
+  });
+  const darknessScore = clamp01((averageScore - 88) / 138);
+  const supportConfidence = clamp01((supportRatio - 0.08) / 0.42);
+  const continuityConfidence = continuity
+    ? clamp01(
+        continuity.coverageRatio * 0.26
+        + continuity.longestRunRatio * 0.34
+        + continuity.endpointCoverage * 0.24
+        + (1 - continuity.maxGapRatio) * 0.16
+      )
+    : 0;
+  return {
+    confidence: darknessScore * 0.5 + continuityConfidence * 0.34 + supportConfidence * 0.16,
+    darknessScore,
+    averageScore,
+    matchedPointCount: matched.length,
+    supportRatio,
+    continuity
+  };
+}
+
+function evaluateCandidateQuadInkQuality(quad, edgeLineInputs, gray, width, height) {
+  const normalized = normalizeCornerQuad(quad);
+  if (!normalized || !edgeLineInputs) {
+    return null;
+  }
+  const [lt, rt, rb, lb] = normalized;
+  const edges = {
+    top: evaluateCandidateEdgeInk(
+      edgeLineInputs.top || [],
+      lt,
+      rt,
+      (point) => scoreOuterHorizontalBoundaryAt(gray, width, height, point[1], point[0] - 10, point[0] + 10, 1)
+    ),
+    right: evaluateCandidateEdgeInk(
+      edgeLineInputs.right || [],
+      rt,
+      rb,
+      (point) => scoreOuterVerticalBoundaryAt(gray, width, height, point[0], point[1] - 10, point[1] + 10, -1)
+    ),
+    bottom: evaluateCandidateEdgeInk(
+      edgeLineInputs.bottom || [],
+      lb,
+      rb,
+      (point) => scoreOuterHorizontalBoundaryAt(gray, width, height, point[1], point[0] - 10, point[0] + 10, -1)
+    ),
+    left: evaluateCandidateEdgeInk(
+      edgeLineInputs.left || [],
+      lt,
+      lb,
+      (point) => scoreOuterVerticalBoundaryAt(gray, width, height, point[0], point[1] - 10, point[1] + 10, 1)
+    )
+  };
+  const entries = Object.entries(edges);
+  const confidences = entries.map(([, value]) => value.confidence).sort((a, b) => b - a);
+  const darknesses = entries.map(([, value]) => value.darknessScore).sort((a, b) => b - a);
+  const strongThreeConfidence = average(confidences.slice(0, 3));
+  const strongThreeDarkness = average(darknesses.slice(0, 3));
+  const overallConfidence = strongThreeConfidence * 0.82 + average(confidences) * 0.18;
+  const overallDarkness = strongThreeDarkness * 0.82 + average(darknesses) * 0.18;
+  const weakest = entries
+    .map(([name, value]) => ({ name, confidence: value.confidence }))
+    .sort((a, b) => a.confidence - b.confidence)[0] || null;
+  const structuralMinConfidence = Math.min(
+    edges.left.confidence,
+    edges.right.confidence,
+    edges.bottom.confidence
+  );
+  return {
+    edges,
+    overallConfidence,
+    overallDarkness,
+    weakestEdge: weakest,
+    structuralMinConfidence
+  };
 }
 
 function refineCornerIntersections(boundaryPoints, quad, edgeLines) {
@@ -8575,7 +9040,8 @@ async function runPerspectivePreprocess(inputPath, options = {}) {
     ignoreRedGrid = true,
     gridRows = null,
     gridCols = null,
-    gridType = 'square'
+    gridType = 'square',
+    disableInternalGridGuideCleanup = false
   } = options;
 
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'a4-preprocess-'));
@@ -8612,6 +9078,9 @@ async function runPerspectivePreprocess(inputPath, options = {}) {
   }
   if (ignoreRedGrid) {
     args.push('--ignore-red-grid');
+  }
+  if (disableInternalGridGuideCleanup) {
+    args.push('--disable-internal-grid-guide-cleanup');
   }
 
   try {
@@ -8755,7 +9224,8 @@ async function extractGridArtifactsFromWarpedImages(options = {}) {
     ignoreRedGrid = true,
     processNo = '03',
     a4Constraint = null,
-    enableA4GuideConstraint = processNo === '02'
+    enableA4GuideConstraint = processNo === '02',
+    disableOuterFrameCleanup = false
   } = options;
 
   const resolvedOutputPath = outputPath || preprocessInputPath || null;
@@ -8785,9 +9255,9 @@ async function extractGridArtifactsFromWarpedImages(options = {}) {
 
   let outerFrameCleanup = {
     applied: false,
-    reason: 'not-attempted'
+    reason: disableOuterFrameCleanup ? 'disabled' : 'not-attempted'
   };
-  if (processNo === '03' && resolvedOutputPath) {
+  if (processNo === '03' && resolvedOutputPath && !disableOuterFrameCleanup) {
     try {
       outerFrameCleanup = await removeObviousOuterFrameLines(preprocessInputPath, resolvedOutputPath);
     } catch (outerFrameError) {
@@ -8822,7 +9292,9 @@ async function extractGridArtifactsFromWarpedImages(options = {}) {
     try {
       rawGridRectifyTempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'grid-rectify-raw-'));
       const preprocessMeta = await sharp(boundaryInputPath).metadata();
-      const detectionCrop = buildGridDetectionCrop(preprocessMeta.width || 0, preprocessMeta.height || 0);
+      const detectionCrop = disableOuterFrameCleanup
+        ? null
+        : buildGridDetectionCrop(preprocessMeta.width || 0, preprocessMeta.height || 0);
       let gridDetectionInputPath = resolvedSegmentationPath || boundaryInputPath || resolvedOutputPath;
       if (detectionCrop) {
         const croppedDetectionPath = path.join(rawGridRectifyTempDir, 'grid_detection_crop.png');
@@ -8977,15 +9449,29 @@ async function extractGridArtifactsFromWarpedImages(options = {}) {
       );
       let refinedQuad = normalizeCornerQuad(refinedCorners?.corners || null);
       let topCornerRecovery = null;
+      let standaloneTopExpansionGuard = null;
       if (refinedQuad) {
         topCornerRecovery = await recoverTopCornersByInnerGuide(
           boundaryInputPath,
           refinedQuad,
           gridBoundaryDetection.guides || null
         );
+        const topRecoveryApplied = Boolean(
+          topCornerRecovery?.diagnostics?.corners?.leftTop?.applied
+          || topCornerRecovery?.diagnostics?.corners?.rightTop?.applied
+        );
+        const dominantTopWeak = (
+          (refinedCorners?.diagnostics?.rawGuideHints?.reasons?.top === 'infer-missing-top-line')
+          || ((refinedCorners?.diagnostics?.edgeLineFit?.quality?.top?.confidence ?? 1) < 0.8)
+          || ((refinedCorners?.diagnostics?.edgeLineFit?.quality?.top?.continuity?.longestRunRatio ?? 1) < 0.5)
+          || ((refinedCorners?.diagnostics?.edgeLineFit?.quality?.top?.continuity?.endpointCoverage ?? 1) < 0.75)
+        );
         if (
           topCornerRecovery?.corners
-          && refinedCorners?.diagnostics?.outputSource !== 'dominant-edge-lines'
+          && (
+            refinedCorners?.diagnostics?.outputSource !== 'dominant-edge-lines'
+            || (topRecoveryApplied && dominantTopWeak)
+          )
         ) {
           refinedQuad = mergeTopCornerRecoveryHint(
             refinedQuad,
@@ -8993,6 +9479,21 @@ async function extractGridArtifactsFromWarpedImages(options = {}) {
             topCornerRecovery.diagnostics || null,
             refinedCorners?.diagnostics?.cellHeight || 0
           );
+        }
+        if (processNo === '03') {
+          const topExpansionGuardResult = preventStandaloneTopOutwardExpansion(
+            refinedQuad,
+            gridBoundaryDetection.guides || null,
+            topGuideConfirmation || null,
+            {
+              cellWidth: refinedCorners?.diagnostics?.cellWidth || 0,
+              cellHeight: refinedCorners?.diagnostics?.cellHeight || 0
+            }
+          );
+          standaloneTopExpansionGuard = topExpansionGuardResult?.diagnostics || null;
+          if (topExpansionGuardResult?.applied && topExpansionGuardResult?.corners) {
+            refinedQuad = topExpansionGuardResult.corners;
+          }
         }
       }
       let appliedToOutput = false;
@@ -9022,6 +9523,7 @@ async function extractGridArtifactsFromWarpedImages(options = {}) {
         ? {
             ...refinedCorners.diagnostics,
             topCornerRecovery: topCornerRecovery?.diagnostics || null,
+            standaloneTopExpansionGuard,
             appliedToOutput,
             note: appliedToOutput
               ? '四个角点已按局部横竖线交点独立校准，并回写主流程 corners/guides'

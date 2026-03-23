@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const { applySolidPaperBorder } = require('../utils/paper_edge_cleanup');
 const preprocessPlugin = require('../00_预处理插件/index');
+const { estimateGridSize } = require('../00_预处理插件/grid_size_estimator');
 const a4ConstraintDetectPlugin = require('../01_0A4规格约束检测插件/index');
 const paperCornerDetectPlugin = require('../02_1纸张角点检测插件/index');
 const perspectiveRectifyPlugin = require('../02_2透视矫正插件/index');
@@ -127,6 +128,40 @@ class A4RectifyPlugin {
       ? a4CleanedInputPath
       : imagePath;
 
+    const initialResult = await preprocessPlugin.execute({
+      imagePath: effectiveImagePath,
+      outputPath,
+      warpedOutputPath,
+      guideRemovedOutputPath: neutralGuideRemovedOutputPath,
+      neutralGuideRemovedOutputPath,
+      outputMetaPath,
+      outputDebugPath,
+      gridRows: null,
+      gridCols: null,
+      gridType,
+      disableInternalGridGuideCleanup: true,
+      a4Constraint: step02_0?.a4Constraint || null,
+      ...preprocessOptions
+    });
+
+    let effectiveGridRows = gridRows;
+    let effectiveGridCols = gridCols;
+    let effectiveGridEstimation = null;
+    if (fs.existsSync(warpedOutputPath)) {
+      try {
+        const estimatedGrid = await estimateGridSize(warpedOutputPath);
+        effectiveGridEstimation = estimatedGrid;
+        if (Number.isFinite(estimatedGrid?.estimatedGridRows) && estimatedGrid.estimatedGridRows >= 6) {
+          effectiveGridRows = estimatedGrid.estimatedGridRows;
+        }
+        if (Number.isFinite(estimatedGrid?.estimatedGridCols) && estimatedGrid.estimatedGridCols >= 5) {
+          effectiveGridCols = estimatedGrid.estimatedGridCols;
+        }
+      } catch (error) {
+        // Keep the caller-provided fallback grid size when automatic estimation fails.
+      }
+    }
+
     const result = await preprocessPlugin.execute({
       imagePath: effectiveImagePath,
       outputPath,
@@ -135,9 +170,10 @@ class A4RectifyPlugin {
       neutralGuideRemovedOutputPath,
       outputMetaPath,
       outputDebugPath,
-      gridRows,
-      gridCols,
+      gridRows: effectiveGridRows,
+      gridCols: effectiveGridCols,
       gridType,
+      disableInternalGridGuideCleanup: true,
       a4Constraint: step02_0?.a4Constraint || null,
       ...preprocessOptions
     });

@@ -8,6 +8,8 @@ import numpy as np
 from PIL import Image, ImageDraw
 from scipy import ndimage
 
+DEFAULT_NEUTRAL_PAPER_COLOR = np.array([216.0, 216.0, 216.0], dtype=np.float32)
+
 
 def order_points(points):
     pts = np.asarray(points, dtype=np.float32)
@@ -382,15 +384,97 @@ def adaptive_binarize(image_array, threshold=185, blur_sigma=18, ignore_red_grid
     return output
 
 
-def build_segmentation_ready_image(image_array, blur_sigma=18):
+def estimate_global_background_gray(gray):
+    smoothed = ndimage.gaussian_filter(gray, sigma=6.0)
+    bright_threshold = np.percentile(smoothed, 72.0)
+    candidate_mask = smoothed >= bright_threshold
+    candidate_values = smoothed[candidate_mask]
+    if candidate_values.size == 0:
+        return float(np.percentile(smoothed, 75.0))
+    return float(np.median(candidate_values))
+
+
+def apply_line_band_mask(mask, positions, axis, band):
+    if not positions:
+        return
+    if axis == "x":
+        width = mask.shape[1]
+        for position in positions:
+            left = max(0, int(round(position - band)))
+            right = min(width, int(round(position + band + 1)))
+            if right > left:
+                mask[:, left:right] = True
+    else:
+        height = mask.shape[0]
+        for position in positions:
+            top = max(0, int(round(position - band)))
+            bottom = min(height, int(round(position + band + 1)))
+            if bottom > top:
+                mask[top:bottom, :] = True
+
+
+def build_guide_mask(height, width, grid_rows=None, grid_cols=None, grid_type="square", edge_ratio=0.018):
+    if not grid_rows or not grid_cols:
+        return None
+
+    cell_w = width / max(grid_cols, 1)
+    cell_h = height / max(grid_rows, 1)
+    short_side = max(1.0, min(cell_w, cell_h))
+    edge_band = max(1.2, short_side * edge_ratio)
+    guide_mask = np.zeros((height, width), dtype=bool)
+    x_positions = [cell_w * index for index in range(1, max(grid_cols, 1))]
+    y_positions = [cell_h * index for index in range(1, max(grid_rows, 1))]
+    apply_line_band_mask(guide_mask, x_positions, "x", edge_band)
+    apply_line_band_mask(guide_mask, y_positions, "y", edge_band)
+    return guide_mask
+
+
+def build_segmentation_ready_image(
+    image_array,
+    blur_sigma=18,
+    grid_rows=None,
+    grid_cols=None,
+    grid_type="square",
+    disable_internal_grid_guide_cleanup=False
+):
     rgb = image_array.astype(np.float32)
     gray = 0.299 * rgb[..., 0] + 0.587 * rgb[..., 1] + 0.114 * rgb[..., 2]
-    sigma = max(1.0, blur_sigma)
-    background = ndimage.gaussian_filter(gray, sigma=sigma)
-    normalized = np.clip((gray * 255.0) / np.maximum(background, 1.0), 0, 255)
-    darkness = np.clip(255.0 - normalized, 0.0, 90.0)
-    enhanced = 255.0 - np.clip(darkness * 3.2, 0.0, 255.0)
-    return enhanced.astype(np.uint8)
+    smoothed_gray = ndimage.gaussian_filter(gray, sigma=max(0.8, blur_sigma * 0.08))
+    global_background = estimate_global_background_gray(smoothed_gray)
+    paper_gray = np.clip(global_background * 1.15, 145.0, 210.0)
+    baseline = np.clip(paper_gray * 0.60, 0.0, paper_gray)
+    delta = smoothed_gray - baseline
+    # Bright side remains capped by the global paper gray ceiling.
+    bright_delta = np.clip(delta, 0.0, None)
+    bright_headroom = np.maximum(paper_gray - baseline, 1.0)
+    bright_ratio = np.clip(bright_delta / bright_headroom, 0.0, 1.0)
+    bright_eased = 1.0 - np.power(1.0 - bright_ratio, 3.4)
+    bright_eased = np.clip(bright_eased + 0.10 * bright_ratio, 0.0, 1.0)
+    bright_enhanced = baseline + bright_headroom * bright_eased
+
+    # Dark side uses ratio-based nonlinear expansion:
+    # the darker it is relative to baseline, the faster it darkens.
+    dark_delta = np.clip(-delta, 0.0, None)
+    dark_ratio = dark_delta / np.maximum(baseline, 1.0)
+    dark_scale = dark_ratio * (0.92 + 1.35 * dark_ratio + 0.95 * (dark_ratio ** 2))
+    dark_enhanced = baseline * (1.0 - dark_scale)
+
+    enhanced = np.where(delta >= 0.0, bright_enhanced, dark_enhanced)
+    enhanced = np.clip(enhanced, 0.0, paper_gray)
+    guide_mask = None if disable_internal_grid_guide_cleanup else build_guide_mask(
+        gray.shape[0],
+        gray.shape[1],
+        grid_rows=grid_rows,
+        grid_cols=grid_cols,
+        grid_type=grid_type
+    )
+    if guide_mask is not None:
+        guide_reference = ndimage.gaussian_filter(smoothed_gray, sigma=max(2.0, blur_sigma * 0.18))
+        highlight_mask = guide_mask & (enhanced >= guide_reference + 8.0)
+        enhanced[highlight_mask] = np.minimum(enhanced[highlight_mask], np.minimum(guide_reference[highlight_mask] + 2.0, paper_gray))
+    enhanced = ndimage.gaussian_filter(enhanced, sigma=0.6)
+    enhanced = np.minimum(enhanced, paper_gray)
+    return np.clip(enhanced, 0, 255).astype(np.uint8)
 
 
 def normalize_grid_type(grid_type):
@@ -406,9 +490,13 @@ def normalize_grid_type(grid_type):
     return "square"
 
 
-def remove_grid_guides(image_array, grid_rows=None, grid_cols=None, grid_type="square"):
+def estimate_neutral_paper_color(image_array, exclude_mask=None):
+    return DEFAULT_NEUTRAL_PAPER_COLOR.copy()
+
+
+def remove_grid_guides(image_array, grid_rows=None, grid_cols=None, grid_type="square", disable_internal_grid_guide_cleanup=False):
     grid_type = normalize_grid_type(grid_type)
-    if not grid_rows or not grid_cols:
+    if disable_internal_grid_guide_cleanup or not grid_rows or not grid_cols:
       return image_array
 
     rgb = image_array.astype(np.float32).copy()
@@ -428,11 +516,9 @@ def remove_grid_guides(image_array, grid_rows=None, grid_cols=None, grid_type="s
     px_local_x = np.mod(xs, cell_w)
     px_local_y = np.mod(ys, cell_h)
 
-    guide_mask = np.zeros((height, width), dtype=bool)
-    edge_x = np.minimum(local_x, 1.0 - local_x)
-    edge_y = np.minimum(local_y, 1.0 - local_y)
-    guide_mask |= edge_x <= edge_band / max(cell_w, 1e-6)
-    guide_mask |= edge_y <= edge_band / max(cell_h, 1e-6)
+    guide_mask = build_guide_mask(height, width, grid_rows=grid_rows, grid_cols=grid_cols, grid_type=grid_type, edge_ratio=0.02)
+    if guide_mask is None:
+        guide_mask = np.zeros((height, width), dtype=bool)
 
     if grid_type != "square":
         guide_mask |= np.abs(local_x - 0.5) <= band / max(cell_w, 1e-6)
@@ -458,7 +544,12 @@ def remove_grid_guides(image_array, grid_rows=None, grid_cols=None, grid_type="s
     min_channel = np.min(rgb, axis=2)
     gray = 0.299 * rgb[..., 0] + 0.587 * rgb[..., 1] + 0.114 * rgb[..., 2]
     color_span = max_channel - min_channel
+    neutral_paper = estimate_neutral_paper_color(image_array, exclude_mask=guide_mask)
+    neutral_gray = float(neutral_paper[0])
+    bright_guide_mask = guide_mask & (gray >= max(118.0, neutral_gray - 96.0)) & (color_span <= 42.0)
+    soft_guide_mask = guide_mask & (gray >= max(108.0, neutral_gray - 108.0)) & (color_span <= 58.0)
     removable_mask = guide_mask & (gray >= 105) & ((gray >= 150) | (color_span <= 70))
+    removable_mask |= bright_guide_mask | soft_guide_mask
 
     if not np.any(removable_mask):
         return image_array
@@ -467,10 +558,18 @@ def remove_grid_guides(image_array, grid_rows=None, grid_cols=None, grid_type="s
     for channel in range(3):
         blurred = ndimage.gaussian_filter(rgb[..., channel], sigma=sigma)
         channel_data = rgb[..., channel]
-        channel_data[removable_mask] = np.maximum(channel_data[removable_mask], blurred[removable_mask])
+        soft_only_mask = removable_mask & ~bright_guide_mask
+        channel_data[soft_only_mask] = (
+            channel_data[soft_only_mask] * 0.08 +
+            blurred[soft_only_mask] * 0.24 +
+            neutral_paper[channel] * 0.68
+        )
+        channel_data[bright_guide_mask] = (
+            blurred[bright_guide_mask] * 0.10 +
+            neutral_paper[channel] * 0.90
+        )
         rgb[..., channel] = channel_data
 
-    rgb[removable_mask] = np.maximum(rgb[removable_mask], 245)
     return np.clip(rgb, 0, 255).astype(np.uint8)
 
 
@@ -484,14 +583,9 @@ def build_grid_background_mask(image_array, grid_rows=None, grid_cols=None):
     cell_h = height / max(grid_rows, 1)
     short_side = max(1.0, min(cell_w, cell_h))
     edge_band = max(1.8, short_side * 0.024)
-
-    ys = (np.arange(height, dtype=np.float32) + 0.5)[:, None]
-    xs = (np.arange(width, dtype=np.float32) + 0.5)[None, :]
-    local_x = np.mod(xs, cell_w) / max(cell_w, 1e-6)
-    local_y = np.mod(ys, cell_h) / max(cell_h, 1e-6)
-    edge_x = np.minimum(local_x, 1.0 - local_x)
-    edge_y = np.minimum(local_y, 1.0 - local_y)
-    guide_zone = (edge_x <= edge_band / max(cell_w, 1e-6)) | (edge_y <= edge_band / max(cell_h, 1e-6))
+    guide_zone = build_guide_mask(height, width, grid_rows=grid_rows, grid_cols=grid_cols, edge_ratio=0.024)
+    if guide_zone is None:
+        return None
 
     gray = 0.299 * rgb[..., 0] + 0.587 * rgb[..., 1] + 0.114 * rgb[..., 2]
     max_channel = np.max(rgb, axis=2)
@@ -579,6 +673,7 @@ def main():
     parser.add_argument("--grid-type", default="square")
     parser.add_argument("--crop-to-paper", action="store_true")
     parser.add_argument("--ignore-red-grid", action="store_true")
+    parser.add_argument("--disable-internal-grid-guide-cleanup", action="store_true")
     args = parser.parse_args()
 
     input_path = Path(args.input)
@@ -635,7 +730,8 @@ def main():
         warped_array,
         grid_rows=args.grid_rows or None,
         grid_cols=args.grid_cols or None,
-        grid_type=args.grid_type
+        grid_type=args.grid_type,
+        disable_internal_grid_guide_cleanup=args.disable_internal_grid_guide_cleanup
     )
     if warped_output_path:
         warped_output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -665,18 +761,17 @@ def main():
         grid_annotated_output_path.parent.mkdir(parents=True, exist_ok=True)
         grid_annotated.save(grid_annotated_output_path)
 
-    gray_output = (
-        0.299 * warped_array[..., 0] +
-        0.587 * warped_array[..., 1] +
-        0.114 * warped_array[..., 2]
-    ).clip(0, 255).astype(np.uint8)
     segmentation_ready = build_segmentation_ready_image(
         cleaned_warped_array,
-        blur_sigma=args.blur_sigma
+        blur_sigma=args.blur_sigma,
+        grid_rows=args.grid_rows or None,
+        grid_cols=args.grid_cols or None,
+        grid_type=args.grid_type,
+        disable_internal_grid_guide_cleanup=args.disable_internal_grid_guide_cleanup
     )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    Image.fromarray(gray_output, mode="L").save(output_path)
+    Image.fromarray(segmentation_ready, mode="L").save(output_path)
     if segmentation_output_path != output_path:
         segmentation_output_path.parent.mkdir(parents=True, exist_ok=True)
         Image.fromarray(segmentation_ready, mode="L").save(segmentation_output_path)
@@ -736,8 +831,8 @@ def main():
         "cornerSelection": corner_result["selection"] if corner_result is not None else None,
         "warp": warp_meta,
         "outputInfo": {
-            "width": int(gray_output.shape[1]),
-            "height": int(gray_output.shape[0])
+            "width": int(segmentation_ready.shape[1]),
+            "height": int(segmentation_ready.shape[0])
         }
     }
 
