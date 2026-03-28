@@ -6,18 +6,8 @@ class BlankCellJudgePlugin {
   }
 
   execute(params) {
-    const { features, config } = params || {};
-    if (!features || !config) {
-      throw new Error('features 和 config 参数是必需的');
-    }
-    const { detectBlank, blankReasonFromFeatures } = require('../07_评分插件/scoring');
-    const blankResult = detectBlank(features, config);
-    return {
-      processNo: this.processNo,
-      processName: '07_2_空白格判定',
-      blankResult,
-      blankReason: blankReasonFromFeatures(features)
-    };
+    const { executeBlankCellJudgeStep } = require('../07_评分插件/application/cell_scoring_steps');
+    return executeBlankCellJudgeStep(params);
   }
 }
 

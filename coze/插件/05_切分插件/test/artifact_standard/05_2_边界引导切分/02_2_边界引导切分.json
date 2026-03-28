@@ -1,0 +1,241 @@
+{
+  "processNo": "05_2",
+  "processName": "05_2_边界引导切分",
+  "sourceStep": "05_1_网格范围检测",
+  "inputPath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/fixtures/test_a4.png",
+  "mode": "直接检测线",
+  "xBoundaries": [
+    [
+      15,
+      103
+    ],
+    [
+      103,
+      191
+    ],
+    [
+      191,
+      279
+    ],
+    [
+      279,
+      367
+    ],
+    [
+      367,
+      456
+    ],
+    [
+      456,
+      544
+    ],
+    [
+      544,
+      632
+    ],
+    [
+      632,
+      720
+    ],
+    [
+      720,
+      808
+    ],
+    [
+      808,
+      896
+    ]
+  ],
+  "yBoundaries": [
+    [
+      22,
+      210
+    ],
+    [
+      210,
+      397
+    ],
+    [
+      397,
+      585
+    ],
+    [
+      585,
+      772
+    ],
+    [
+      772,
+      960
+    ],
+    [
+      960,
+      1147
+    ],
+    [
+      1147,
+      1335
+    ]
+  ],
+  "debug": {
+    "verticalCandidates": [
+      16,
+      104,
+      192,
+      280,
+      368,
+      456,
+      544,
+      632,
+      720,
+      808,
+      852,
+      896
+    ],
+    "verticalLines": [
+      15,
+      101,
+      191,
+      279,
+      367,
+      456,
+      544,
+      632,
+      719,
+      810,
+      896
+    ],
+    "outerRectVerticalLines": [
+      15,
+      103,
+      191,
+      279,
+      367,
+      456,
+      544,
+      632,
+      720,
+      808,
+      896
+    ],
+    "selectedBoundaryMode": "外框均分",
+    "directBoundaryQuality": {
+      "blankCount": 0,
+      "averageDarkRatio": 0.1693,
+      "averageCenterOffset": 0.1714,
+      "score": 131.84
+    },
+    "outerRectBoundaryQuality": {
+      "blankCount": 0,
+      "averageDarkRatio": 0.1697,
+      "averageCenterOffset": 0.1493,
+      "score": 134.78
+    },
+    "horizontalLinesBeforeAnomalousCorrection": [
+      19,
+      115,
+      207,
+      302,
+      395,
+      490,
+      583,
+      678
+    ],
+    "horizontalLinesBeforeCorrection": [
+      22,
+      208,
+      396,
+      584,
+      773,
+      961,
+      1149,
+      1335
+    ],
+    "horizontalLines": [
+      22,
+      208,
+      396,
+      584,
+      773,
+      961,
+      1149,
+      1335
+    ],
+    "outerRectHorizontalLines": [
+      22,
+      210,
+      397,
+      585,
+      772,
+      960,
+      1147,
+      1335
+    ],
+    "leftHorizontalLines": [
+      22,
+      208,
+      396,
+      584,
+      773,
+      961,
+      1149,
+      1335
+    ],
+    "rightHorizontalLines": [
+      22,
+      208,
+      396,
+      584,
+      773,
+      961,
+      1149,
+      1335
+    ],
+    "sideConsensusHorizontalLines": [
+      22,
+      210,
+      397,
+      585,
+      772,
+      960,
+      1147,
+      1335
+    ],
+    "anomalousHorizontalCorrection": {
+      "lines": [
+        22,
+        208,
+        396,
+        584,
+        773,
+        961,
+        1149,
+        1335
+      ],
+      "corrections": []
+    },
+    "fallbackUsed": false,
+    "profileVerticalLines": [
+      15,
+      101,
+      191,
+      279,
+      367,
+      456,
+      544,
+      632,
+      719,
+      810,
+      896
+    ],
+    "profileHorizontalLines": [
+      22,
+      208,
+      396,
+      584,
+      773,
+      961,
+      1149,
+      1335
+    ]
+  }
+}

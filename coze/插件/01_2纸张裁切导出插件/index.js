@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
+const { resolveSingleImageInput } = require('../utils/stage_image_contract');
 let sharp;
 
 try {
@@ -235,6 +236,7 @@ class PaperCropExportPlugin {
 
   async execute(params) {
     const {
+      stageInputPath = null,
       imagePath,
       preprocessResult,
       paperBounds = null,
@@ -243,14 +245,26 @@ class PaperCropExportPlugin {
       outputMetaPath
     } = params || {};
 
-    if (!imagePath) {
-      throw new Error('imagePath参数是必需的');
-    }
+    const resolvedImagePath = resolveSingleImageInput({
+      stageName: '01_2_纸张裁切导出',
+      primaryInputPath: stageInputPath,
+      imagePath
+    });
 
-    const effectivePaperBounds = paperBounds || preprocessResult?.paperBounds || null;
+    let effectivePaperBounds = paperBounds || preprocessResult?.paperBounds || null;
     const effectivePaperCorners = paperCorners || preprocessResult?.paperCorners || null;
     if (!paperCropOutputPath) {
       throw new Error('paperCropOutputPath参数是必需的');
+    }
+    if (!effectivePaperBounds && !normalizePaperCorners(effectivePaperCorners)) {
+      const inputMeta = await sharp(resolvedImagePath).metadata();
+      effectivePaperBounds = {
+        left: 0,
+        top: 0,
+        width: inputMeta.width || 0,
+        height: inputMeta.height || 0,
+        source: '01_2_full_frame_fallback'
+      };
     }
     const normalizedPaperCorners = normalizePaperCorners(effectivePaperCorners);
 
@@ -263,7 +277,7 @@ class PaperCropExportPlugin {
       const scriptPath = path.join(__dirname, '../00_预处理插件/paper_quad_rectify.py');
       const args = [
         scriptPath,
-        '--image', imagePath,
+        '--image', resolvedImagePath,
         '--corners-json', JSON.stringify(normalizedPaperCorners),
         '--output', paperCropOutputPath
       ];
@@ -298,7 +312,8 @@ class PaperCropExportPlugin {
     const payload = {
       processNo: this.processNo,
       processName: '01_2_纸张裁切导出',
-      imagePath,
+      imagePath: resolvedImagePath,
+      stageInputPath: resolvedImagePath,
       paperCropOutputPath,
       paperBounds: effectivePaperBounds,
       paperCorners: normalizedPaperCorners || effectivePaperCorners,

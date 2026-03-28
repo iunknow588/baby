@@ -1,5 +1,5 @@
 const assert = require('assert');
-const { evaluateDominantEdgeQuadGuard } = require('./paper_preprocess');
+const { evaluateDominantEdgeQuadGuard, evaluateRelaxedOuterFrameEvidence } = require('./paper_preprocess');
 
 function approxEqual(actual, expected, epsilon = 1e-6) {
   return Math.abs(actual - expected) <= epsilon;
@@ -59,6 +59,42 @@ function run() {
   assert.strictEqual(stableCase.dominantTopWithinLocalTolerance, true);
   assert.strictEqual(stableCase.dominantBottomWithinLocalTolerance, true);
   assert.strictEqual(stableCase.dominantSidesWithinLocalTolerance, true);
+
+  const stableOuterFrameCase = evaluateRelaxedOuterFrameEvidence({
+    topGap: 62,
+    bottomGap: 60,
+    leftGap: 23,
+    rightGap: 14,
+    topScore: 19.81,
+    bottomScore: 34.19,
+    leftScore: 87.687,
+    rightScore: 37.505,
+    horizontalGapRatio: 1.0333,
+    verticalGapRatio: 1.6429,
+    cellWidth: 289,
+    cellHeight: 284,
+    relaxedFourSideEvidence: true
+  });
+  assert.strictEqual(stableOuterFrameCase.topHeaderInterferenceRisk, false);
+  assert.strictEqual(stableOuterFrameCase.allowRelaxedAcceptance, true);
+
+  const riskyHeaderCase = evaluateRelaxedOuterFrameEvidence({
+    topGap: 96,
+    bottomGap: 42,
+    leftGap: 18,
+    rightGap: 16,
+    topScore: 14,
+    bottomScore: 39,
+    leftScore: 82,
+    rightScore: 41,
+    horizontalGapRatio: 2.2857,
+    verticalGapRatio: 1.125,
+    cellWidth: 289,
+    cellHeight: 284,
+    relaxedFourSideEvidence: true
+  });
+  assert.strictEqual(riskyHeaderCase.topHeaderInterferenceRisk, true);
+  assert.strictEqual(riskyHeaderCase.allowRelaxedAcceptance, false);
 
   console.log('guard tests passed');
 }

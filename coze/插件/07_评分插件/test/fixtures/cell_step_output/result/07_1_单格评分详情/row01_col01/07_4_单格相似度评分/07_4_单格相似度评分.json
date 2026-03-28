@@ -1,0 +1,13 @@
+{
+  "processNo": "07_4",
+  "processName": "07_4_单格相似度评分",
+  "similarity": {
+    "score": 62.97,
+    "iou": 0.77,
+    "hu_similarity": 0.38,
+    "hu_distance": 0.28,
+    "edge_direction_similarity": 0.65
+  },
+  "sourceStep": "07_2_空白格判定",
+  "inputPath": null
+}

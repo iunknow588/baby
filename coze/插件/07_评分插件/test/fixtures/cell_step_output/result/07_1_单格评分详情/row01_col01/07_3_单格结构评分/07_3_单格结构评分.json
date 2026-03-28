@@ -1,0 +1,39 @@
+{
+  "processNo": "07_3",
+  "processName": "07_3_单格结构评分",
+  "structure": {
+    "score": 99.47,
+    "region_diffs": {
+      "left": 0,
+      "right": 0,
+      "top": 0,
+      "bottom": 0,
+      "topLeft": 0,
+      "topRight": 0.01,
+      "bottomLeft": 0,
+      "bottomRight": 0
+    },
+    "cell_regions": {
+      "left": 0.06,
+      "right": 0.08,
+      "top": 0.12,
+      "bottom": 0.01,
+      "topLeft": 0.09,
+      "topRight": 0.15,
+      "bottomLeft": 0.02,
+      "bottomRight": 0.01
+    },
+    "template_regions": {
+      "left": 0.05,
+      "right": 0.08,
+      "top": 0.12,
+      "bottom": 0.02,
+      "topLeft": 0.09,
+      "topRight": 0.15,
+      "bottomLeft": 0.02,
+      "bottomRight": 0.01
+    }
+  },
+  "sourceStep": "07_2_空白格判定",
+  "inputPath": null
+}

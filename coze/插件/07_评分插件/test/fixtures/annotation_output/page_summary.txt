@@ -1,0 +1,9 @@
+image: /home/lc/luckee_dao/baby/coze/插件/07_评分插件/test/fixtures/annotation_output/page.png
+blank_cells: 0
+base_avg_score: 70.29
+avg_score: 70.29
+page_total_score: 67.62
+page_score_level: pass
+
+cell_id	status	score_or_mark	penalties
+0_0	scored	70	重心偏右 / 重心偏上

@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { resolveSingleImageInput } = require('../utils/stage_image_contract');
 
 class PerspectiveRectifyPlugin {
   constructor() {
@@ -9,15 +10,27 @@ class PerspectiveRectifyPlugin {
   }
 
   async execute(params) {
-    const { imagePath, preprocessResult, outputMetaPath } = params || {};
-    if (!imagePath || !preprocessResult || !outputMetaPath) {
-      throw new Error('imagePath/preprocessResult/outputMetaPath 参数是必需的');
+    const {
+      stageInputPath = null,
+      imagePath = null,
+      preprocessResult,
+      outputMetaPath
+    } = params || {};
+    if (!preprocessResult || !outputMetaPath) {
+      throw new Error('preprocessResult/outputMetaPath 参数是必需的');
     }
+    const resolvedImagePath = resolveSingleImageInput({
+      stageName: '02_2_透视矫正',
+      primaryInputPath: stageInputPath,
+      imagePath
+    });
 
     const payload = {
       processNo: this.processNo,
       processName: '02_2_透视矫正',
-      imagePath,
+      imagePath: resolvedImagePath,
+      stageInputPath: resolvedImagePath,
+      stageOutputImagePath: preprocessResult.warpedOutputPath || null,
       method: preprocessResult.method || null,
       warpedOutputPath: preprocessResult.warpedOutputPath || null,
       outputPath: preprocessResult.outputPath || null,

@@ -1,4 +1,4 @@
-const { scoreCell } = require('../07_评分插件/scoring');
+const { scoreCell } = require('../07_评分插件/application/cell_scoring_service');
 
 class SingleCellScoringPlugin {
   constructor() {

@@ -2,6 +2,9 @@
   "image": {
     "threshold": 180,
     "template_size": 128,
+    "template_font_family": "Noto Sans CJK SC, Noto Sans SC, PingFang SC, Microsoft YaHei, sans-serif",
+    "template_font_size_ratio": 0.58,
+    "template_baseline_y_ratio": 0.5,
     "analysis_inset_ratio": 0.18,
     "ignore_red_grid": true,
     "grid_type": "square"
@@ -21,6 +24,12 @@
     "strong_bbox_ratio_max": 0.002,
     "center_ink_ratio_max": 0.01,
     "strong_center_ink_ratio_max": 0.004,
+    "residual_ink_ratio_max": 0.035,
+    "residual_primary_area_ratio_max": 0.0045,
+    "residual_bbox_ratio_max": 0.008,
+    "residual_center_ink_ratio_max": 0.12,
+    "residual_component_count_min": 6,
+    "residual_significant_component_count_max": 6,
     "ink_ratio_weight": 40,
     "primary_area_ratio_weight": 50,
     "bbox_ratio_weight": 20,
@@ -31,58 +40,108 @@
     "column_coverage_min": 0.12,
     "row_coverage_min": 0.2,
     "max_line_run_px": 8,
-    "line_run_edge_ratio": 0.3,
+    "line_run_edge_ratio": 0.2,
     "guide_component_min_aspect_ratio": 4,
     "guide_component_max_thickness_ratio": 0.06,
     "guide_component_max_thickness_px": 12,
     "guide_component_min_length_ratio": 0.22,
     "guide_component_edge_ratio": 0.2,
-    "guide_component_max_area_ratio": 0.08
+    "guide_component_max_area_ratio": 0.08,
+    "template_fragment_overlap_min": 0.74,
+    "template_fragment_center_overlap_min": 0.62,
+    "template_fragment_max_area_ratio": 0.012,
+    "template_fragment_center_max_area_ratio": 0.01,
+    "template_fragment_max_bbox_ratio": 0.055,
+    "template_fragment_max_thickness_ratio": 0.055,
+    "template_fragment_max_thickness_px": 12,
+    "template_fragment_center_bias_ratio": 0.18,
+    "template_blanklike_ink_ratio_max": 0.045,
+    "template_blanklike_primary_area_ratio_max": 0.014,
+    "template_blanklike_bbox_ratio_max": 0.06,
+    "template_blanklike_significant_components_max": 16,
+    "template_blanklike_central_ink_ratio_max": 0.16
   },
-  "layout": {
+  "stroke_quality": {
+    "weights": {
+      "start": 0.25,
+      "stability": 0.3,
+      "ending": 0.25,
+      "width_uniformity": 0.1,
+      "fluency": 0.1
+    },
+    "edge_touch_ratio_penalty_scale": 520,
+    "transition_penalty_scale": 115,
+    "width_std_penalty_scale": 135,
+    "component_penalty_scale": 11,
+    "fragment_penalty_scale": 16,
+    "jitter_penalty_scale": 320,
+    "ideal_stroke_density": 0.45,
+    "stroke_density_penalty_scale": 120
+  },
+  "structure_accuracy": {
+    "weights": {
+      "center": 0.3,
+      "proportion": 0.25,
+      "spacing": 0.2,
+      "crossing": 0.15,
+      "contour": 0.1
+    },
     "center_penalty_scale": 900,
-    "center_weight": 0.55,
-    "margin_weight": 0.45
-  },
-  "size": {
+    "margin_weight": 0.4,
+    "bbox_weight": 0.45,
+    "aspect_weight": 0.55,
     "ideal_bbox_ratio_low": 0.3,
     "ideal_bbox_ratio_high": 0.55,
-    "penalty_scale": 400
-  },
-  "stability": {
-    "noise_component_penalty": 3,
-    "noise_component_penalty_max": 25,
-    "component_overflow_penalty": 4,
-    "component_overflow_penalty_max": 15,
-    "stroke_density_target": 0.45,
-    "stroke_density_penalty_scale": 100,
-    "stroke_density_penalty_max": 20
-  },
-  "weights": {
-    "rule_only": {
-      "layout": 0.45,
-      "size": 0.35,
-      "stability": 0.2
-    },
-    "with_target": {
-      "layout": 0.28,
-      "size": 0.2,
-      "stability": 0.14,
-      "structure": 0.18,
-      "similarity": 0.2
-    }
-  },
-  "structure": {
-    "score_scale": 2.2,
+    "bbox_penalty_scale": 400,
+    "ideal_aspect_ratio_low": 0.62,
+    "ideal_aspect_ratio_high": 1.25,
+    "aspect_penalty_scale": 180,
+    "spacing_penalty_scale": 180,
+    "crossing_penalty_scale": 180,
+    "edge_touch_ratio_penalty_scale": 150,
+    "template_blend_weight": 0.35,
     "template_mismatch_score_threshold": 95,
     "left_right_diff_threshold": 0.12,
     "up_down_diff_threshold": 0.12,
-    "diagonal_diff_threshold": 0.14
+    "diagonal_diff_threshold": 0.14,
+    "region_diff_penalty_scale": 240
+  },
+  "similarity": {
+    "weights": {
+      "iou": 0.5,
+      "hu": 0.3,
+      "edge_direction": 0.2
+    },
+    "hu_distance_good": 0.1,
+    "hu_distance_bad": 0.4,
+    "fallback_neatness_weight": 1
+  },
+  "cleanliness": {
+    "edge_noise_penalty_scale": 460,
+    "noise_component_penalty_scale": 14,
+    "fragment_penalty_scale": 18
+  },
+  "weights": {
+    "rule_only": {
+      "stroke_quality": 0.45,
+      "structure_accuracy": 0.45,
+      "cleanliness": 0.1
+    },
+    "with_target": {
+      "stroke_quality": 0.4,
+      "structure_accuracy": 0.4,
+      "morphology_similarity": 0.2
+    }
   },
   "penalties": {
     "center_offset_threshold": 0.06,
     "margin_balance_threshold": 0.65,
-    "noise_component_threshold": 3
+    "noise_component_threshold": 3,
+    "stroke_jitter_threshold": 0.16,
+    "width_std_threshold": 0.22,
+    "edge_touch_ratio_threshold": 0.16,
+    "template_similarity_threshold": 70,
+    "cleanliness_threshold": 88
   },
   "review": {
     "low_score_threshold": 60,
@@ -92,5 +151,8 @@
     "excellent_min": 90,
     "good_min": 75,
     "pass_min": 60
+  },
+  "execution": {
+    "page_scoring_concurrency": 4
   }
 }

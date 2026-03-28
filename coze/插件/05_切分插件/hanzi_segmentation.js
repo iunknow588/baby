@@ -1,10 +1,11 @@
-const sharp = require('sharp');
+const { requireSharp } = require('../utils/require_sharp');
+const sharp = requireSharp([__dirname]);
 const fs = require('fs');
 const path = require('path');
-const gridBoundsDetectPlugin = require('../05_1网格范围检测插件/index');
-const boundaryGuideSegmentationPlugin = require('../05_2边界引导切分插件/index');
-const segmentationDebugRenderPlugin = require('../05_3切分调试渲染插件/index');
-const cellCropPlugin = require('../05_4单格裁切插件/index');
+const boundaryGuideSegmentationPlugin = require('./domain/boundary_guides');
+const { executeGridBoundsDetection } = require('./domain/grid_bounds');
+const { renderGridDebugImage } = require('./presentation/debug_render');
+const { executeCellCrop } = require('./domain/cell_crop');
 
 const DEFAULT_GRID_COLS = 10;
 const DEFAULT_GRID_ROWS = 7;
@@ -12,6 +13,57 @@ const DEFAULT_THRESHOLD = 210;
 
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
+}
+
+function translateBoundaryGuidesToCrop(boundaryGuides, cropBox, width, height) {
+  if (!boundaryGuides || !cropBox) {
+    return boundaryGuides || null;
+  }
+  const cropLeft = Number(cropBox.left) || 0;
+  const cropTop = Number(cropBox.top) || 0;
+  const mapX = (value) => clamp(Math.round(Number(value) - cropLeft), 0, Math.max(0, width));
+  const mapY = (value) => clamp(Math.round(Number(value) - cropTop), 0, Math.max(0, height));
+  return {
+    ...boundaryGuides,
+    left: mapX(boundaryGuides.left ?? 0),
+    right: mapX(boundaryGuides.right ?? width),
+    top: mapY(boundaryGuides.top ?? 0),
+    bottom: mapY(boundaryGuides.bottom ?? height),
+    xPeaks: Array.isArray(boundaryGuides.xPeaks) ? boundaryGuides.xPeaks.map(mapX) : [],
+    yPeaks: Array.isArray(boundaryGuides.yPeaks) ? boundaryGuides.yPeaks.map(mapY) : []
+  };
+}
+
+function resolveSegmentationProfile(patternProfile, forceUniformGrid) {
+  const family = patternProfile?.family || null;
+  const profileMode = patternProfile?.profileMode || null;
+  const preferUniform =
+    Boolean(forceUniformGrid) ||
+    patternProfile?.settings?.forceUniformSegmentation === true ||
+    patternProfile?.globalMode === 'uniform-boundary-grid';
+  const preferBoundaryGuides =
+    Boolean(patternProfile) &&
+    patternProfile?.globalMode !== 'free-layout-grid';
+  const preferPeakEnvelope =
+    Boolean(patternProfile) &&
+    (
+      family === 'diagonal-mi-grid'
+      || family === 'inner-dashed-box-grid'
+      || [
+        'template-circle-mi-grid-top-bottom-separated-outer-frame',
+        'template-diagonal-mi-grid-top-bottom-separated-outer-frame',
+        'template-diagonal-mi-grid-left-right-separated-outer-frame',
+        'template-inner-dashed-box-grid-mixed-outer-frame'
+      ].includes(profileMode)
+    );
+
+  return {
+    family,
+    profileMode,
+    preferUniform,
+    preferBoundaryGuides,
+    preferPeakEnvelope
+  };
 }
 
 function buildDarkMask(data, info, threshold) {
@@ -985,61 +1037,6 @@ function evaluateBoundaryQuality(boundariesX, boundariesY, data, info) {
   };
 }
 
-function detectGridBounds(mask, width, height) {
-  let minX = width;
-  let maxX = -1;
-  let minY = height;
-  let maxY = -1;
-
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      if (mask[y * width + x] === 0) {
-        continue;
-      }
-
-      minX = Math.min(minX, x);
-      maxX = Math.max(maxX, x);
-      minY = Math.min(minY, y);
-      maxY = Math.max(maxY, y);
-    }
-  }
-
-  if (maxX === -1 || maxY === -1) {
-    return {
-      minX: 0,
-      maxX: width,
-      minY: 0,
-      maxY: height,
-      width,
-      height
-    };
-  }
-
-  return {
-    minX,
-    maxX: maxX + 1,
-    minY,
-    maxY: maxY + 1,
-    width: maxX - minX + 1,
-    height: maxY - minY + 1
-  };
-}
-
-function expandBounds(bounds, width, height, paddingRatio = 0.015) {
-  const paddingX = Math.max(2, Math.floor(bounds.width * paddingRatio));
-  const paddingY = Math.max(2, Math.floor(bounds.height * paddingRatio));
-  const left = clamp(bounds.minX - paddingX, 0, width - 1);
-  const top = clamp(bounds.minY - paddingY, 0, height - 1);
-  const right = clamp(bounds.maxX + paddingX, left + 1, width);
-  const bottom = clamp(bounds.maxY + paddingY, top + 1, height);
-
-  return {
-    left,
-    top,
-    width: right - left,
-    height: bottom - top
-  };
-}
 
 function resolveGridSlices(mask, width, height, gridCols, gridRows, grayProfiles = null, workingData = null, workingInfo = null) {
   const expectedVerticalCount = gridCols + 1;
@@ -1241,200 +1238,6 @@ function resolveGridSlices(mask, width, height, gridCols, gridRows, grayProfiles
   };
 }
 
-async function renderGridDebugImage(imageInput, debugOutputPath, debugData) {
-  const image = sharp(imageInput).ensureAlpha();
-  const metadata = await image.metadata();
-  const width = metadata.width;
-  const height = metadata.height;
-  const overlays = [];
-
-  const addLine = (x1, y1, x2, y2, color, strokeWidth = 3, dashArray = null) => {
-    const dash = dashArray ? `stroke-dasharray="${dashArray}"` : '';
-    const svg = `
-      <svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
-        <line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${color}" stroke-width="${strokeWidth}" ${dash}/>
-      </svg>
-    `;
-    overlays.push({ input: Buffer.from(svg), top: 0, left: 0 });
-  };
-
-  const addRect = (box, color, strokeWidth = 4) => {
-    const svg = `
-      <svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
-        <rect x="${box.left}" y="${box.top}" width="${box.width}" height="${box.height}" fill="none" stroke="${color}" stroke-width="${strokeWidth}"/>
-      </svg>
-    `;
-    overlays.push({ input: Buffer.from(svg), top: 0, left: 0 });
-  };
-
-  const addLabel = (x, y, text, color) => {
-    const safeText = String(text)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;');
-    const svg = `
-      <svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
-        <rect x="${x}" y="${y}" width="120" height="24" rx="4" ry="4" fill="${color}" fill-opacity="0.85"/>
-        <text x="${x + 8}" y="${y + 17}" font-family="sans-serif" font-size="14" fill="white">${safeText}</text>
-      </svg>
-    `;
-    overlays.push({ input: Buffer.from(svg), top: 0, left: 0 });
-  };
-
-  const isBoundaryGuideMode = debugData.selectedBoundaryMode === '边界引导';
-  const primaryVerticalColor = isBoundaryGuideMode ? '#0f766e' : '#2563eb';
-  const primaryHorizontalColor = isBoundaryGuideMode ? '#7c3aed' : '#dc2626';
-  const primaryStrokeWidth = isBoundaryGuideMode ? 5 : 4;
-
-  if (debugData.gridBounds) {
-    addRect(debugData.gridBounds, '#22c55e', 5);
-  }
-
-  for (const center of debugData.verticalCandidates || []) {
-    addLine(center, 0, center, height, '#f59e0b', 2, '8 8');
-  }
-  for (const center of debugData.verticalLines || []) {
-    addLine(center, 0, center, height, primaryVerticalColor, primaryStrokeWidth);
-  }
-  for (const center of debugData.outerRectVerticalLines || []) {
-    addLine(center, 0, center, height, '#059669', 2, '10 6');
-  }
-  for (const center of debugData.profileVerticalLines || []) {
-    addLine(center, 0, center, height, '#14b8a6', 2, '4 6');
-  }
-  for (const center of debugData.horizontalLines || []) {
-    addLine(0, center, width, center, primaryHorizontalColor, primaryStrokeWidth);
-  }
-  for (const center of debugData.outerRectHorizontalLines || []) {
-    addLine(0, center, width, center, '#16a34a', 2, '10 6');
-  }
-  for (const center of debugData.horizontalLinesBeforeCorrection || []) {
-    addLine(0, center, width, center, '#fb7185', 2, '12 8');
-  }
-  for (const center of debugData.leftHorizontalLines || []) {
-    addLine(0, center, Math.round(width * 0.18), center, '#0f766e', 3, '6 6');
-  }
-  for (const center of debugData.rightHorizontalLines || []) {
-    addLine(Math.round(width * 0.82), center, width, center, '#7c3aed', 3, '6 6');
-  }
-  for (const center of debugData.sideConsensusHorizontalLines || []) {
-    addLine(0, center, width, center, '#0891b2', 2, '10 8');
-  }
-  for (const center of debugData.profileHorizontalLines || []) {
-    addLine(0, center, width, center, '#8b5cf6', 2, '4 6');
-  }
-  for (const correction of debugData.horizontalCorrections || []) {
-    addLabel(
-      Math.max(16, Math.round(width * 0.74)),
-      clamp(correction.to - 12, 40, Math.max(40, height - 40)),
-      `纠偏${correction.boundaryIndex}: ${correction.from}->${correction.to}`,
-      '#0f766e'
-    );
-  }
-  for (const box of debugData.pageBoxes || []) {
-    addRect(box, '#111827', 2);
-  }
-
-  addLabel(16, 16, `回退切分: ${debugData.fallbackUsed ? '是' : '否'}`, debugData.fallbackUsed ? '#dc2626' : '#15803d');
-  addLabel(
-    16,
-    48,
-    `纠偏次数: ${(debugData.horizontalCorrections || []).length}`,
-    (debugData.horizontalCorrections || []).length ? '#0f766e' : '#475569'
-  );
-  addLabel(
-    16,
-    80,
-    `切分模式: ${debugData.selectedBoundaryMode || '未知'}`,
-    debugData.selectedBoundaryMode === '外框均分'
-      ? '#166534'
-      : debugData.selectedBoundaryMode === '边界引导'
-        ? '#0f766e'
-        : '#1d4ed8'
-  );
-  addLabel(16, 112, '图例: 橙色=候选线', '#92400e');
-  addLabel(
-    16,
-    144,
-    isBoundaryGuideMode ? '引导竖横线=深青/紫' : '选中竖横线=蓝/红',
-    isBoundaryGuideMode ? '#0f766e' : '#1d4ed8'
-  );
-  addLabel(16, 176, '绿色虚线=外框锚线', '#166534');
-  addLabel(16, 208, '青/粉=轮廓或纠偏前', '#475569');
-
-  await image.composite(overlays).png().toFile(debugOutputPath);
-}
-
-function cropMaskBounds(mask, width, height, thresholdRatio = 0.003) {
-  const minimumDarkPixelsPerLine = Math.max(1, Math.floor(Math.max(width, height) * thresholdRatio));
-  let minX = width;
-  let maxX = -1;
-  let minY = height;
-  let maxY = -1;
-
-  for (let y = 0; y < height; y++) {
-    let rowDarkPixels = 0;
-    for (let x = 0; x < width; x++) {
-      const value = mask[y * width + x];
-      rowDarkPixels += value;
-      if (value) {
-        minX = Math.min(minX, x);
-        maxX = Math.max(maxX, x);
-      }
-    }
-
-    if (rowDarkPixels >= minimumDarkPixelsPerLine) {
-      minY = Math.min(minY, y);
-      maxY = Math.max(maxY, y);
-    }
-  }
-
-  if (maxX === -1 || maxY === -1) {
-    return null;
-  }
-
-  return {
-    left: minX,
-    top: minY,
-    width: maxX - minX + 1,
-    height: maxY - minY + 1
-  };
-}
-
-async function trimCellToContent(cellBuffer, threshold) {
-  const image = sharp(cellBuffer).ensureAlpha();
-  const { data, info } = await image.clone().raw().toBuffer({ resolveWithObject: true });
-  const mask = buildDarkMask(data, info, threshold);
-  const bounds = cropMaskBounds(mask, info.width, info.height);
-
-  if (!bounds) {
-    return {
-      buffer: await image.png().toBuffer(),
-      contentBox: {
-        left: 0,
-        top: 0,
-        width: info.width,
-        height: info.height
-      }
-    };
-  }
-
-  const paddingX = Math.max(2, Math.floor(bounds.width * 0.08));
-  const paddingY = Math.max(2, Math.floor(bounds.height * 0.08));
-  const left = clamp(bounds.left - paddingX, 0, info.width - 1);
-  const top = clamp(bounds.top - paddingY, 0, info.height - 1);
-  const width = clamp(bounds.width + paddingX * 2, 1, info.width - left);
-  const height = clamp(bounds.height + paddingY * 2, 1, info.height - top);
-
-  return {
-    buffer: await image
-      .extract({ left, top, width, height })
-      .png()
-      .toBuffer(),
-    contentBox: { left, top, width, height }
-  };
-}
-
 /**
  * 汉字切分插件
  * 从A4白纸图像中提取方格汉字
@@ -1454,6 +1257,7 @@ async function segmentHanzi(imagePath, options = {}) {
       pageBounds = null,
       boundaryGuides = null,
       forceUniformGrid = false,
+      patternProfile = null,
       gridGuideMaskPath = null,
       debugOutputPath = null,
       debugMetaPath = null
@@ -1482,7 +1286,7 @@ async function segmentHanzi(imagePath, options = {}) {
         sourceGuideMask = null;
       }
     }
-    const gridBoundsResult = gridBoundsDetectPlugin.execute({
+    const gridBoundsResult = executeGridBoundsDetection({
       pageBounds,
       cropToGrid,
       sourceGuideMask,
@@ -1511,18 +1315,58 @@ async function segmentHanzi(imagePath, options = {}) {
     let yBoundaries;
     let debug;
     let step05_2Result;
-    const normalizedBoundaryGuides = boundaryGuides
+    const segmentationProfile = resolveSegmentationProfile(patternProfile, forceUniformGrid);
+    const croppedBoundaryGuides = translateBoundaryGuidesToCrop(
+      boundaryGuides,
+      gridBounds,
+      workingInfo.width,
+      workingInfo.height
+    );
+    const normalizedBoundaryGuides = croppedBoundaryGuides
       ? {
-          left: boundaryGuides.left ?? 0,
-          right: boundaryGuides.right ?? workingInfo.width,
-          top: boundaryGuides.top ?? 0,
-          bottom: boundaryGuides.bottom ?? workingInfo.height,
-          xPeaks: Array.isArray(boundaryGuides.xPeaks) ? boundaryGuides.xPeaks : [],
-          yPeaks: Array.isArray(boundaryGuides.yPeaks) ? boundaryGuides.yPeaks : []
+          left: croppedBoundaryGuides.left ?? 0,
+          right: croppedBoundaryGuides.right ?? workingInfo.width,
+          top: croppedBoundaryGuides.top ?? 0,
+          bottom: croppedBoundaryGuides.bottom ?? workingInfo.height,
+          xPeaks: Array.isArray(croppedBoundaryGuides.xPeaks) ? croppedBoundaryGuides.xPeaks : [],
+          yPeaks: Array.isArray(croppedBoundaryGuides.yPeaks) ? croppedBoundaryGuides.yPeaks : [],
+          xSource: croppedBoundaryGuides.xSource || null,
+          ySource: croppedBoundaryGuides.ySource || null,
+          xPattern: croppedBoundaryGuides.xPattern || null,
+          yPattern: croppedBoundaryGuides.yPattern || null,
+          xPatternDiagnostics: croppedBoundaryGuides.xPatternDiagnostics || null,
+          yPatternDiagnostics: croppedBoundaryGuides.yPatternDiagnostics || null,
+          globalPattern: croppedBoundaryGuides.globalPattern || null,
+          specificMode: croppedBoundaryGuides.specificMode || croppedBoundaryGuides.globalPattern?.specificMode || null,
+          patternProfile: croppedBoundaryGuides.patternProfile || croppedBoundaryGuides.globalPattern?.patternProfile || patternProfile || null
         }
       : null;
 
-    if (forceUniformGrid) {
+    if (segmentationProfile.preferUniform && normalizedBoundaryGuides && segmentationProfile.preferBoundaryGuides) {
+      const guidedUniformSegmentation = boundaryGuideSegmentationPlugin.execute({
+        boundaryGuides: normalizedBoundaryGuides,
+        segmentationProfile,
+        gridRows,
+        gridCols,
+        width: workingInfo.width,
+        height: workingInfo.height
+      });
+      if (guidedUniformSegmentation) {
+        xBoundaries = guidedUniformSegmentation.xBoundaries;
+        yBoundaries = guidedUniformSegmentation.yBoundaries;
+        debug = guidedUniformSegmentation.debug;
+        step05_2Result = {
+          processNo: '05_2',
+          processName: '05_2_边界引导切分',
+          sourceStep: '05_1_网格范围检测',
+          inputPath: imagePath,
+          mode: '边界框内均分',
+          xBoundaries,
+          yBoundaries,
+          debug
+        };
+      }
+    } else if (segmentationProfile.preferUniform) {
       xBoundaries = buildUniformBoundaries(0, workingInfo.width, gridCols);
       yBoundaries = buildUniformBoundaries(0, workingInfo.height, gridRows);
       const uniformVerticalLines = xBoundaries.map((boundary) => boundary[0]).concat([xBoundaries[xBoundaries.length - 1][1] - 1]);
@@ -1556,9 +1400,10 @@ async function segmentHanzi(imagePath, options = {}) {
         yBoundaries,
         debug
       };
-    } else if (normalizedBoundaryGuides) {
+    } else if (normalizedBoundaryGuides && segmentationProfile.preferBoundaryGuides) {
       const guidedSegmentation = boundaryGuideSegmentationPlugin.execute({
         boundaryGuides: normalizedBoundaryGuides,
+        segmentationProfile,
         gridRows,
         gridCols,
         width: workingInfo.width,
@@ -1611,7 +1456,7 @@ async function segmentHanzi(imagePath, options = {}) {
 
     for (let row = 0; row < gridRows; row++) {
       for (let col = 0; col < gridCols; col++) {
-        const croppedCell = await cellCropPlugin.execute({
+        const croppedCell = await executeCellCrop({
           sourceImage,
           gridBounds,
           xBoundaries,
@@ -1648,6 +1493,8 @@ async function segmentHanzi(imagePath, options = {}) {
         height: workingInfo.height
       },
       boundaryGuides: normalizedBoundaryGuides,
+      patternProfile,
+      segmentationProfile,
       debugLegend: {
         gridBounds: '#22c55e',
         verticalCandidates: '#f59e0b',
@@ -1675,6 +1522,20 @@ async function segmentHanzi(imagePath, options = {}) {
       sideConsensusHorizontalLines: (safeDebug.sideConsensusHorizontalLines || []).map((value) => gridBounds.top + value),
       profileVerticalLines: (safeDebug.profileVerticalLines || []).map((value) => gridBounds.left + value),
       profileHorizontalLines: (safeDebug.profileHorizontalLines || []).map((value) => gridBounds.top + value),
+      guidePeakMode: safeDebug.guidePeakMode || null,
+      guideAxisModes: safeDebug.guideAxisModes || null,
+      guideCountRelations: safeDebug.guideCountRelations || null,
+      guideSpanModes: safeDebug.guideSpanModes || null,
+      guideSpanPadding: safeDebug.guideSpanPadding || null,
+      guideSpanPaddingDetail: safeDebug.guideSpanPaddingDetail || null,
+      guidePatternFallback: safeDebug.guidePatternFallback || null,
+      guideResolvedPeakFallback: safeDebug.guideResolvedPeakFallback || null,
+      guideExplicitCenterFallback: safeDebug.guideExplicitCenterFallback || null,
+      guideExplicitOuterBounds: safeDebug.guideExplicitOuterBounds || null,
+      guidePatternProfile: safeDebug.guidePatternProfile || null,
+      guideAnchorPreference: safeDebug.guideAnchorPreference || null,
+      xPattern: safeDebug.xPattern || null,
+      yPattern: safeDebug.yPattern || null,
       horizontalCorrections: (safeDebug.anomalousHorizontalCorrection?.corrections || []).map((item) => ({
         boundaryIndex: item.boundaryIndex,
         from: gridBounds.top + item.from,
@@ -1686,11 +1547,7 @@ async function segmentHanzi(imagePath, options = {}) {
     const alignmentStats = buildGridAlignmentStats(cells, gridRows, gridCols);
 
     if (debugOutputPath) {
-      await segmentationDebugRenderPlugin.execute({
-        imageInput: input,
-        debugOutputPath,
-        debugData: debugInfo
-      });
+      await renderGridDebugImage(input, debugOutputPath, debugInfo);
     }
 
     if (debugMetaPath) {

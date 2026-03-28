@@ -6,14 +6,8 @@ class CellSimilarityScorePlugin {
   }
 
   async execute(params) {
-    const { cellImage, targetChar, options = {} } = params || {};
-    const { calculateSimilarityScore } = require('../07_评分插件/scoring');
-    const similarity = await calculateSimilarityScore(cellImage, targetChar, options);
-    return {
-      processNo: this.processNo,
-      processName: '07_4_单格相似度评分',
-      similarity
-    };
+    const { executeCellSimilarityScoreStep } = require('../07_评分插件/application/cell_scoring_steps');
+    return executeCellSimilarityScoreStep(params);
   }
 }
 

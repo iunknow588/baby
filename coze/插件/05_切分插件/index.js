@@ -1,6 +1,8 @@
 const fs = require('fs');
 const path = require('path');
 const { segmentHanzi, matrixToBase64, saveMatrixToFiles } = require('./hanzi_segmentation');
+const { DEFAULT_GRID_ROWS, DEFAULT_GRID_COLS } = require('../utils/grid_spec');
+const { resolveSegmentationArtifactPolicy } = require('../utils/artifact_policy');
 
 function formatCellFileName(row, col) {
   return `05_单格_row${String(row + 1).padStart(2, '0')}_col${String(col + 1).padStart(2, '0')}.png`;
@@ -50,6 +52,8 @@ function compactDebugMeta(debug) {
     threshold: debug.threshold,
     workingSize: debug.workingSize,
     boundaryGuides: debug.boundaryGuides,
+    patternProfile: debug.patternProfile || null,
+    segmentationProfile: debug.segmentationProfile || null,
     debugLegend: debug.debugLegend,
     guideMaskUsed: Boolean(debug.guideMaskUsed),
     ...withValue('gridGuideMaskPath', debug.gridGuideMaskPath),
@@ -68,6 +72,20 @@ function compactDebugMeta(debug) {
     ...withValue('sideConsensusHorizontalLines', debug.sideConsensusHorizontalLines),
     ...withValue('profileVerticalLines', debug.profileVerticalLines),
     ...withValue('profileHorizontalLines', debug.profileHorizontalLines),
+    ...withValue('guidePeakMode', debug.guidePeakMode),
+    ...withValue('guideAxisModes', debug.guideAxisModes),
+    ...withValue('guideCountRelations', debug.guideCountRelations),
+    ...withValue('guideSpanModes', debug.guideSpanModes),
+    ...withValue('guideSpanPadding', debug.guideSpanPadding),
+    ...withValue('guideSpanPaddingDetail', debug.guideSpanPaddingDetail),
+    ...withValue('guidePatternFallback', debug.guidePatternFallback),
+    ...withValue('guideResolvedPeakFallback', debug.guideResolvedPeakFallback),
+    ...withValue('guideExplicitCenterFallback', debug.guideExplicitCenterFallback),
+    ...withValue('guideExplicitOuterBounds', debug.guideExplicitOuterBounds),
+    ...withValue('guidePatternProfile', debug.guidePatternProfile),
+    ...withValue('guideAnchorPreference', debug.guideAnchorPreference),
+    ...withValue('xPattern', debug.xPattern),
+    ...withValue('yPattern', debug.yPattern),
     ...withValue('horizontalCorrections', debug.horizontalCorrections),
     fallbackUsed: Boolean(debug.fallbackUsed)
   };
@@ -89,13 +107,14 @@ class HanziSegmentationPlugin {
    * @param {string} params.imagePath - 图像路径
    * @param {boolean} params.returnBase64 - 是否返回base64（默认true）
    * @param {string} params.outputDir - 输出目录（可选，用于调试）
-   * @param {number} params.gridRows - 方格行数，默认11
-   * @param {number} params.gridCols - 方格列数，默认7
+   * @param {number} params.gridRows - 方格行数，默认7
+   * @param {number} params.gridCols - 方格列数，默认10
    * @param {boolean} params.trimContent - 是否将单格继续裁到汉字内容区域，默认false
    * @param {boolean} params.cropToGrid - 是否先裁出整页中的网格区域，默认true
    * @param {Object} params.pageBounds - 手动指定纸面/网格范围，可选
    * @param {string} params.debugOutputPath - 网格调试可视化图保存路径，可选
    * @param {string} params.debugMetaPath - 网格调试元数据JSON保存路径，可选
+   * @param {string} params.artifactLevel - 产物级别：minimal/standard/debug
    * @returns {Promise<Object>} 结果对象
    */
   async execute(params) {
@@ -103,37 +122,54 @@ class HanziSegmentationPlugin {
       imagePath,
       returnBase64 = true,
       outputDir,
-      sourceStep = '03_总方格大矩形提取',
-      gridRows = 11,
-      gridCols = 7,
+      sourceStep = '03_字帖外框与内框定位裁剪',
+      gridRows = DEFAULT_GRID_ROWS,
+      gridCols = DEFAULT_GRID_COLS,
       trimContent = false,
       cropToGrid = true,
       pageBounds,
       boundaryGuides = null,
       forceUniformGrid = false,
+      patternProfile = null,
       gridGuideMaskPath = null,
       outputPrefix = '02',
       debugOutputPath,
-      debugMetaPath
+      debugMetaPath,
+      artifactLevel,
+      artifact_level
     } = params;
 
     if (!imagePath) {
       throw new Error('imagePath参数是必需的');
     }
 
+    const artifactPolicy = resolveSegmentationArtifactPolicy({ artifactLevel, artifact_level });
     const stageDir = outputDir ? path.dirname(outputDir) : null;
-    const step05_1Dir = stageDir ? path.join(stageDir, '05_1_网格范围检测') : null;
-    const step05_2Dir = stageDir ? path.join(stageDir, '05_2_边界引导切分') : null;
-    const step05_3Dir = stageDir ? path.join(stageDir, '05_3_切分调试渲染') : null;
-    const step05_4Dir = stageDir ? path.join(stageDir, '05_4_单格裁切') : null;
+    const step05_1Dir = stageDir && artifactPolicy.emitStep05_1
+      ? path.join(stageDir, '05_1_网格范围检测')
+      : null;
+    const step05_2Dir = stageDir && artifactPolicy.emitStep05_2
+      ? path.join(stageDir, '05_2_边界引导切分')
+      : null;
+    const step05_3Dir = stageDir && artifactPolicy.emitStep05_3
+      ? path.join(stageDir, '05_3_切分调试渲染')
+      : null;
+    const step05_4Dir = stageDir && artifactPolicy.emitStep05_4
+      ? path.join(stageDir, '05_4_单格裁切')
+      : null;
     const resolvedCellsDir = step05_4Dir ? path.join(step05_4Dir, path.basename(outputDir)) : outputDir;
-    const resolvedDebugOutputPath = debugOutputPath || (step05_3Dir ? path.join(step05_3Dir, `${outputPrefix}_3_切分调试图.png`) : null);
-    const resolvedDebugMetaPath = debugMetaPath || (step05_3Dir ? path.join(step05_3Dir, `${outputPrefix}_3_切分调试信息.json`) : null);
+    const resolvedDebugOutputPath = artifactPolicy.emitStep05_3
+      ? (debugOutputPath || (step05_3Dir ? path.join(step05_3Dir, `${outputPrefix}_3_切分调试图.png`) : null))
+      : null;
+    const resolvedDebugMetaPath = artifactPolicy.emitStep05_3
+      ? (debugMetaPath || (step05_3Dir ? path.join(step05_3Dir, `${outputPrefix}_3_切分调试信息.json`) : null))
+      : null;
 
     if (step05_1Dir) await fs.promises.mkdir(step05_1Dir, { recursive: true });
     if (step05_2Dir) await fs.promises.mkdir(step05_2Dir, { recursive: true });
     if (step05_3Dir) await fs.promises.mkdir(step05_3Dir, { recursive: true });
     if (step05_4Dir) await fs.promises.mkdir(step05_4Dir, { recursive: true });
+    if (resolvedCellsDir) await fs.promises.mkdir(resolvedCellsDir, { recursive: true });
 
     const { matrix, cells, gridBounds, alignmentStats, debug, stepResults = {} } = await segmentHanzi(imagePath, {
       gridRows,
@@ -143,6 +179,7 @@ class HanziSegmentationPlugin {
       pageBounds,
       boundaryGuides,
       forceUniformGrid,
+      patternProfile,
       gridGuideMaskPath,
       debugOutputPath: resolvedDebugOutputPath,
       debugMetaPath: resolvedDebugMetaPath
@@ -172,6 +209,7 @@ class HanziSegmentationPlugin {
           totalCells: gridRows * gridCols,
           gridBounds,
           alignmentStats,
+          patternProfile,
           debug: summaryDebug,
           cellsDir: resolvedCellsDir,
           显示信息: {
@@ -189,15 +227,15 @@ class HanziSegmentationPlugin {
       );
     }
 
-    if (step05_1Dir && stepResults.step05_1) {
+    if (artifactPolicy.emitStep05_1 && step05_1Dir && stepResults.step05_1) {
       step05_1MetaPath = path.join(step05_1Dir, `${outputPrefix}_1_网格范围检测.json`);
       await fs.promises.writeFile(step05_1MetaPath, `${JSON.stringify(stepResults.step05_1, null, 2)}\n`, 'utf8');
     }
-    if (step05_2Dir && stepResults.step05_2) {
+    if (artifactPolicy.emitStep05_2 && step05_2Dir && stepResults.step05_2) {
       step05_2MetaPath = path.join(step05_2Dir, `${outputPrefix}_2_边界引导切分.json`);
       await fs.promises.writeFile(step05_2MetaPath, `${JSON.stringify(stepResults.step05_2, null, 2)}\n`, 'utf8');
     }
-    if (step05_4Dir) {
+    if (artifactPolicy.emitStep05_4 && step05_4Dir) {
       step05_4MetaPath = path.join(step05_4Dir, `${outputPrefix}_4_单格裁切.json`);
       const compactCells = cells.map(compactCellMeta);
       await fs.promises.writeFile(
@@ -211,6 +249,7 @@ class HanziSegmentationPlugin {
           totalCells: compactCells.length,
           gridRows,
           gridCols,
+          patternProfile,
           cellsDir: resolvedCellsDir,
           cells: compactCells,
           显示信息: {
@@ -226,6 +265,7 @@ class HanziSegmentationPlugin {
     }
 
     return {
+      artifactLevel: artifactPolicy.artifactLevel,
       gridRows,
       gridCols,
       totalCells: gridRows * gridCols,
@@ -233,9 +273,11 @@ class HanziSegmentationPlugin {
       alignmentStats,
       debug,
       boundaryGuides,
+      patternProfile,
       debugOutputPath: resolvedDebugOutputPath || null,
       debugMetaPath: resolvedDebugMetaPath || null,
       outputs: {
+        artifactLevel: artifactPolicy.artifactLevel,
         cellsDir: resolvedCellsDir || null,
         summaryPath,
         stepDirs: {

@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { resolveSingleImageInput } = require('../utils/stage_image_contract');
 
 function buildFullFrameCorners(preprocessResult) {
   const paperBounds = preprocessResult.paperBounds || null;
@@ -31,10 +32,20 @@ class PaperCornerDetectPlugin {
   }
 
   async execute(params) {
-    const { imagePath, preprocessResult, outputMetaPath } = params || {};
-    if (!imagePath || !preprocessResult || !outputMetaPath) {
-      throw new Error('imagePath/preprocessResult/outputMetaPath 参数是必需的');
+    const {
+      stageInputPath = null,
+      imagePath = null,
+      preprocessResult,
+      outputMetaPath
+    } = params || {};
+    if (!preprocessResult || !outputMetaPath) {
+      throw new Error('preprocessResult/outputMetaPath 参数是必需的');
     }
+    const resolvedImagePath = resolveSingleImageInput({
+      stageName: '02_1_纸张角点检测',
+      primaryInputPath: stageInputPath,
+      imagePath
+    });
 
     const resolvedPaperCorners = preprocessResult.paperCorners || buildFullFrameCorners(preprocessResult);
     const resolvedCornerSelection = preprocessResult.cornerSelection || (
@@ -49,7 +60,8 @@ class PaperCornerDetectPlugin {
     const payload = {
       processNo: this.processNo,
       processName: '02_1_纸张角点检测',
-      imagePath,
+      imagePath: resolvedImagePath,
+      stageInputPath: resolvedImagePath,
       paperBounds: preprocessResult.paperBounds || null,
       paperCorners: resolvedPaperCorners || null,
       roughPaperCorners: preprocessResult.roughPaperCorners || null,

@@ -6,14 +6,8 @@ class CellStructureScorePlugin {
   }
 
   async execute(params) {
-    const { cellImage, targetChar, options = {} } = params || {};
-    const { calculateStructureScore } = require('../07_评分插件/scoring');
-    const structure = await calculateStructureScore(cellImage, targetChar, options);
-    return {
-      processNo: this.processNo,
-      processName: '07_3_单格结构评分',
-      structure
-    };
+    const { executeCellStructureScoreStep } = require('../07_评分插件/application/cell_scoring_steps');
+    return executeCellStructureScoreStep(params);
   }
 }
 

@@ -1,14 +1,10 @@
 const fs = require('fs');
 const path = require('path');
-const gridCountEstimatePlugin = require('../04_1方格数量估计插件/index');
-const gridCountRenderPlugin = require('../04_2方格数量标注插件/index');
-let sharp;
+const { requireSharp } = require('../utils/require_sharp');
+const { estimateGridCount } = require('./domain/grid_count');
+const { renderGridCountAnnotation } = require('./presentation/grid_count_annotation');
 
-try {
-  sharp = require('sharp');
-} catch (error) {
-  sharp = require('../05_切分插件/node_modules/sharp');
-}
+const sharp = requireSharp();
 
 class GridCountAnnotatePlugin {
   constructor() {
@@ -52,7 +48,7 @@ class GridCountAnnotatePlugin {
     const step04_1ImagePath = path.join(step04_1Dir, '04_1_方格数量估计图.png');
     const step04_3ImagePath = outputCarryForwardPath || path.join(step04_3Dir, '04_3_单格切分输入图.png');
 
-    const step04_1 = await gridCountEstimatePlugin.execute({
+    const step04_1 = await estimateGridCount({
       imagePath,
       gridRows,
       gridCols,
@@ -61,7 +57,7 @@ class GridCountAnnotatePlugin {
       outputImagePath: step04_1ImagePath
     });
 
-    const step04_2 = await gridCountRenderPlugin.execute({
+    const step04_2 = await renderGridCountAnnotation({
       imagePath,
       outputAnnotatedPath: path.join(step04_2Dir, path.basename(outputAnnotatedPath)),
       outputMetaPath: step04_2MetaPath,
@@ -86,7 +82,7 @@ class GridCountAnnotatePlugin {
     const payload = {
       processNo,
       processName: '04_方格数量计算标注',
-      sourceStep: '03_3_2_总方格计数参考',
+      sourceStep: '03_4_字帖内框裁剪与矫正',
       stageInputPath: imagePath,
       gridRows,
       gridCols,

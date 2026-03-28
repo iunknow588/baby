@@ -60,8 +60,8 @@ console.log(result.cells[0]); // 第一个方格的页内坐标和内容框
 返回：
 ```javascript
 {
-  gridRows: 11,
-  gridCols: 7,
+  gridRows: 7,
+  gridCols: 10,
   totalCells: 70,
   gridBounds: { left, top, width, height },
   cells: [
@@ -75,6 +75,11 @@ console.log(result.cells[0]); // 第一个方格的页内坐标和内容框
   matrix: Array[7][10] // 每个元素为base64字符串或Buffer
 }
 ```
+
+说明：
+
+- 直接调用 `05_切分插件` 时，默认按 `7x10` 处理
+- 若需要根据纸张实际结构自动修正网格规格，请通过 `00_流水线插件` 调用
 
 ## 依赖
 

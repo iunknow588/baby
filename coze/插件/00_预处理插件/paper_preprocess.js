@@ -13,7 +13,7 @@ try {
 }
 
 const execFileAsync = promisify(execFile);
-const gridBoundaryNormalizePlugin = require('../05_0方格边界规范化插件/index');
+const { normalizeGridBoundaryGuides } = require('../05_切分插件/domain/guide_normalization');
 const DEFAULT_NEUTRAL_PAPER_COLOR = Object.freeze({
   r: 216,
   g: 216,
@@ -48,6 +48,197 @@ function normalizeCornerQuad(corners) {
     points[sums.indexOf(Math.max(...sums))],
     points[diffs.indexOf(Math.min(...diffs))]
   ];
+}
+
+function getQuadBounds(corners) {
+  const quad = normalizeCornerQuad(corners);
+  if (!quad) {
+    return null;
+  }
+  return {
+    left: Math.round(Math.min(...quad.map((point) => Number(point[0])))),
+    right: Math.round(Math.max(...quad.map((point) => Number(point[0])))),
+    top: Math.round(Math.min(...quad.map((point) => Number(point[1])))),
+    bottom: Math.round(Math.max(...quad.map((point) => Number(point[1]))))
+  };
+}
+
+function cloneSerializable(value) {
+  if (value == null) {
+    return value;
+  }
+  return JSON.parse(JSON.stringify(value));
+}
+
+function buildLockedInferredOuterFrameSnapshot(inferredOuterFrame, lockedAt = null) {
+  const snapshot = cloneSerializable(inferredOuterFrame);
+  if (!snapshot || typeof snapshot !== 'object') {
+    return snapshot;
+  }
+  snapshot.diagnostics = {
+    ...(snapshot.diagnostics || {}),
+    decoupledFromInnerFrame: true,
+    innerFrameFeedbackDisabled: true,
+    outerFrameLockedAt: lockedAt || null
+  };
+  return snapshot;
+}
+
+function solveLinearSystem(matrix, vector) {
+  const size = Array.isArray(matrix) ? matrix.length : 0;
+  if (!size || !Array.isArray(vector) || vector.length !== size) {
+    return null;
+  }
+  const augmented = matrix.map((row, index) => [...row.map(Number), Number(vector[index])]);
+  for (let pivot = 0; pivot < size; pivot += 1) {
+    let maxRow = pivot;
+    for (let row = pivot + 1; row < size; row += 1) {
+      if (Math.abs(augmented[row][pivot]) > Math.abs(augmented[maxRow][pivot])) {
+        maxRow = row;
+      }
+    }
+    if (Math.abs(augmented[maxRow][pivot]) < 1e-9) {
+      return null;
+    }
+    if (maxRow !== pivot) {
+      [augmented[pivot], augmented[maxRow]] = [augmented[maxRow], augmented[pivot]];
+    }
+    const pivotValue = augmented[pivot][pivot];
+    for (let column = pivot; column <= size; column += 1) {
+      augmented[pivot][column] /= pivotValue;
+    }
+    for (let row = 0; row < size; row += 1) {
+      if (row === pivot) {
+        continue;
+      }
+      const factor = augmented[row][pivot];
+      if (!factor) {
+        continue;
+      }
+      for (let column = pivot; column <= size; column += 1) {
+        augmented[row][column] -= factor * augmented[pivot][column];
+      }
+    }
+  }
+  return augmented.map((row) => row[size]);
+}
+
+function computeHomographyMatrix(sourceQuad, targetQuad) {
+  const src = normalizeCornerQuad(sourceQuad);
+  const dst = normalizeCornerQuad(targetQuad);
+  if (!src || !dst) {
+    return null;
+  }
+  const matrix = [];
+  const vector = [];
+  for (let index = 0; index < 4; index += 1) {
+    const [x, y] = src[index];
+    const [u, v] = dst[index];
+    matrix.push([x, y, 1, 0, 0, 0, -u * x, -u * y]);
+    vector.push(u);
+    matrix.push([0, 0, 0, x, y, 1, -v * x, -v * y]);
+    vector.push(v);
+  }
+  const solution = solveLinearSystem(matrix, vector);
+  if (!solution) {
+    return null;
+  }
+  return [
+    [solution[0], solution[1], solution[2]],
+    [solution[3], solution[4], solution[5]],
+    [solution[6], solution[7], 1]
+  ];
+}
+
+function applyHomographyToPoint(point, homography) {
+  if (!Array.isArray(point) || point.length < 2 || !homography) {
+    return null;
+  }
+  const x = Number(point[0]);
+  const y = Number(point[1]);
+  const denominator = (homography[2][0] * x) + (homography[2][1] * y) + homography[2][2];
+  if (!Number.isFinite(denominator) || Math.abs(denominator) < 1e-9) {
+    return null;
+  }
+  const mappedX = ((homography[0][0] * x) + (homography[0][1] * y) + homography[0][2]) / denominator;
+  const mappedY = ((homography[1][0] * x) + (homography[1][1] * y) + homography[1][2]) / denominator;
+  return [mappedX, mappedY];
+}
+
+function projectRectifiedCropBoxToSourceQuad(sourceQuad, rectifiedMeta, cropBox) {
+  const normalizedSourceQuad = normalizeCornerQuad(sourceQuad);
+  const width = Number(rectifiedMeta?.targetWidth) || 0;
+  const height = Number(rectifiedMeta?.targetHeight) || 0;
+  if (!normalizedSourceQuad || width <= 1 || height <= 1 || !cropBox) {
+    return null;
+  }
+  const left = Number(cropBox.left);
+  const top = Number(cropBox.top);
+  const right = Number(cropBox.right);
+  const bottom = Number(cropBox.bottom);
+  if (![left, top, right, bottom].every(Number.isFinite) || right <= left || bottom <= top) {
+    return null;
+  }
+  const targetQuad = [
+    [0, 0],
+    [width - 1, 0],
+    [width - 1, height - 1],
+    [0, height - 1]
+  ];
+  const inverseHomography = computeHomographyMatrix(targetQuad, normalizedSourceQuad);
+  if (!inverseHomography) {
+    return null;
+  }
+  const projectedQuad = normalizeCornerQuad([
+    applyHomographyToPoint([left, top], inverseHomography),
+    applyHomographyToPoint([right, top], inverseHomography),
+    applyHomographyToPoint([right, bottom], inverseHomography),
+    applyHomographyToPoint([left, bottom], inverseHomography)
+  ]);
+  if (!projectedQuad) {
+    return null;
+  }
+  const trims = {
+    left,
+    top,
+    right: Math.max(0, (width - 1) - right),
+    bottom: Math.max(0, (height - 1) - bottom)
+  };
+  return {
+    quad: projectedQuad,
+    bounds: getQuadBounds(projectedQuad),
+    rectifiedTrims: trims
+  };
+}
+
+function projectSourceQuadToRectifiedPlane(sourceQuad, rectifiedMeta, subjectQuad) {
+  const normalizedSourceQuad = normalizeCornerQuad(sourceQuad);
+  const normalizedSubjectQuad = normalizeCornerQuad(subjectQuad);
+  const width = Number(rectifiedMeta?.targetWidth) || 0;
+  const height = Number(rectifiedMeta?.targetHeight) || 0;
+  if (!normalizedSourceQuad || !normalizedSubjectQuad || width <= 1 || height <= 1) {
+    return null;
+  }
+  const targetQuad = [
+    [0, 0],
+    [width - 1, 0],
+    [width - 1, height - 1],
+    [0, height - 1]
+  ];
+  const homography = computeHomographyMatrix(normalizedSourceQuad, targetQuad);
+  if (!homography) {
+    return null;
+  }
+  const projectedQuad = normalizeCornerQuad(
+    normalizedSubjectQuad.map((point) => applyHomographyToPoint(point, homography))
+  );
+  if (!projectedQuad) {
+    return null;
+  }
+  return {
+    quad: projectedQuad,
+    bounds: getQuadBounds(projectedQuad)
+  };
 }
 
 function buildCornerPointsFromGuides(guides) {
@@ -90,14 +281,129 @@ function buildGuidesFromCornerQuad(corners, fallbackGuides, gridRows, gridCols) 
   if (![left, right, top, bottom].every(Number.isFinite) || right <= left || bottom <= top) {
     return fallbackGuides || null;
   }
-  return {
+  const remapGuidePeaks = (peaks, previousStart, previousEnd, nextStart, nextEnd, cells) => {
+    const sanitized = sanitizeGuidePeaks(peaks);
+    const targetCount = Math.max(1, Number(cells) || 1) + 1;
+    if (
+      sanitized.length === targetCount
+      && Number.isFinite(previousStart)
+      && Number.isFinite(previousEnd)
+      && previousEnd > previousStart
+      && Number.isFinite(nextStart)
+      && Number.isFinite(nextEnd)
+      && nextEnd > nextStart
+    ) {
+      return sanitized.map((value, index) => {
+        if (index === 0) {
+          return nextStart;
+        }
+        if (index === sanitized.length - 1) {
+          return nextEnd;
+        }
+        const ratio = (value - previousStart) / (previousEnd - previousStart);
+        return nextStart + ratio * (nextEnd - nextStart);
+      });
+    }
+    return buildUniformGuidePeaks(nextStart, nextEnd, Math.max(1, Number(cells) || 1));
+  };
+  const remappedGuides = {
     ...(fallbackGuides || {}),
     left,
     right,
     top,
     bottom,
-    xPeaks: buildUniformGuidePeaks(left, right, Math.max(1, Number(gridCols) || 1)),
-    yPeaks: buildUniformGuidePeaks(top, bottom, Math.max(1, Number(gridRows) || 1))
+    xPeaks: remapGuidePeaks(
+      fallbackGuides?.xPeaks,
+      Number(fallbackGuides?.left),
+      Number(fallbackGuides?.right),
+      left,
+      right,
+      gridCols
+    ),
+    yPeaks: remapGuidePeaks(
+      fallbackGuides?.yPeaks,
+      Number(fallbackGuides?.top),
+      Number(fallbackGuides?.bottom),
+      top,
+      bottom,
+      gridRows
+    )
+  };
+  const preserveCornerAnchoredAxisPeaks = (peaks, remappedPeaks, startBound, endBound, cells) => {
+    const expectedCount = Math.max(1, Number(cells) || 1) + 1;
+    const nextStart = Number(startBound);
+    const nextEnd = Number(endBound);
+    if (!Number.isFinite(nextStart) || !Number.isFinite(nextEnd) || nextEnd <= nextStart) {
+      return sanitizeGuidePeaks(peaks);
+    }
+    const candidatePeaks = sanitizeGuidePeaks(peaks);
+    const remappedAxisPeaks = sanitizeGuidePeaks(remappedPeaks);
+    const fallbackAxisPeaks = remappedAxisPeaks.length === expectedCount
+      ? remappedAxisPeaks
+      : buildUniformGuidePeaks(nextStart, nextEnd, Math.max(1, Number(cells) || 1));
+    const candidateAxisPeaks = candidatePeaks.length === expectedCount
+      ? candidatePeaks
+      : fallbackAxisPeaks;
+    const candidateIntervals = candidateAxisPeaks
+      .slice(1)
+      .map((value, index) => value - candidateAxisPeaks[index])
+      .filter((gap) => gap > 0);
+    const fallbackIntervals = fallbackAxisPeaks
+      .slice(1)
+      .map((value, index) => value - fallbackAxisPeaks[index])
+      .filter((gap) => gap > 0);
+    const referenceGap = median(
+      candidateIntervals.length ? candidateIntervals : fallbackIntervals
+    ) || Math.abs(nextEnd - nextStart) / Math.max(1, Number(cells) || 1);
+    const boundaryTolerance = Math.max(6, Math.round(referenceGap * 0.08));
+    const boundaryDrift = Math.max(
+      Math.abs((candidateAxisPeaks[0] ?? nextStart) - nextStart),
+      Math.abs((candidateAxisPeaks[candidateAxisPeaks.length - 1] ?? nextEnd) - nextEnd)
+    );
+    const resolvedPeaks = boundaryDrift > boundaryTolerance
+      ? [...fallbackAxisPeaks]
+      : [...candidateAxisPeaks];
+    if (!resolvedPeaks.length) {
+      return fallbackAxisPeaks;
+    }
+    resolvedPeaks[0] = nextStart;
+    resolvedPeaks[resolvedPeaks.length - 1] = nextEnd;
+    for (let index = 1; index < resolvedPeaks.length - 1; index += 1) {
+      resolvedPeaks[index] = clamp(
+        resolvedPeaks[index],
+        resolvedPeaks[index - 1] + 1,
+        resolvedPeaks[resolvedPeaks.length - 1] - Math.max(1, resolvedPeaks.length - 1 - index)
+      );
+    }
+    return resolvedPeaks;
+  };
+  const enrichedGuides = buildGuidesFromRawPeaks(remappedGuides, gridRows, gridCols);
+  const mergedGuides = enrichedGuides
+    ? {
+        ...remappedGuides,
+        ...enrichedGuides
+      }
+    : remappedGuides;
+  return {
+    ...mergedGuides,
+    left,
+    right,
+    top,
+    bottom,
+    xPeaks: preserveCornerAnchoredAxisPeaks(
+      mergedGuides?.xPeaks,
+      remappedGuides.xPeaks,
+      left,
+      right,
+      gridCols
+    ),
+    yPeaks: preserveCornerAnchoredAxisPeaks(
+      mergedGuides?.yPeaks,
+      remappedGuides.yPeaks,
+      top,
+      bottom,
+      gridRows
+    )
   };
 }
 
@@ -155,6 +461,20 @@ function preventStandaloneTopOutwardExpansion(corners, guides, topGuideConfirmat
   const yPeaks = Array.isArray(guides.yPeaks) ? guides.yPeaks.map(Number).filter(Number.isFinite) : [];
   const cellWidth = Math.max(24, Math.round(options.cellWidth || getMedianGap(xPeaks, 0)));
   const cellHeight = Math.max(24, Math.round(options.cellHeight || getMedianGap(yPeaks, 0)));
+  const yPattern = pickFirstNonNull(
+    guides?.yPattern,
+    guides?.yPatternDiagnostics?.mode,
+    guides?.globalPattern?.y?.mode,
+    guides?.globalPattern?.mode
+  );
+  const ySymmetryEligible = Boolean(pickFirstNonNull(
+    guides?.yPatternDiagnostics?.symmetry?.eligible,
+    guides?.globalPattern?.symmetry?.y?.eligible,
+    guides?.globalPattern?.symmetry?.eligible
+  ));
+  const leftAnchorScore = Number(topGuideConfirmation?.anchors?.leftTop?.score || 0);
+  const rightAnchorScore = Number(topGuideConfirmation?.anchors?.rightTop?.score || 0);
+  const minReliableAnchorScore = Math.max(42, Math.round(cellHeight * 0.22));
   if (![confirmedTop, left, right].every(Number.isFinite)) {
     return {
       corners: quad,
@@ -179,6 +499,11 @@ function preventStandaloneTopOutwardExpansion(corners, guides, topGuideConfirmat
   );
   const diagnostics = {
     confirmedTop,
+    yPattern: yPattern || null,
+    ySymmetryEligible,
+    leftAnchorScore: Number(leftAnchorScore.toFixed(3)),
+    rightAnchorScore: Number(rightAnchorScore.toFixed(3)),
+    minReliableAnchorScore,
     topOvershootThreshold,
     sideTolerance,
     leftOvershoot: Number(leftOvershoot.toFixed(3)),
@@ -187,6 +512,21 @@ function preventStandaloneTopOutwardExpansion(corners, guides, topGuideConfirmat
     rightSideTight,
     applied: shouldClamp
   };
+  if (
+    yPattern !== 'uniform-boundary-grid'
+    || !ySymmetryEligible
+    || Math.min(leftAnchorScore, rightAnchorScore) < minReliableAnchorScore
+  ) {
+    return {
+      corners: quad,
+      applied: false,
+      diagnostics: {
+        ...diagnostics,
+        applied: false,
+        skippedReason: 'top-guide-confirmation-not-stable-enough-for-clamp'
+      }
+    };
+  }
   if (!shouldClamp) {
     return {
       corners: quad,
@@ -249,6 +589,1640 @@ function buildGridCornerAnchors(corners, guides) {
       leftTopToRightBottom: [leftTop, rightBottom],
       rightTopToLeftBottom: [rightTop, leftBottom]
     }
+  };
+}
+
+function buildNamedCornerMapFromQuad(corners) {
+  const quad = normalizeCornerQuad(corners);
+  if (!quad) {
+    return null;
+  }
+  const [leftTop, rightTop, rightBottom, leftBottom] = quad;
+  return {
+    leftTop,
+    rightTop,
+    rightBottom,
+    leftBottom
+  };
+}
+
+function attachFinalAppliedCornerDiagnostics(cornerRefinement, corners, extra = {}) {
+  const quad = normalizeCornerQuad(corners);
+  if (!cornerRefinement || !quad) {
+    return cornerRefinement || null;
+  }
+  return {
+    ...cornerRefinement,
+    ...extra,
+    finalAppliedCorners: buildNamedCornerMapFromQuad(quad),
+    finalAppliedQuad: quad
+  };
+}
+
+function applyVerticalSideConsistency(refinedCorners, diagnostics, options = {}) {
+  const {
+    guideLeft = null,
+    guideRight = null,
+    cellWidth = 0,
+    enabled = false
+  } = options;
+  if (!enabled) {
+    return refinedCorners;
+  }
+
+  const applyOneSide = ({ side, topIndex, bottomIndex, topKey, bottomKey, guideX, inwardIsPositive }) => {
+    if (!Number.isFinite(guideX) || !Array.isArray(refinedCorners[topIndex]) || !Array.isArray(refinedCorners[bottomIndex])) {
+      return;
+    }
+    const topPoint = refinedCorners[topIndex];
+    const bottomPoint = refinedCorners[bottomIndex];
+    const bottomCornerDetail = diagnostics[bottomKey] || null;
+    const bottomAnchor = bottomCornerDetail?.bottomCornerAnchor || null;
+    const bottomAnchorPoint = Array.isArray(bottomAnchor?.afterClamp)
+      ? bottomAnchor.afterClamp
+      : (Array.isArray(bottomAnchor?.candidate) ? bottomAnchor.candidate : null);
+    const bottomAnchorX = Number(bottomAnchorPoint?.[0]);
+    const bottomAnchorScore = Number(bottomAnchor?.candidateScore);
+    const bottomCornerScore = Number(bottomCornerDetail?.cornerScore);
+    const preserveBottomAnchorTilt = Boolean(
+      bottomAnchor?.applied
+      && Number.isFinite(bottomAnchorX)
+      && Number.isFinite(bottomAnchorScore)
+      && bottomAnchorScore >= Math.max(96, bottomCornerScore * 1.22)
+    );
+    if (preserveBottomAnchorTilt) {
+      const skipPayload = {
+        skipped: true,
+        reason: 'preserve-strong-bottom-anchor-tilt',
+        [side === 'left' ? 'guideLeft' : 'guideRight']: Number(guideX),
+        anchorX: Number(bottomAnchorX.toFixed(3)),
+        anchorScore: Number(bottomAnchorScore.toFixed(3)),
+        cornerScore: Number.isFinite(bottomCornerScore) ? Number(bottomCornerScore.toFixed(3)) : null
+      };
+      if (diagnostics[topKey]) {
+        diagnostics[topKey][side === 'left' ? 'leftSideConsistency' : 'rightSideConsistency'] = {
+          ...skipPayload,
+          role: topKey
+        };
+      }
+      if (diagnostics[bottomKey]) {
+        diagnostics[bottomKey][side === 'left' ? 'leftSideConsistency' : 'rightSideConsistency'] = {
+          ...skipPayload,
+          role: bottomKey
+        };
+      }
+      return;
+    }
+    const outwardTolerance = Math.max(8, Math.round(cellWidth * 0.035));
+    const inwardTolerance = Math.max(8, Math.round(cellWidth * 0.03));
+    const averagedX = average([Number(topPoint[0]), Number(bottomPoint[0])]);
+    const spread = Math.abs(Number(topPoint[0]) - Number(bottomPoint[0]));
+    const guideWeight = spread <= Math.max(4, Math.round(cellWidth * 0.015)) ? 0.8 : 0.65;
+    const sharedX = inwardIsPositive
+      ? clamp((guideX * guideWeight) + (averagedX * (1 - guideWeight)), guideX - outwardTolerance, guideX + inwardTolerance)
+      : clamp((guideX * guideWeight) + (averagedX * (1 - guideWeight)), guideX - inwardTolerance, guideX + outwardTolerance);
+    const payload = {
+      before: side === 'left'
+        ? { leftTopX: Number(topPoint[0]), leftBottomX: Number(bottomPoint[0]) }
+        : { rightTopX: Number(topPoint[0]), rightBottomX: Number(bottomPoint[0]) },
+      [`averaged${side === 'left' ? 'Left' : 'Right'}X`]: Number(averagedX.toFixed(3)),
+      spread: Number(spread.toFixed(3)),
+      guideWeight: Number(guideWeight.toFixed(3)),
+      [`shared${side === 'left' ? 'Left' : 'Right'}X`]: Number(sharedX.toFixed(3)),
+      [side === 'left' ? 'guideLeft' : 'guideRight']: Number(guideX),
+      outwardTolerance,
+      inwardTolerance,
+      applied: Math.abs(Number(topPoint[0]) - sharedX) >= 1 || Math.abs(Number(bottomPoint[0]) - sharedX) >= 1
+    };
+    refinedCorners[topIndex] = [sharedX, topPoint[1]];
+    refinedCorners[bottomIndex] = [sharedX, bottomPoint[1]];
+    if (diagnostics[topKey]) {
+      diagnostics[topKey].refined = refinedCorners[topIndex];
+      diagnostics[topKey][side === 'left' ? 'leftSideConsistency' : 'rightSideConsistency'] = {
+        ...payload,
+        role: topKey
+      };
+    }
+    if (diagnostics[bottomKey]) {
+      diagnostics[bottomKey].refined = refinedCorners[bottomIndex];
+      diagnostics[bottomKey][side === 'left' ? 'leftSideConsistency' : 'rightSideConsistency'] = {
+        ...payload,
+        role: bottomKey
+      };
+    }
+  };
+
+  applyOneSide({ side: 'left', topIndex: 0, bottomIndex: 3, topKey: 'leftTop', bottomKey: 'leftBottom', guideX: guideLeft, inwardIsPositive: true });
+  applyOneSide({ side: 'right', topIndex: 1, bottomIndex: 2, topKey: 'rightTop', bottomKey: 'rightBottom', guideX: guideRight, inwardIsPositive: false });
+  return refinedCorners;
+}
+
+function applyVerticalSideTiltConsistency(refinedCorners, diagnostics, options = {}) {
+  const {
+    coarseVerticalEndpoints = null,
+    guideLeft = null,
+    guideRight = null,
+    cellWidth = 0,
+    enabled = false
+  } = options;
+  if (!enabled || !coarseVerticalEndpoints) {
+    return refinedCorners;
+  }
+
+  const configs = [
+    {
+      side: 'left',
+      topIndex: 0,
+      bottomIndex: 3,
+      topKey: 'leftTop',
+      bottomKey: 'leftBottom',
+      coarseTop: coarseVerticalEndpoints.leftTop,
+      coarseBottom: coarseVerticalEndpoints.leftBottom,
+      minX: Number.isFinite(guideLeft) ? guideLeft - Math.max(8, Math.round(cellWidth * 0.035)) : null,
+      maxX: Number.isFinite(guideLeft) ? guideLeft + Math.max(8, Math.round(cellWidth * 0.03)) : null
+    },
+    {
+      side: 'right',
+      topIndex: 1,
+      bottomIndex: 2,
+      topKey: 'rightTop',
+      bottomKey: 'rightBottom',
+      coarseTop: coarseVerticalEndpoints.rightTop,
+      coarseBottom: coarseVerticalEndpoints.rightBottom,
+      minX: Number.isFinite(guideRight) ? guideRight - Math.max(8, Math.round(cellWidth * 0.03)) : null,
+      maxX: Number.isFinite(guideRight) ? guideRight + Math.max(8, Math.round(cellWidth * 0.035)) : null
+    }
+  ];
+
+  for (const config of configs) {
+    if (
+      !Array.isArray(refinedCorners[config.topIndex])
+      || !Array.isArray(refinedCorners[config.bottomIndex])
+      || !Array.isArray(config.coarseTop)
+      || !Array.isArray(config.coarseBottom)
+    ) {
+      continue;
+    }
+    const localTop = refinedCorners[config.topIndex];
+    const localBottom = refinedCorners[config.bottomIndex];
+    const coarseTopX = Number(config.coarseTop[0]);
+    const coarseBottomX = Number(config.coarseBottom[0]);
+    const bottomCornerDetail = diagnostics[config.bottomKey] || null;
+    const bottomAnchor = bottomCornerDetail?.bottomCornerAnchor || null;
+    const bottomAnchorPoint = Array.isArray(bottomAnchor?.afterClamp)
+      ? bottomAnchor.afterClamp
+      : (Array.isArray(bottomAnchor?.candidate) ? bottomAnchor.candidate : null);
+    const bottomAnchorX = Number(bottomAnchorPoint?.[0]);
+    const bottomAnchorScore = Number(bottomAnchor?.candidateScore);
+    const bottomCornerScore = Number(bottomCornerDetail?.cornerScore);
+    const preserveBottomAnchorTilt = Boolean(
+      bottomAnchor?.applied
+      && Number.isFinite(bottomAnchorX)
+      && Number.isFinite(bottomAnchorScore)
+      && bottomAnchorScore >= Math.max(96, bottomCornerScore * 1.22)
+    );
+    const effectiveMinX = preserveBottomAnchorTilt && Number.isFinite(bottomAnchorX)
+      ? Math.min(
+        Number(config.minX),
+        bottomAnchorX - Math.max(6, Math.round(cellWidth * 0.03))
+      )
+      : Number(config.minX);
+    const effectiveMaxX = preserveBottomAnchorTilt && Number.isFinite(bottomAnchorX)
+      ? Math.max(
+        Number(config.maxX),
+        bottomAnchorX + Math.max(6, Math.round(cellWidth * 0.03))
+      )
+      : Number(config.maxX);
+    if (![coarseTopX, coarseBottomX, effectiveMinX, effectiveMaxX].every(Number.isFinite)) {
+      continue;
+    }
+    const localSpread = Math.abs(Number(localTop[0]) - Number(localBottom[0]));
+    const coarseSpread = Math.abs(coarseTopX - coarseBottomX);
+    let coarseWeight = localSpread <= Math.max(4, Math.round(cellWidth * 0.015)) ? 0.8 : 0.35;
+    if (preserveBottomAnchorTilt) {
+      coarseWeight = Math.min(coarseWeight, 0.28);
+    }
+    const tiltedTopX = clamp((coarseTopX * coarseWeight) + (Number(localTop[0]) * (1 - coarseWeight)), effectiveMinX, effectiveMaxX);
+    let tiltedBottomX = clamp((coarseBottomX * coarseWeight) + (Number(localBottom[0]) * (1 - coarseWeight)), effectiveMinX, effectiveMaxX);
+    if (preserveBottomAnchorTilt) {
+      tiltedBottomX = clamp(
+        (bottomAnchorX * 0.48) + (tiltedBottomX * 0.52),
+        effectiveMinX,
+        effectiveMaxX
+      );
+    }
+    const payload = {
+      side: config.side,
+      coarseTopX: Number(coarseTopX.toFixed(3)),
+      coarseBottomX: Number(coarseBottomX.toFixed(3)),
+      localTopX: Number(Number(localTop[0]).toFixed(3)),
+      localBottomX: Number(Number(localBottom[0]).toFixed(3)),
+      localSpread: Number(localSpread.toFixed(3)),
+      coarseSpread: Number(coarseSpread.toFixed(3)),
+      coarseWeight: Number(coarseWeight.toFixed(3)),
+      tiltedTopX: Number(tiltedTopX.toFixed(3)),
+      tiltedBottomX: Number(tiltedBottomX.toFixed(3)),
+      preserveBottomAnchorTilt,
+      bottomAnchorX: Number.isFinite(bottomAnchorX) ? Number(bottomAnchorX.toFixed(3)) : null,
+      applied: Math.abs(tiltedTopX - Number(localTop[0])) >= 1 || Math.abs(tiltedBottomX - Number(localBottom[0])) >= 1
+    };
+    refinedCorners[config.topIndex] = [tiltedTopX, localTop[1]];
+    refinedCorners[config.bottomIndex] = [tiltedBottomX, localBottom[1]];
+    if (diagnostics[config.topKey]) {
+      diagnostics[config.topKey].refined = refinedCorners[config.topIndex];
+      diagnostics[config.topKey].sideTiltConsistency = { ...payload, role: config.topKey };
+    }
+    if (diagnostics[config.bottomKey]) {
+      diagnostics[config.bottomKey].refined = refinedCorners[config.bottomIndex];
+      diagnostics[config.bottomKey].sideTiltConsistency = { ...payload, role: config.bottomKey };
+    }
+  }
+  return refinedCorners;
+}
+
+function protectCollapsedTopSpan(quad, diagnostics, guides, options = {}) {
+  const normalized = normalizeCornerQuad(quad);
+  const localLeftTop = diagnostics?.leftTop?.refined;
+  const localRightTop = diagnostics?.rightTop?.refined;
+  const localLeftBottom = diagnostics?.leftBottom?.refined;
+  const localRightBottom = diagnostics?.rightBottom?.refined;
+  const guideLeft = Number(guides?.left);
+  const guideRight = Number(guides?.right);
+  const cellWidth = Number(options.cellWidth) || 0;
+  if (
+    !normalized
+    || !Array.isArray(localLeftTop)
+    || !Array.isArray(localRightTop)
+    || !Array.isArray(localLeftBottom)
+    || !Array.isArray(localRightBottom)
+    || !Number.isFinite(guideLeft)
+    || !Number.isFinite(guideRight)
+    || guideRight <= guideLeft
+  ) {
+    return {
+      corners: normalized || quad,
+      applied: false,
+      diagnostics: null
+    };
+  }
+
+  const guideWidth = guideRight - guideLeft;
+  const topWidth = Math.abs(Number(normalized[1][0]) - Number(normalized[0][0]));
+  const bottomWidth = Math.abs(Number(normalized[2][0]) - Number(normalized[3][0]));
+  const localTopWidth = Math.abs(Number(localRightTop[0]) - Number(localLeftTop[0]));
+  const localBottomWidth = Math.abs(Number(localRightBottom[0]) - Number(localLeftBottom[0]));
+  const localLeftScore = Number(diagnostics?.leftTop?.cornerScore) || 0;
+  const localRightScore = Number(diagnostics?.rightTop?.cornerScore) || 0;
+  const collapseThreshold = Math.max(guideWidth * 0.3, cellWidth * 1.6, 120);
+  const localMinWidth = Math.max(guideWidth * 0.72, cellWidth * 4.2, 320);
+  const bottomMinWidth = Math.max(guideWidth * 0.72, cellWidth * 4.2, 320);
+  const repairDiagnostics = {
+    topWidth: Number(topWidth.toFixed(3)),
+    bottomWidth: Number(bottomWidth.toFixed(3)),
+    localTopWidth: Number(localTopWidth.toFixed(3)),
+    localBottomWidth: Number(localBottomWidth.toFixed(3)),
+    guideWidth: Number(guideWidth.toFixed(3)),
+    collapseThreshold: Number(collapseThreshold.toFixed(3)),
+    localLeftScore: Number(localLeftScore.toFixed(3)),
+    localRightScore: Number(localRightScore.toFixed(3)),
+    applied: false
+  };
+  const shouldRepair = (
+    topWidth < collapseThreshold
+    && localTopWidth >= localMinWidth
+    && bottomWidth >= bottomMinWidth
+    && localBottomWidth >= bottomMinWidth
+    && localLeftScore >= 58
+    && localRightScore >= 58
+  );
+  if (!shouldRepair) {
+    return {
+      corners: normalized,
+      applied: false,
+      diagnostics: repairDiagnostics
+    };
+  }
+
+  const outwardTolerance = Math.max(8, Math.round(cellWidth * 0.04));
+  const inwardTolerance = Math.max(10, Math.round(cellWidth * 0.06));
+  const repaired = [
+    [
+      clamp(Number(localLeftTop[0]), guideLeft - outwardTolerance, guideLeft + inwardTolerance),
+      Number(normalized[0][1])
+    ],
+    [
+      clamp(Number(localRightTop[0]), guideRight - inwardTolerance, guideRight + outwardTolerance),
+      Number(normalized[1][1])
+    ],
+    [...normalized[2]],
+    [...normalized[3]]
+  ];
+  repairDiagnostics.applied = true;
+  return {
+    corners: normalizeCornerQuad(repaired) || normalized,
+    applied: true,
+    diagnostics: repairDiagnostics
+  };
+}
+
+function applyHorizontalTiltConsistency(normalizedRefined, diagnostics, options = {}) {
+  const {
+    enabled = false,
+    leftBottomPriorityMode = false,
+    outerFrameDetected = false,
+    preferredTopLeftAnchor = null,
+    preferredTopRightAnchor = null,
+    preferredBottomLeftAnchor = null,
+    preferredBottomRightAnchor = null,
+    guideLeft = null,
+    guideRight = null,
+    cellWidth = 0,
+    cellHeight = 0
+  } = options;
+  if (!enabled || !normalizedRefined || !leftBottomPriorityMode || outerFrameDetected) {
+    return normalizeCornerQuad(normalizedRefined) || normalizedRefined;
+  }
+
+  const topBottomTiltConfigs = [
+    {
+      side: 'top',
+      leftIndex: 0,
+      rightIndex: 1,
+      leftKey: 'leftTop',
+      rightKey: 'rightTop',
+      leftAnchor: preferredTopLeftAnchor,
+      rightAnchor: preferredTopRightAnchor,
+      leftGuideX: guideLeft,
+      rightGuideX: guideRight
+    },
+    {
+      side: 'bottom',
+      leftIndex: 3,
+      rightIndex: 2,
+      leftKey: 'leftBottom',
+      rightKey: 'rightBottom',
+      leftAnchor: preferredBottomLeftAnchor,
+      rightAnchor: preferredBottomRightAnchor,
+      leftGuideX: guideLeft,
+      rightGuideX: guideRight
+    }
+  ];
+
+  for (const config of topBottomTiltConfigs) {
+    if (
+      !Array.isArray(config.leftAnchor)
+      || !Array.isArray(config.rightAnchor)
+      || !Array.isArray(normalizedRefined[config.leftIndex])
+      || !Array.isArray(normalizedRefined[config.rightIndex])
+    ) {
+      continue;
+    }
+    const guideXTolerance = Math.max(10, Math.round(cellWidth * 0.05));
+    const anchorBandY = average([Number(config.leftAnchor[1]), Number(config.rightAnchor[1])]);
+    const localBandY = average([Number(normalizedRefined[config.leftIndex][1]), Number(normalizedRefined[config.rightIndex][1])]);
+    const bandYTolerance = Math.max(20, Math.round(cellHeight * 0.12));
+    if (
+      !Number.isFinite(config.leftGuideX)
+      || !Number.isFinite(config.rightGuideX)
+      || Math.abs(Number(config.leftAnchor[0]) - config.leftGuideX) > guideXTolerance
+      || Math.abs(Number(config.rightAnchor[0]) - config.rightGuideX) > guideXTolerance
+      || !Number.isFinite(anchorBandY)
+      || !Number.isFinite(localBandY)
+    ) {
+      continue;
+    }
+    const localLeft = normalizedRefined[config.leftIndex];
+    const localRight = normalizedRefined[config.rightIndex];
+    const leftBottomCornerDetail = diagnostics[config.leftKey] || null;
+    const rightBottomCornerDetail = diagnostics[config.rightKey] || null;
+    const hasStrongBottomAnchorX = (detail) => {
+      const bottomAnchor = detail?.bottomCornerAnchor || null;
+      const anchorScore = Number(bottomAnchor?.candidateScore);
+      const cornerScore = Number(detail?.cornerScore);
+      return Boolean(
+        config.side === 'bottom'
+        && bottomAnchor?.applied
+        && Number.isFinite(anchorScore)
+        && anchorScore >= Math.max(96, cornerScore * 1.22)
+      );
+    };
+    const preserveLeftBottomAnchorX = hasStrongBottomAnchorX(leftBottomCornerDetail);
+    const preserveRightBottomAnchorX = hasStrongBottomAnchorX(rightBottomCornerDetail);
+    const localSpreadY = Math.abs(Number(localLeft[1]) - Number(localRight[1]));
+    const anchorSpreadY = Math.abs(Number(config.leftAnchor[1]) - Number(config.rightAnchor[1]));
+    const anchorWeight = localSpreadY <= Math.max(4, Math.round(cellHeight * 0.015)) ? 0.8 : 0.45;
+    if (Math.abs(anchorBandY - localBandY) > bandYTolerance * 1.6 && config.side === 'top') {
+      continue;
+    }
+    const sharedTiltY = clamp(
+      anchorBandY * anchorWeight + localBandY * (1 - anchorWeight),
+      anchorBandY - bandYTolerance,
+      anchorBandY + bandYTolerance
+    );
+    const adjustedLeft = [
+      preserveLeftBottomAnchorX
+        ? Number(localLeft[0])
+        : (Number(config.leftAnchor[0]) * anchorWeight + Number(localLeft[0]) * (1 - anchorWeight)),
+      sharedTiltY
+    ];
+    const adjustedRight = [
+      preserveRightBottomAnchorX
+        ? Number(localRight[0])
+        : (Number(config.rightAnchor[0]) * anchorWeight + Number(localRight[0]) * (1 - anchorWeight)),
+      sharedTiltY
+    ];
+    const payload = {
+      side: config.side,
+      anchorWeight: Number(anchorWeight.toFixed(3)),
+      localSpreadY: Number(localSpreadY.toFixed(3)),
+      anchorSpreadY: Number(anchorSpreadY.toFixed(3)),
+      anchorBandY: Number(anchorBandY.toFixed(3)),
+      localBandY: Number(localBandY.toFixed(3)),
+      sharedTiltY: Number(sharedTiltY.toFixed(3)),
+      leftAnchor: config.leftAnchor.map((value) => Number(Number(value).toFixed(3))),
+      rightAnchor: config.rightAnchor.map((value) => Number(Number(value).toFixed(3))),
+      preserveLeftBottomAnchorX,
+      preserveRightBottomAnchorX,
+      adjustedLeft: adjustedLeft.map((value) => Number(Number(value).toFixed(3))),
+      adjustedRight: adjustedRight.map((value) => Number(Number(value).toFixed(3))),
+      applied: (
+        Math.abs(adjustedLeft[0] - Number(localLeft[0])) >= 1
+        || Math.abs(adjustedLeft[1] - Number(localLeft[1])) >= 1
+        || Math.abs(adjustedRight[0] - Number(localRight[0])) >= 1
+        || Math.abs(adjustedRight[1] - Number(localRight[1])) >= 1
+      )
+    };
+    normalizedRefined[config.leftIndex] = adjustedLeft;
+    normalizedRefined[config.rightIndex] = adjustedRight;
+    if (diagnostics[config.leftKey]) {
+      diagnostics[config.leftKey].refined = adjustedLeft;
+      diagnostics[config.leftKey].horizontalTiltConsistency = { ...payload, role: config.leftKey };
+    }
+    if (diagnostics[config.rightKey]) {
+      diagnostics[config.rightKey].refined = adjustedRight;
+      diagnostics[config.rightKey].horizontalTiltConsistency = { ...payload, role: config.rightKey };
+    }
+  }
+  return normalizeCornerQuad(normalizedRefined) || normalizedRefined;
+}
+
+function computeConsistencyAdjustmentDiagnostics(diagnostics) {
+  const signals = Object.values(diagnostics || {}).map((detail) => {
+    if (!detail) {
+      return 0;
+    }
+    return [
+      detail.leftSideConsistency?.applied,
+      detail.rightSideConsistency?.applied,
+      detail.sideTiltConsistency?.applied,
+      detail.horizontalTiltConsistency?.applied,
+      detail.topGuideAdjusted?.applied
+    ].filter(Boolean).length;
+  });
+  return {
+    signals,
+    score: clamp01(average(signals) / 2.6),
+    perCorner: {
+      leftTop: Number(signals[0] || 0),
+      rightTop: Number(signals[1] || 0),
+      rightBottom: Number(signals[2] || 0),
+      leftBottom: Number(signals[3] || 0)
+    }
+  };
+}
+
+function buildQuadCandidateEntries(options = {}) {
+  const {
+    normalizedRefined,
+    localCornerConfidence = 0,
+    consistencyAdjustmentScore = 0,
+    edgeQuad = null,
+    edgeConfidence = 0,
+    localStabilizedQuad = null,
+    edgeStabilizedQuad = null,
+    wholeCornerConsistencyQuad = null,
+    selectiveWholeCornerConsistencyQuad = null,
+    topAnchorBandAlignedQuad = null,
+    uncertaintyRetainedQuad = null,
+    supportAlignedQuad = null,
+    selectiveReplacementQuad = null,
+    mergedQuad = null,
+    cellHeight = 0
+  } = options;
+  return [
+    {
+      name: 'local-corner-fallback',
+      quad: normalizedRefined,
+      supportScore: localCornerConfidence,
+      distancePenaltyScale: Math.max(20, cellHeight * 0.18)
+    },
+    {
+      name: 'consistency-aligned-local',
+      quad: normalizedRefined,
+      supportScore: clamp01(
+        localCornerConfidence * 0.92
+        + consistencyAdjustmentScore * 0.14
+      ),
+      distancePenaltyScale: Math.max(18, cellHeight * 0.16)
+    },
+    {
+      name: 'local-corner-stabilized',
+      quad: localStabilizedQuad,
+      supportScore: clamp01(
+        localCornerConfidence * 0.98
+        + consistencyAdjustmentScore * 0.08
+      ),
+      distancePenaltyScale: Math.max(20, cellHeight * 0.18)
+    },
+    {
+      name: 'dominant-edge-lines',
+      quad: edgeQuad,
+      supportScore: edgeConfidence,
+      distancePenaltyScale: Math.max(18, cellHeight * 0.16)
+    },
+    {
+      name: 'dominant-edge-stabilized',
+      quad: edgeStabilizedQuad,
+      supportScore: edgeConfidence * 0.99,
+      distancePenaltyScale: Math.max(18, cellHeight * 0.16)
+    },
+    {
+      name: 'whole-corner-consistency',
+      quad: wholeCornerConsistencyQuad,
+      supportScore: average([
+        localCornerConfidence * 0.98,
+        edgeConfidence * 0.78
+      ].filter((value) => Number.isFinite(value))),
+      distancePenaltyScale: Math.max(18, cellHeight * 0.15)
+    },
+    {
+      name: 'selective-whole-corner-consistency',
+      quad: selectiveWholeCornerConsistencyQuad,
+      supportScore: average([
+        localCornerConfidence * 0.99,
+        edgeConfidence * 0.82
+      ].filter((value) => Number.isFinite(value))),
+      distancePenaltyScale: Math.max(18, cellHeight * 0.14)
+    },
+    {
+      name: 'top-anchor-band-aligned',
+      quad: topAnchorBandAlignedQuad,
+      supportScore: average([
+        localCornerConfidence * 0.96,
+        edgeConfidence * 0.84
+      ].filter((value) => Number.isFinite(value))),
+      distancePenaltyScale: Math.max(18, cellHeight * 0.16)
+    },
+    {
+      name: 'uncertain-corner-geometry',
+      quad: uncertaintyRetainedQuad,
+      supportScore: average([
+        localCornerConfidence * 0.96,
+        edgeConfidence * 0.88
+      ].filter((value) => Number.isFinite(value))),
+      distancePenaltyScale: Math.max(18, cellHeight * 0.15)
+    },
+    {
+      name: 'support-aligned-guides',
+      quad: supportAlignedQuad,
+      supportScore: average([
+        localCornerConfidence * 0.8,
+        edgeConfidence * 0.72,
+        0.82
+      ].filter((value) => Number.isFinite(value))),
+      distancePenaltyScale: Math.max(16, cellHeight * 0.14)
+    },
+    {
+      name: 'selective-corner-replacement',
+      quad: selectiveReplacementQuad,
+      supportScore: average([
+        localCornerConfidence * 0.97,
+        edgeConfidence * 0.9
+      ].filter((value) => Number.isFinite(value))),
+      distancePenaltyScale: Math.max(18, cellHeight * 0.14)
+    },
+    {
+      name: 'blended-geometry',
+      quad: mergedQuad,
+      supportScore: average([localCornerConfidence, edgeConfidence].filter((value) => Number.isFinite(value))),
+      distancePenaltyScale: Math.max(18, cellHeight * 0.17)
+    }
+  ].filter((entry) => normalizeCornerQuad(entry.quad));
+}
+
+function scoreQuadCandidates(candidateEntries, options = {}) {
+  const {
+    guides = null,
+    rawGuideHints = null,
+    cellWidth = 0,
+    cellHeight = 0,
+    edgeLineInputs = null,
+    gray = null,
+    imageWidth = 0,
+    imageHeight = 0,
+    normalizedRefined = null,
+    perCornerConfidence = [],
+    preferredTopBandY = null,
+    preferredBottomBandY = null
+  } = options;
+  const strictTopLeftIntervalPattern = shouldApplyStrictTopLeftIntervalGateFromDiagnostics(rawGuideHints?.diagnostics || {});
+  return candidateEntries.map((entry) => {
+    const normalizedCandidate = normalizeCornerQuad(entry.quad);
+    const rectangularity = evaluateRectangularQuadQuality(normalizedCandidate, { guides });
+    const innerGridSupport = evaluateInnerGridSupportFromRawHints(
+      normalizedCandidate,
+      rawGuideHints,
+      {
+        cellWidth,
+        cellHeight
+      }
+    );
+    const edgeInkQuality = evaluateCandidateQuadInkQuality(
+      normalizedCandidate,
+      edgeLineInputs,
+      gray,
+      imageWidth,
+      imageHeight
+    );
+    const meanShift = average(
+      normalizedCandidate.map((point, index) => Math.hypot(
+        point[0] - normalizedRefined[index][0],
+        point[1] - normalizedRefined[index][1]
+      ))
+    );
+    const maxShift = Math.max(
+      ...normalizedCandidate.map((point, index) => Math.hypot(
+        point[0] - normalizedRefined[index][0],
+        point[1] - normalizedRefined[index][1]
+      ))
+    );
+    const weightedCornerShift = average(
+      normalizedCandidate.map((point, index) => {
+        const shift = Math.hypot(
+          point[0] - normalizedRefined[index][0],
+          point[1] - normalizedRefined[index][1]
+        );
+        const confidence = perCornerConfidence[index];
+        return shift * (0.35 + confidence * 0.65);
+      })
+    );
+    const distancePenalty = clamp01(meanShift / Math.max(1, entry.distancePenaltyScale));
+    const cornerRetentionScore = clamp01(
+      1 - weightedCornerShift / Math.max(8, cellHeight * 0.22)
+    );
+    const rectangleScore = rectangularity?.score ?? 0;
+    const guideScore = rectangularity?.guideSpanScore;
+    const topBandAlignmentScore = Number.isFinite(preferredTopBandY)
+      ? clamp01(
+          1 - (
+            average([normalizedCandidate[0][1], normalizedCandidate[1][1]].map((value) => Math.abs(value - preferredTopBandY)))
+            / Math.max(16, cellHeight * 0.22)
+          )
+        )
+      : 1;
+    const bottomBandAlignmentScore = Number.isFinite(preferredBottomBandY)
+      ? clamp01(
+          1 - (
+            average([normalizedCandidate[2][1], normalizedCandidate[3][1]].map((value) => Math.abs(value - preferredBottomBandY)))
+            / Math.max(18, cellHeight * 0.24)
+          )
+        )
+      : 1;
+    const bandAlignmentScore = average([topBandAlignmentScore, bottomBandAlignmentScore]);
+    const edgeInkScore = edgeInkQuality?.overallConfidence ?? 0;
+    const edgeDarknessScore = edgeInkQuality?.overallDarkness ?? 0;
+    const structuralMinEdgeScore = edgeInkQuality?.structuralMinConfidence ?? 0;
+    const innerGridSupportScore = innerGridSupport?.supportScore ?? 0;
+    const innerGridSupportEligibleCount = innerGridSupport?.eligibleCount ?? 0;
+    const innerGridSupportPenalty = innerGridSupport?.eligible
+      ? 1
+      : clamp01(
+          innerGridSupportScore * 0.12
+          + innerGridSupportEligibleCount * 0.22
+        );
+    const leftSupport = innerGridSupport?.sides?.left || null;
+    const topSupport = innerGridSupport?.sides?.top || null;
+    const topLeftSupportPriority = strictTopLeftIntervalPattern
+      ? average([
+          leftSupport?.eligible ? Math.max(Number(leftSupport?.score) || 0, Number(leftSupport?.intervalSupportScore) || 0) : 0,
+          topSupport?.eligible ? Math.max(Number(topSupport?.score) || 0, Number(topSupport?.intervalSupportScore) || 0) : 0
+        ])
+      : 0;
+    const missingTopAllowedPenalty = (
+      edgeInkQuality?.weakestEdge?.name === 'top'
+      && (edgeInkQuality?.weakestEdge?.confidence ?? 0) < 0.28
+    ) ? 1 : 0;
+    const structuralPenalty = missingTopAllowedPenalty
+      ? 1
+      : Math.max(
+          clamp01((structuralMinEdgeScore - 0.18) / 0.24),
+          clamp01((innerGridSupportEligibleCount - 2) / 2.2)
+        );
+    const totalScore = clamp01(
+      innerGridSupportScore * 0.38
+      + edgeInkScore * 0.2
+      + edgeDarknessScore * 0.12
+      + rectangleScore * 0.14
+      + bandAlignmentScore * 0.04
+      + (Number.isFinite(entry.supportScore) ? entry.supportScore : 0) * 0.04
+      + (Number.isFinite(guideScore) ? guideScore : rectangleScore) * 0.03
+      + cornerRetentionScore * 0.03
+      + topLeftSupportPriority * 0.02
+      + (1 - distancePenalty) * 0.02
+    ) * structuralPenalty * innerGridSupportPenalty;
+    return {
+      ...entry,
+      quad: normalizedCandidate,
+      innerGridSupport,
+      edgeInkQuality,
+      meanShift,
+      maxShift,
+      weightedCornerShift,
+      cornerRetentionScore,
+      bandAlignmentScore,
+      topBandAlignmentScore,
+      bottomBandAlignmentScore,
+      distancePenalty,
+      topLeftSupportPriority,
+      rectangularity,
+      totalScore
+    };
+  }).sort((a, b) => b.totalScore - a.totalScore);
+}
+
+function findQuadCandidateByName(scoredCandidates, name) {
+  return scoredCandidates.find((entry) => entry.name === name) || null;
+}
+
+function sortWholeConsistencyPriorityCandidates(candidates) {
+  return [...candidates].filter(Boolean).sort((a, b) => {
+    const rotatedDelta = (b.rectangularity?.rotatedRectangleScore || 0) - (a.rectangularity?.rotatedRectangleScore || 0);
+    if (Math.abs(rotatedDelta) > 1e-6) {
+      return rotatedDelta;
+    }
+    const rectangleDelta = (b.rectangularity?.score || 0) - (a.rectangularity?.score || 0);
+    if (Math.abs(rectangleDelta) > 1e-6) {
+      return rectangleDelta;
+    }
+    const retentionDelta = (b.cornerRetentionScore || 0) - (a.cornerRetentionScore || 0);
+    if (Math.abs(retentionDelta) > 1e-6) {
+      return retentionDelta;
+    }
+    return (a.maxShift || 0) - (b.maxShift || 0);
+  });
+}
+
+function sortCircleMiInnerFrameRescueCandidates(candidates, cellHeight = 0) {
+  return [...candidates].filter(Boolean).sort((a, b) => {
+    const aRescueScore = (
+      (a.rectangularity?.rotatedRectangleScore || 0) * 0.4
+      + (a.rectangularity?.score || 0) * 0.24
+      + (a.cornerRetentionScore || 0) * 0.24
+      + clamp01(1 - (a.maxShift || 0) / Math.max(36, cellHeight * 0.24)) * 0.12
+    );
+    const bRescueScore = (
+      (b.rectangularity?.rotatedRectangleScore || 0) * 0.4
+      + (b.rectangularity?.score || 0) * 0.24
+      + (b.cornerRetentionScore || 0) * 0.24
+      + clamp01(1 - (b.maxShift || 0) / Math.max(36, cellHeight * 0.24)) * 0.12
+    );
+    if (Math.abs(bRescueScore - aRescueScore) > 1e-6) {
+      return bRescueScore - aRescueScore;
+    }
+    return (b.totalScore || 0) - (a.totalScore || 0);
+  });
+}
+
+function selectRectanglePriorityCandidate(scoredCandidates) {
+  return scoredCandidates
+    .filter((entry) => entry.name !== 'local-corner-fallback' && entry.name !== 'local-corner-stabilized')
+    .sort((a, b) => {
+      const rectangleDelta = (b.rectangularity?.score || 0) - (a.rectangularity?.score || 0);
+      if (Math.abs(rectangleDelta) > 1e-6) {
+        return rectangleDelta;
+      }
+      return (b.supportScore || 0) - (a.supportScore || 0);
+    })[0] || null;
+}
+
+function applyCandidateOverride(currentBestCandidate, nextCandidate, reason) {
+  if (!nextCandidate || nextCandidate.name === currentBestCandidate?.name) {
+    return {
+      bestCandidate: currentBestCandidate,
+      overrideReason: null
+    };
+  }
+  return {
+    bestCandidate: nextCandidate,
+    overrideReason: reason
+  };
+}
+
+function applyConditionalCandidateOverride(config = {}) {
+  const {
+    currentBestCandidate = null,
+    shouldApply = false,
+    nextCandidate = null,
+    reason = ''
+  } = config;
+  if (!shouldApply) {
+    return {
+      bestCandidate: currentBestCandidate,
+      overrideReason: null
+    };
+  }
+  return applyCandidateOverride(currentBestCandidate, nextCandidate, reason);
+}
+
+function mergeCandidateOverrideResult(currentBestCandidate, currentOverrideReason, overrideResult = {}) {
+  return {
+    bestCandidate: overrideResult.bestCandidate || currentBestCandidate,
+    overrideReason: overrideResult.overrideReason || currentOverrideReason
+  };
+}
+
+function applyMergedCandidateOverride(currentBestCandidate, currentOverrideReason, overrideResult = {}) {
+  return mergeCandidateOverrideResult(currentBestCandidate, currentOverrideReason, overrideResult);
+}
+
+function applyMergedConditionalCandidateOverride(currentBestCandidate, currentOverrideReason, config = {}) {
+  return applyMergedCandidateOverride(
+    currentBestCandidate,
+    currentOverrideReason,
+    applyConditionalCandidateOverride(config)
+  );
+}
+
+function pickFullySupportedCandidates(scoredCandidates) {
+  return scoredCandidates
+    .filter((entry) => entry.innerGridSupport?.eligible)
+    .sort((a, b) => {
+      const supportDelta = (b.innerGridSupport?.supportScore || 0) - (a.innerGridSupport?.supportScore || 0);
+      if (Math.abs(supportDelta) > 1e-6) {
+        return supportDelta;
+      }
+      return (b.totalScore || 0) - (a.totalScore || 0);
+    });
+}
+
+function pickSupportPriorityCandidates(scoredCandidates) {
+  const maxInnerSupportCount = Math.max(
+    0,
+    ...scoredCandidates.map((entry) => entry.innerGridSupport?.eligibleCount || 0)
+  );
+  return scoredCandidates
+    .filter((entry) => (entry.innerGridSupport?.eligibleCount || 0) === maxInnerSupportCount)
+    .sort((a, b) => {
+      const supportDelta = (b.innerGridSupport?.supportScore || 0) - (a.innerGridSupport?.supportScore || 0);
+      if (Math.abs(supportDelta) > 1e-6) {
+        return supportDelta;
+      }
+      return (b.totalScore || 0) - (a.totalScore || 0);
+    });
+}
+
+function shouldPreferWholeConsistencyCandidate(config = {}) {
+  const {
+    currentBestCandidate = null,
+    wholeConsistencyPriorityCandidate = null,
+    cellHeight = 0
+  } = config;
+  if (
+    !wholeConsistencyPriorityCandidate
+    || !['local-corner-fallback', 'consistency-aligned-local', 'local-corner-stabilized'].includes(currentBestCandidate?.name)
+  ) {
+    return false;
+  }
+  const totalScoreGap = Math.abs((currentBestCandidate?.totalScore || 0) - (wholeConsistencyPriorityCandidate.totalScore || 0));
+  return Boolean(
+    totalScoreGap <= 0.005
+    && (wholeConsistencyPriorityCandidate.rectangularity?.score || 0) >= (currentBestCandidate?.rectangularity?.score || 0) + 0.008
+    && (wholeConsistencyPriorityCandidate.rectangularity?.rotatedRectangleScore || 0) >= (currentBestCandidate?.rectangularity?.rotatedRectangleScore || 0) + 0.015
+    && (wholeConsistencyPriorityCandidate.cornerRetentionScore || 0) >= 0.78
+    && (wholeConsistencyPriorityCandidate.maxShift || 0) <= Math.max(24, cellHeight * 0.18)
+  );
+}
+
+function shouldPreferStabilizedDominantEdgeCandidate(config = {}) {
+  const {
+    currentBestCandidate = null,
+    dominantEdgeLinesCandidate = null,
+    dominantEdgeStabilizedCandidate = null
+  } = config;
+  if (
+    currentBestCandidate?.name !== 'dominant-edge-lines'
+    || !dominantEdgeLinesCandidate
+    || !dominantEdgeStabilizedCandidate
+  ) {
+    return false;
+  }
+  return Boolean(
+    Math.abs((dominantEdgeLinesCandidate.totalScore || 0) - (dominantEdgeStabilizedCandidate.totalScore || 0)) <= 0.0025
+    && (dominantEdgeStabilizedCandidate.rectangularity?.rotatedRectangleScore || 0) >= (dominantEdgeLinesCandidate.rectangularity?.rotatedRectangleScore || 0) + 0.0005
+    && (dominantEdgeStabilizedCandidate.cornerRetentionScore || 0) >= Math.max(0.9, (dominantEdgeLinesCandidate.cornerRetentionScore || 0) - 0.01)
+    && (dominantEdgeStabilizedCandidate.maxShift || 0) <= Math.max(12, (dominantEdgeLinesCandidate.maxShift || 0) + 1.2)
+  );
+}
+
+function shouldRejectGuideAlignedCandidate(config = {}) {
+  const {
+    currentBestCandidate = null,
+    localStabilizedCandidate = null,
+    cellHeight = 0
+  } = config;
+  if (
+    currentBestCandidate?.name !== 'support-aligned-guides'
+    || !localStabilizedCandidate
+  ) {
+    return false;
+  }
+  return Boolean(
+    (currentBestCandidate.cornerRetentionScore || 0) <= 0.25
+    && (currentBestCandidate.maxShift || 0) >= Math.max(56, cellHeight * 0.3)
+    && (localStabilizedCandidate.cornerRetentionScore || 0) >= 0.9
+    && (localStabilizedCandidate.rectangularity?.score || 0) >= Math.max(0.92, (currentBestCandidate.rectangularity?.score || 0) - 0.02)
+    && (localStabilizedCandidate.supportScore || 0) >= 0.82
+  );
+}
+
+function selectTopLeftPriorityCandidate(scoredCandidates, currentBestCandidate, computeTopLeftPriority) {
+  const nearScoreCandidates = scoredCandidates
+    .filter((entry) => Math.abs((entry.totalScore || 0) - (currentBestCandidate?.totalScore || 0)) <= 0.0035)
+    .sort((a, b) => {
+      const topLeftDelta = computeTopLeftPriority(b) - computeTopLeftPriority(a);
+      if (Math.abs(topLeftDelta) > 1e-6) {
+        return topLeftDelta;
+      }
+      return (b.totalScore || 0) - (a.totalScore || 0);
+  });
+  return nearScoreCandidates[0] || null;
+}
+
+function buildWholeConsistencyPriorityPool(candidateMap = {}) {
+  return sortWholeConsistencyPriorityCandidates([
+    candidateMap.selectiveWholeCornerConsistencyCandidate,
+    candidateMap.topAnchorBandAlignedCandidate,
+    candidateMap.wholeCornerConsistencyCandidate,
+    candidateMap.uncertaintyRetainedCandidate,
+    candidateMap.selectiveReplacementCandidate,
+    candidateMap.blendedGeometryCandidate
+  ]);
+}
+
+function buildCircleMiInnerFrameRescuePool(candidateMap = {}, cellHeight = 0) {
+  return sortCircleMiInnerFrameRescueCandidates([
+    candidateMap.selectiveWholeCornerConsistencyCandidate,
+    candidateMap.topAnchorBandAlignedCandidate,
+    candidateMap.wholeCornerConsistencyCandidate,
+    candidateMap.uncertaintyRetainedCandidate,
+    candidateMap.selectiveReplacementCandidate,
+    candidateMap.blendedGeometryCandidate,
+    candidateMap.localStabilizedCandidate,
+    candidateMap.localFallbackCandidate
+  ], cellHeight);
+}
+
+function shouldPreferRectanglePriorityOverLocalFallback(config = {}) {
+  const {
+    currentBestCandidate = null,
+    localFallbackCandidate = null,
+    rectanglePriorityCandidate = null,
+    cellHeight = 0
+  } = config;
+  if (
+    currentBestCandidate?.name !== 'local-corner-fallback'
+    || !localFallbackCandidate
+    || !rectanglePriorityCandidate
+  ) {
+    return false;
+  }
+  return Boolean(
+    (rectanglePriorityCandidate.rectangularity?.score || 0) >= (localFallbackCandidate.rectangularity?.score || 0) + 0.015
+    && (rectanglePriorityCandidate.rectangularity?.rotatedRectangleScore || 0) >= (localFallbackCandidate.rectangularity?.rotatedRectangleScore || 0) + 0.18
+    && (rectanglePriorityCandidate.supportScore || 0) >= Math.max(0.55, (localFallbackCandidate.supportScore || 0) - 0.28)
+    && (rectanglePriorityCandidate.cornerRetentionScore || 0) >= 0.18
+    && (rectanglePriorityCandidate.maxShift || 0) <= Math.max(64, cellHeight * 0.42)
+  );
+}
+
+function buildQuadSelectionCandidateContext(scoredCandidates) {
+  const localFallbackCandidate = findQuadCandidateByName(scoredCandidates, 'local-corner-fallback');
+  const localStabilizedCandidate = findQuadCandidateByName(scoredCandidates, 'local-corner-stabilized');
+  const wholeCornerConsistencyCandidate = findQuadCandidateByName(scoredCandidates, 'whole-corner-consistency');
+  const selectiveWholeCornerConsistencyCandidate = findQuadCandidateByName(scoredCandidates, 'selective-whole-corner-consistency');
+  const topAnchorBandAlignedCandidate = findQuadCandidateByName(scoredCandidates, 'top-anchor-band-aligned');
+  const uncertaintyRetainedCandidate = findQuadCandidateByName(scoredCandidates, 'uncertain-corner-geometry');
+  const selectiveReplacementCandidate = findQuadCandidateByName(scoredCandidates, 'selective-corner-replacement');
+  const blendedGeometryCandidate = findQuadCandidateByName(scoredCandidates, 'blended-geometry');
+  const dominantEdgeLinesCandidate = findQuadCandidateByName(scoredCandidates, 'dominant-edge-lines');
+  const dominantEdgeStabilizedCandidate = findQuadCandidateByName(scoredCandidates, 'dominant-edge-stabilized');
+  return {
+    localFallbackCandidate,
+    localStabilizedCandidate,
+    wholeCornerConsistencyCandidate,
+    selectiveWholeCornerConsistencyCandidate,
+    topAnchorBandAlignedCandidate,
+    uncertaintyRetainedCandidate,
+    selectiveReplacementCandidate,
+    blendedGeometryCandidate,
+    dominantEdgeLinesCandidate,
+    dominantEdgeStabilizedCandidate,
+    rectanglePriorityCandidate: selectRectanglePriorityCandidate(scoredCandidates)
+  };
+}
+
+function computeQuadTopLeftPriority(entry) {
+  if (!entry) {
+    return 0;
+  }
+  if (Number.isFinite(entry.topLeftSupportPriority)) {
+    return Number(entry.topLeftSupportPriority);
+  }
+  const leftSupport = entry.innerGridSupport?.sides?.left || null;
+  const topSupport = entry.innerGridSupport?.sides?.top || null;
+  return average([
+    leftSupport?.eligible ? Math.max(Number(leftSupport?.score) || 0, Number(leftSupport?.intervalSupportScore) || 0) : 0,
+    topSupport?.eligible ? Math.max(Number(topSupport?.score) || 0, Number(topSupport?.intervalSupportScore) || 0) : 0
+  ]);
+}
+
+function applySupportPriorityOverride(config = {}) {
+  const {
+    currentBestCandidate = null,
+    fullySupportedCandidates = [],
+    supportPriorityCandidates = []
+  } = config;
+  if (fullySupportedCandidates.length && currentBestCandidate?.name !== fullySupportedCandidates[0]?.name) {
+    return applyCandidateOverride(currentBestCandidate, fullySupportedCandidates[0], 'prefer-fully-supported-inner-grid-quad');
+  }
+  if (!fullySupportedCandidates.length && supportPriorityCandidates.length && currentBestCandidate?.name !== supportPriorityCandidates[0]?.name) {
+    const supportPriorityCandidate = supportPriorityCandidates[0];
+    const totalScoreDelta = (supportPriorityCandidate?.totalScore || 0) - (currentBestCandidate?.totalScore || 0);
+    const topBandAlignmentDelta = (supportPriorityCandidate?.topBandAlignmentScore || 0) - (currentBestCandidate?.topBandAlignmentScore || 0);
+    const cornerRetentionDelta = (supportPriorityCandidate?.cornerRetentionScore || 0) - (currentBestCandidate?.cornerRetentionScore || 0);
+    const maxShiftDelta = (supportPriorityCandidate?.maxShift || 0) - (currentBestCandidate?.maxShift || 0);
+    const shouldOverride = (
+      totalScoreDelta >= -0.006
+      && topBandAlignmentDelta >= -0.18
+      && cornerRetentionDelta >= -0.12
+      && maxShiftDelta <= 12
+    );
+    if (shouldOverride) {
+      return applyCandidateOverride(currentBestCandidate, supportPriorityCandidate, 'prefer-candidate-with-most-inner-grid-support');
+    }
+  }
+  return {
+    bestCandidate: currentBestCandidate,
+    overrideReason: null
+  };
+}
+
+function applyTopLeftPriorityOverride(config = {}) {
+  const {
+    scoredCandidates = [],
+    currentBestCandidate = null
+  } = config;
+  const topLeftPriorityCandidate = selectTopLeftPriorityCandidate(
+    scoredCandidates,
+    currentBestCandidate,
+    computeQuadTopLeftPriority
+  );
+  return applyConditionalCandidateOverride({
+    currentBestCandidate,
+    shouldApply: Boolean(
+      topLeftPriorityCandidate
+      && topLeftPriorityCandidate.name !== currentBestCandidate?.name
+      && computeQuadTopLeftPriority(topLeftPriorityCandidate) >= computeQuadTopLeftPriority(currentBestCandidate) + 0.08
+      && (topLeftPriorityCandidate.innerGridSupport?.eligibleCount || 0) >= Math.max(2, (currentBestCandidate?.innerGridSupport?.eligibleCount || 0))
+      && (topLeftPriorityCandidate.cornerRetentionScore || 0) >= Math.max(0.85, (currentBestCandidate?.cornerRetentionScore || 0) - 0.03)
+      && (topLeftPriorityCandidate.maxShift || 0) <= Math.max(18, (currentBestCandidate?.maxShift || 0) + 2.5)
+    ),
+    nextCandidate: topLeftPriorityCandidate,
+    reason: 'prefer-top-left-supported-quad-when-total-scores-are-nearly-tied'
+  });
+}
+
+function applyQuadSelectionRule(state = {}, ruleApplier = null) {
+  if (typeof ruleApplier !== 'function') {
+    return state;
+  }
+  return ruleApplier(state) || state;
+}
+
+function buildQuadSelectionRuleAppliers(config = {}) {
+  const {
+    scoredCandidates = [],
+    cellHeight = 0,
+    circleMiGridProfile = false,
+    fullySupportedCandidates = [],
+    supportPriorityCandidates = [],
+    localFallbackCandidate = null,
+    localStabilizedCandidate = null,
+    rectanglePriorityCandidate = null,
+    dominantEdgeLinesCandidate = null,
+    dominantEdgeStabilizedCandidate = null,
+    wholeConsistencyPriorityCandidate = null,
+    circleMiInnerFrameRescueCandidate = null,
+    topAnchorBandAlignedCandidate = null
+  } = config;
+  return [
+    (state) => applyMergedConditionalCandidateOverride(state.bestCandidate, state.overrideReason, {
+      currentBestCandidate: state.bestCandidate,
+      shouldApply: !fullySupportedCandidates.length && shouldPreferRectanglePriorityOverLocalFallback({
+        currentBestCandidate: state.bestCandidate,
+        localFallbackCandidate,
+        rectanglePriorityCandidate,
+        cellHeight
+      }),
+      nextCandidate: rectanglePriorityCandidate,
+      reason: 'prefer-rotated-rectangle-fit-when-it-clearly-outweighs-local-corner-drift'
+    }),
+    (state) => applyMergedCandidateOverride(state.bestCandidate, state.overrideReason, applySupportPriorityOverride({
+      currentBestCandidate: state.bestCandidate,
+      fullySupportedCandidates,
+      supportPriorityCandidates
+    })),
+    (state) => applyMergedConditionalCandidateOverride(state.bestCandidate, state.overrideReason, {
+      currentBestCandidate: state.bestCandidate,
+      shouldApply: shouldPreferStabilizedDominantEdgeCandidate({
+        currentBestCandidate: state.bestCandidate,
+        dominantEdgeLinesCandidate,
+        dominantEdgeStabilizedCandidate
+      }),
+      nextCandidate: dominantEdgeStabilizedCandidate,
+      reason: 'prefer-stabilized-dominant-edge-quad-when-score-is-nearly-tied'
+    }),
+    (state) => applyMergedConditionalCandidateOverride(state.bestCandidate, state.overrideReason, {
+      currentBestCandidate: state.bestCandidate,
+      shouldApply: shouldRejectGuideAlignedCandidate({
+        currentBestCandidate: state.bestCandidate,
+        localStabilizedCandidate,
+        cellHeight
+      }),
+      nextCandidate: localStabilizedCandidate,
+      reason: 'reject-guide-aligned-quad-when-it-breaks-whole-corner-consistency'
+    }),
+    (state) => applyMergedConditionalCandidateOverride(state.bestCandidate, state.overrideReason, {
+      currentBestCandidate: state.bestCandidate,
+      shouldApply: shouldPreferWholeConsistencyCandidate({
+        currentBestCandidate: state.bestCandidate,
+        wholeConsistencyPriorityCandidate,
+        cellHeight
+      }),
+      nextCandidate: wholeConsistencyPriorityCandidate,
+      reason: 'prefer-whole-corner-consistent-quad-when-it-improves-rectangle-fit-with-limited-drift'
+    }),
+    (state) => applyMergedConditionalCandidateOverride(state.bestCandidate, state.overrideReason, {
+      currentBestCandidate: state.bestCandidate,
+      shouldApply: shouldApplyCircleMiDominantEdgeRescue({
+        circleMiGridProfile,
+        currentBestCandidate: state.bestCandidate,
+        rescueCandidate: circleMiInnerFrameRescueCandidate,
+        cellHeight
+      }),
+      nextCandidate: circleMiInnerFrameRescueCandidate,
+      reason: 'reject-dark-edge-dominant-quad-for-circle-mi-inner-frame-when-support-is-missing'
+    }),
+    (state) => applyMergedConditionalCandidateOverride(state.bestCandidate, state.overrideReason, {
+      currentBestCandidate: state.bestCandidate,
+      shouldApply: shouldPreferWholeCornerOverUncertainForCircleMi({
+        circleMiGridProfile,
+        currentBestCandidate: state.bestCandidate,
+        wholeConsistencyPriorityCandidate,
+        cellHeight
+      }),
+      nextCandidate: wholeConsistencyPriorityCandidate,
+      reason: 'prefer-whole-corner-fit-over-uncertain-corner-geometry-for-circle-mi-grid-when-nearly-tied'
+    }),
+    (state) => applyMergedConditionalCandidateOverride(state.bestCandidate, state.overrideReason, {
+      currentBestCandidate: state.bestCandidate,
+      shouldApply: shouldPreferTopAnchorBandAlignedCandidate({
+        currentBestCandidate: state.bestCandidate,
+        topAnchorBandAlignedCandidate,
+        cellHeight
+      }),
+      nextCandidate: topAnchorBandAlignedCandidate,
+      reason: 'prefer-top-anchor-band-aligned-quad-when-it-improves-top-band-consistency-with-similar-geometry'
+    }),
+    (state) => applyMergedCandidateOverride(state.bestCandidate, state.overrideReason, applyTopLeftPriorityOverride({
+      scoredCandidates,
+      currentBestCandidate: state.bestCandidate
+    }))
+  ];
+}
+
+function selectBestQuadCandidate(scoredCandidates, options = {}) {
+  const {
+    cellHeight = 0,
+    patternProfile = null,
+    outerFrameDetected = false
+  } = options;
+  const circleMiGridProfile = isCircleMiGridProfile(patternProfile, outerFrameDetected);
+  let bestCandidate = scoredCandidates[0] || null;
+  const fullySupportedCandidates = pickFullySupportedCandidates(scoredCandidates);
+  if (fullySupportedCandidates.length) {
+    bestCandidate = fullySupportedCandidates[0];
+  }
+  const supportPriorityCandidates = pickSupportPriorityCandidates(scoredCandidates);
+  const candidateMap = buildQuadSelectionCandidateContext(scoredCandidates);
+  const {
+    localFallbackCandidate,
+    localStabilizedCandidate,
+    topAnchorBandAlignedCandidate,
+  } = candidateMap;
+  const { rectanglePriorityCandidate, dominantEdgeLinesCandidate, dominantEdgeStabilizedCandidate } = candidateMap;
+  const wholeConsistencyPriorityPool = buildWholeConsistencyPriorityPool(candidateMap);
+  const wholeConsistencyPriorityCandidate = wholeConsistencyPriorityPool[0] || null;
+  const circleMiInnerFrameRescuePool = buildCircleMiInnerFrameRescuePool(candidateMap, cellHeight);
+  const circleMiInnerFrameRescueCandidate = circleMiInnerFrameRescuePool[0] || null;
+  let selectionState = {
+    bestCandidate,
+    overrideReason: null
+  };
+  const ruleAppliers = buildQuadSelectionRuleAppliers({
+    scoredCandidates,
+    cellHeight,
+    circleMiGridProfile,
+    fullySupportedCandidates,
+    supportPriorityCandidates,
+    localFallbackCandidate,
+    localStabilizedCandidate,
+    rectanglePriorityCandidate,
+    dominantEdgeLinesCandidate,
+    dominantEdgeStabilizedCandidate,
+    wholeConsistencyPriorityCandidate,
+    circleMiInnerFrameRescueCandidate,
+    topAnchorBandAlignedCandidate
+  });
+  for (const ruleApplier of ruleAppliers) {
+    selectionState = applyQuadSelectionRule(selectionState, ruleApplier);
+  }
+  bestCandidate = selectionState.bestCandidate;
+  const { overrideReason } = selectionState;
+  return {
+    bestCandidate,
+    overrideReason,
+    fullySupportedCandidates,
+    supportPriorityCandidates,
+    localFallbackCandidate,
+    rectanglePriorityCandidate
+  };
+}
+
+function buildQuadAverageBounds(quad) {
+  const normalized = normalizeCornerQuad(quad);
+  if (!normalized) {
+    return null;
+  }
+  const [lt, rt, rb, lb] = normalized;
+  return {
+    left: average([lt[0], lb[0]]),
+    right: average([rt[0], rb[0]]),
+    top: average([lt[1], rt[1]]),
+    bottom: average([lb[1], rb[1]])
+  };
+}
+
+function resolveWeakTopBandPreference(config = {}) {
+  const {
+    preferredTopBandY = null,
+    localTopBandY = null,
+    coarseTopY = null,
+    coarseVerticalEndpointTopY = null,
+    topContinuityWeak = false,
+    cellHeight = 0
+  } = config;
+  if (
+    !Number.isFinite(preferredTopBandY)
+    || !Number.isFinite(localTopBandY)
+    || !topContinuityWeak
+  ) {
+    return Number.isFinite(preferredTopBandY) ? preferredTopBandY : null;
+  }
+  const topBandMismatchThreshold = Math.max(18, cellHeight * 0.22);
+  if (preferredTopBandY > localTopBandY + topBandMismatchThreshold) {
+    const fallbackTopBandY = [
+      localTopBandY,
+      coarseTopY,
+      coarseVerticalEndpointTopY
+    ].filter((value) => Number.isFinite(value) && value <= preferredTopBandY);
+    return fallbackTopBandY.length ? Math.min(...fallbackTopBandY) : preferredTopBandY;
+  }
+  if (preferredTopBandY < localTopBandY - topBandMismatchThreshold) {
+    const fallbackTopBandY = [
+      coarseVerticalEndpointTopY,
+      coarseTopY
+    ].filter((value) => (
+      Number.isFinite(value)
+      && value >= preferredTopBandY
+      && value <= localTopBandY + topBandMismatchThreshold
+    ));
+    return fallbackTopBandY.length ? Math.max(...fallbackTopBandY) : preferredTopBandY;
+  }
+  return preferredTopBandY;
+}
+
+function buildTopAnchorBandAlignedQuad(corners, options = {}) {
+  const quad = normalizeCornerQuad(corners);
+  if (!quad) {
+    return null;
+  }
+  const {
+    preferredTopLeftAnchor = null,
+    preferredTopRightAnchor = null,
+    preferredTopBandY = null,
+    cellHeight = 0,
+    topContinuity = null
+  } = options;
+  if (
+    !Array.isArray(preferredTopLeftAnchor)
+    || !Array.isArray(preferredTopRightAnchor)
+    || !Number.isFinite(preferredTopBandY)
+  ) {
+    return null;
+  }
+  const currentAnchorBandY = average([
+    Number(preferredTopLeftAnchor[1]),
+    Number(preferredTopRightAnchor[1])
+  ].filter(Number.isFinite));
+  if (!Number.isFinite(currentAnchorBandY)) {
+    return null;
+  }
+  const anchorBandDelta = Math.abs(currentAnchorBandY - preferredTopBandY);
+  const maxAnchorBandDelta = Math.max(10, cellHeight * 0.14);
+  const continuityLongestRunRatio = Number(topContinuity?.longestRunRatio) || 0;
+  const continuityCoverageRatio = Number(topContinuity?.coverageRatio) || 0;
+  if (
+    anchorBandDelta > maxAnchorBandDelta
+    || continuityLongestRunRatio < 0.58
+    || continuityCoverageRatio < 0.82
+  ) {
+    return null;
+  }
+  const shiftedTopLeftAnchor = [
+    Number(preferredTopLeftAnchor[0]),
+    Number(preferredTopLeftAnchor[1]) + (preferredTopBandY - currentAnchorBandY)
+  ];
+  const shiftedTopRightAnchor = [
+    Number(preferredTopRightAnchor[0]),
+    Number(preferredTopRightAnchor[1]) + (preferredTopBandY - currentAnchorBandY)
+  ];
+  const shiftedTopLine = buildLineFromEndAnchors(shiftedTopLeftAnchor, shiftedTopRightAnchor, null);
+  const leftSideLine = buildLineFromEndAnchors(quad[0], quad[3], null);
+  const rightSideLine = buildLineFromEndAnchors(quad[1], quad[2], null);
+  const nextLeftTop = intersectLines(shiftedTopLine, leftSideLine);
+  const nextRightTop = intersectLines(shiftedTopLine, rightSideLine);
+  if (!Array.isArray(nextLeftTop) || !Array.isArray(nextRightTop)) {
+    return null;
+  }
+  return normalizeCornerQuad([
+    nextLeftTop,
+    nextRightTop,
+    quad[2],
+    quad[3]
+  ]) || quad;
+}
+
+function isCircleMiGridProfile(patternProfile = null, outerFrameDetected = false) {
+  return Boolean(patternProfile?.family === 'circle-mi-grid' && !outerFrameDetected);
+}
+
+function shouldPreferTopAnchorBandAlignedCandidate(config = {}) {
+  const {
+    currentBestCandidate = null,
+    topAnchorBandAlignedCandidate = null,
+    cellHeight = 0
+  } = config;
+  if (
+    !topAnchorBandAlignedCandidate
+    || !['selective-whole-corner-consistency', 'whole-corner-consistency'].includes(currentBestCandidate?.name)
+  ) {
+    return false;
+  }
+  return Boolean(
+    Math.abs((currentBestCandidate?.totalScore || 0) - (topAnchorBandAlignedCandidate.totalScore || 0)) <= 0.0012
+    && (topAnchorBandAlignedCandidate.bandAlignmentScore || 0) >= (currentBestCandidate?.bandAlignmentScore || 0) + 0.02
+    && (topAnchorBandAlignedCandidate.rectangularity?.rotatedRectangleScore || 0) >= Math.max(0.82, (currentBestCandidate?.rectangularity?.rotatedRectangleScore || 0) - 0.01)
+    && (topAnchorBandAlignedCandidate.cornerRetentionScore || 0) >= Math.max(0.42, (currentBestCandidate?.cornerRetentionScore || 0) - 0.08)
+    && (topAnchorBandAlignedCandidate.maxShift || 0) <= Math.max((currentBestCandidate?.maxShift || 0) + Math.max(10, cellHeight * 0.05), cellHeight * 0.24)
+  );
+}
+
+function shouldApplyCircleMiDominantEdgeRescue(config = {}) {
+  const {
+    circleMiGridProfile = false,
+    currentBestCandidate = null,
+    rescueCandidate = null,
+    cellHeight = 0
+  } = config;
+  if (
+    !circleMiGridProfile
+    || !['dominant-edge-lines', 'dominant-edge-stabilized'].includes(currentBestCandidate?.name)
+    || currentBestCandidate?.innerGridSupport?.eligible
+    || (currentBestCandidate?.innerGridSupport?.eligibleCount || 0) !== 0
+    || (currentBestCandidate?.maxShift || 0) < Math.max(72, cellHeight * 0.34)
+    || !rescueCandidate
+    || rescueCandidate.name === currentBestCandidate?.name
+  ) {
+    return false;
+  }
+  return Boolean(
+    Math.abs((currentBestCandidate?.totalScore || 0) - (rescueCandidate.totalScore || 0)) <= 0.0045
+    && (rescueCandidate.rectangularity?.rotatedRectangleScore || 0) >= Math.max(0.78, (currentBestCandidate?.rectangularity?.rotatedRectangleScore || 0) - 0.02)
+    && (
+      (rescueCandidate.cornerRetentionScore || 0) >= Math.max(0.44, (currentBestCandidate?.cornerRetentionScore || 0) + 0.03)
+      || (rescueCandidate.rectangularity?.rotatedRectangleScore || 0) >= (currentBestCandidate?.rectangularity?.rotatedRectangleScore || 0) + 0.018
+    )
+    && (rescueCandidate.maxShift || 0) <= (currentBestCandidate?.maxShift || 0) - Math.max(28, cellHeight * 0.14)
+  );
+}
+
+function shouldPreferWholeCornerOverUncertainForCircleMi(config = {}) {
+  const {
+    circleMiGridProfile = false,
+    currentBestCandidate = null,
+    wholeConsistencyPriorityCandidate = null,
+    cellHeight = 0
+  } = config;
+  if (
+    !circleMiGridProfile
+    || currentBestCandidate?.name !== 'uncertain-corner-geometry'
+    || !wholeConsistencyPriorityCandidate
+    || !['selective-whole-corner-consistency', 'whole-corner-consistency'].includes(wholeConsistencyPriorityCandidate.name)
+  ) {
+    return false;
+  }
+  return Boolean(
+    Math.abs((currentBestCandidate?.totalScore || 0) - (wholeConsistencyPriorityCandidate.totalScore || 0)) <= 0.0015
+    && (wholeConsistencyPriorityCandidate.rectangularity?.rotatedRectangleScore || 0) >= (currentBestCandidate?.rectangularity?.rotatedRectangleScore || 0) + 0.16
+    && (wholeConsistencyPriorityCandidate.bandAlignmentScore || 0) >= (currentBestCandidate?.bandAlignmentScore || 0) + 0.015
+    && (wholeConsistencyPriorityCandidate.maxShift || 0) <= Math.max((currentBestCandidate?.maxShift || 0) + Math.max(18, cellHeight * 0.06), cellHeight * 0.18)
+  );
+}
+
+function shouldApplyStrictTopLeftIntervalGateFromDiagnostics(diagnostics = {}) {
+  return Boolean(
+    diagnostics?.globalPattern?.patternProfile?.family === 'inner-dashed-box-grid'
+    || diagnostics?.globalPattern?.patternProfile?.settings?.allowTopRecoveryByInnerGuide
+    || diagnostics?.overallPattern === 'uniform-cells-with-inner-dashed'
+  );
+}
+
+function evaluateInnerGridSideSupport(config = {}) {
+  const {
+    side,
+    gap,
+    medianGap,
+    boundaryGap = 0,
+    stableRun,
+    globalStableCount = 0,
+    requireInferStableRun = 2,
+    intervalEvidence = null
+  } = config;
+  if (!Number.isFinite(gap) || !Number.isFinite(medianGap) || medianGap <= 0) {
+    return {
+      side,
+      eligible: false,
+      score: 0,
+      mode: 'missing-inner-support',
+      gap: Number.isFinite(gap) ? Number(gap.toFixed(3)) : null,
+      medianGap: Number.isFinite(medianGap) ? Number(medianGap.toFixed(3)) : null,
+      stableRun: Number.isFinite(stableRun) ? stableRun : 0,
+      globalStableCount: Number.isFinite(globalStableCount) ? globalStableCount : 0
+    };
+  }
+  const absGap = Math.abs(gap);
+  const inferredGapTolerance = Math.max(16, medianGap * 0.3);
+  const boundaryGapTolerance = (
+    Number.isFinite(boundaryGap) && boundaryGap > 0
+  )
+    ? Math.max(18, boundaryGap * 0.3)
+    : 0;
+  const onInnerLineScore = clamp01(1 - absGap / Math.max(10, medianGap * 0.22));
+  const oneCellOutScore = clamp01(1 - Math.abs(absGap - medianGap) / inferredGapTolerance);
+  const boundaryGapScore = (
+    Number.isFinite(boundaryGap) && boundaryGap > 0
+  )
+    ? clamp01(1 - Math.abs(absGap - boundaryGap) / boundaryGapTolerance)
+    : 0;
+  const stableScore = clamp01(Math.max(Number(stableRun) || 0, Number(globalStableCount) || 0) / 5);
+  const onInnerEligible = onInnerLineScore >= 0.72 && (Number(stableRun) || 0) >= 1;
+  const inferredEligible = (
+    oneCellOutScore >= 0.72
+    && (
+      (Number(stableRun) || 0) >= requireInferStableRun
+      || (Number(globalStableCount) || 0) >= Math.max(4, requireInferStableRun + 2)
+    )
+  );
+  const boundaryEligible = (
+    boundaryGapScore >= 0.72
+    && (
+      (Number(stableRun) || 0) >= requireInferStableRun
+      || (Number(globalStableCount) || 0) >= Math.max(4, requireInferStableRun + 2)
+    )
+  );
+  const preferBoundary = boundaryEligible && boundaryGapScore >= Math.max(onInnerLineScore, oneCellOutScore);
+  const preferInferred = !preferBoundary && inferredEligible && oneCellOutScore >= onInnerLineScore;
+  const intervalSupportScore = clamp01(Number(intervalEvidence?.supportScore) || 0);
+  const intervalSupported = Boolean(intervalEvidence?.supported);
+  const intervalEligible = (
+    intervalSupported
+    && (
+      (Number(stableRun) || 0) >= Math.max(1, requireInferStableRun - 1)
+      || (Number(globalStableCount) || 0) >= Math.max(3, requireInferStableRun + 1)
+      || Math.max(onInnerLineScore, oneCellOutScore, boundaryGapScore) >= 0.56
+    )
+  );
+  const score = Math.max(
+    onInnerLineScore * (0.35 + stableScore * 0.65),
+    oneCellOutScore * (0.35 + stableScore * 0.65),
+    boundaryGapScore * (0.35 + stableScore * 0.65),
+    intervalSupportScore * (0.42 + stableScore * 0.58)
+  );
+  return {
+    side,
+    eligible: onInnerEligible || inferredEligible || boundaryEligible || intervalEligible,
+    score,
+    mode: (
+      intervalEligible && intervalSupportScore >= Math.max(onInnerLineScore, oneCellOutScore, boundaryGapScore)
+    )
+      ? 'equal-interval-supported'
+      : (
+        preferBoundary
+          ? 'aligned-with-major-boundary-guide'
+          : (preferInferred ? 'one-cell-outside-supported' : (onInnerEligible ? 'aligned-with-first-inner-line' : 'unsupported'))
+      ),
+    gap: Number(absGap.toFixed(3)),
+    medianGap: Number(medianGap.toFixed(3)),
+    boundaryGap: Number.isFinite(boundaryGap) ? Number(boundaryGap.toFixed(3)) : null,
+    stableRun: Number(stableRun) || 0,
+    globalStableCount: Number(globalStableCount) || 0,
+    onInnerLineScore: Number(onInnerLineScore.toFixed(4)),
+    oneCellOutScore: Number(oneCellOutScore.toFixed(4)),
+    boundaryGapScore: Number(boundaryGapScore.toFixed(4)),
+    intervalSupportScore: Number(intervalSupportScore.toFixed(4)),
+    intervalEvidence: intervalEvidence
+      ? {
+          supported: intervalSupported,
+          supportScore: Number(intervalSupportScore.toFixed(4)),
+          sameGapScore: Number(Number(intervalEvidence.sameGapScore || 0).toFixed(4)),
+          adjacentGapScore: Number(Number(intervalEvidence.adjacentGapScore || 0).toFixed(4)),
+          pairConsistencyScore: Number(Number(intervalEvidence.pairConsistencyScore || 0).toFixed(4)),
+          stableRunScore: Number(Number(intervalEvidence.stableRunScore || 0).toFixed(4)),
+          firstGap: Number.isFinite(intervalEvidence.firstGap) ? Number(intervalEvidence.firstGap.toFixed(3)) : null,
+          secondGap: Number.isFinite(intervalEvidence.secondGap) ? Number(intervalEvidence.secondGap.toFixed(3)) : null,
+          medianGap: Number.isFinite(intervalEvidence.medianGap) ? Number(intervalEvidence.medianGap.toFixed(3)) : null
+        }
+      : null
+  };
+}
+
+function buildInnerGridIntervalEvidence(config = {}) {
+  const {
+    firstGap = null,
+    secondGap = null,
+    medianGap = null,
+    stableRun = 0,
+    globalStableCount = 0
+  } = config;
+  if (!Number.isFinite(medianGap) || medianGap <= 0) {
+    return null;
+  }
+  const stableRunScore = clamp01(Math.max(Number(stableRun) || 0, Number(globalStableCount) || 0) / 5);
+  const sameGapScore = Number.isFinite(firstGap)
+    ? clamp01(1 - Math.abs(Math.abs(firstGap) - medianGap) / Math.max(14, medianGap * 0.28))
+    : 0;
+  const adjacentGapScore = (
+    Number.isFinite(firstGap)
+    && Number.isFinite(secondGap)
+  )
+    ? clamp01(1 - Math.abs(Math.abs(secondGap) - medianGap) / Math.max(14, medianGap * 0.28))
+    : 0;
+  const pairConsistencyScore = (
+    Number.isFinite(firstGap)
+    && Number.isFinite(secondGap)
+  )
+    ? clamp01(1 - Math.abs(Math.abs(firstGap) - Math.abs(secondGap)) / Math.max(12, medianGap * 0.18))
+    : 0;
+  const supportScore = clamp01(
+    sameGapScore * 0.24
+    + adjacentGapScore * 0.24
+    + pairConsistencyScore * 0.32
+    + stableRunScore * 0.2
+  );
+  return {
+    supported: (
+      supportScore >= 0.68
+      && Math.max(pairConsistencyScore, sameGapScore, adjacentGapScore) >= 0.62
+    ),
+    supportScore,
+    sameGapScore,
+    adjacentGapScore,
+    pairConsistencyScore,
+    stableRunScore,
+    firstGap: Number.isFinite(firstGap) ? Math.abs(firstGap) : null,
+    secondGap: Number.isFinite(secondGap) ? Math.abs(secondGap) : null,
+    medianGap
   };
 }
 
@@ -381,6 +2355,170 @@ function repairVerticalCumulativeGapOffset(guides, corners, height) {
   };
 }
 
+function pickFirstNonNull(...values) {
+  for (const value of values) {
+    if (value !== undefined && value !== null) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function repairLeadingUniformRowLoss(guides, corners, imageSize, gridRows, gridCols) {
+  const quad = normalizeCornerQuad(corners);
+  const width = Number(imageSize?.width || 0);
+  const height = Number(imageSize?.height || 0);
+  const xPeaks = Array.isArray(guides?.xPeaks) ? guides.xPeaks.map(Number).filter(Number.isFinite) : [];
+  const yPeaks = Array.isArray(guides?.yPeaks) ? guides.yPeaks.map(Number).filter(Number.isFinite) : [];
+  if (!quad || !width || !height || xPeaks.length < 4 || yPeaks.length < 4) {
+    return { guides, corners: quad || corners, applied: false, addedRows: 0 };
+  }
+
+  const globalPatternMode = guides?.globalPattern?.mode || null;
+  const xPattern = pickFirstNonNull(
+    guides?.xPattern,
+    guides?.xPatternDiagnostics?.mode,
+    guides?.globalPattern?.x?.mode,
+    globalPatternMode
+  );
+  const yPattern = pickFirstNonNull(
+    guides?.yPattern,
+    guides?.yPatternDiagnostics?.mode,
+    guides?.globalPattern?.y?.mode,
+    globalPatternMode
+  );
+  const xSymmetryEligible = Boolean(pickFirstNonNull(
+    guides?.xPatternDiagnostics?.symmetry?.eligible,
+    guides?.globalPattern?.symmetry?.x?.eligible,
+    guides?.globalPattern?.symmetry?.eligible
+  ));
+  const ySymmetryEligible = Boolean(pickFirstNonNull(
+    guides?.yPatternDiagnostics?.symmetry?.eligible,
+    guides?.globalPattern?.symmetry?.y?.eligible,
+    guides?.globalPattern?.symmetry?.eligible
+  ));
+  if (
+    xPattern !== 'uniform-boundary-grid'
+    || yPattern !== 'uniform-boundary-grid'
+    || !xSymmetryEligible
+    || !ySymmetryEligible
+  ) {
+    return {
+      guides,
+      corners: quad,
+      applied: false,
+      addedRows: 0,
+      reason: 'pattern-not-strong-uniform-boundary-grid',
+      diagnostics: {
+        xPattern,
+        yPattern,
+        globalPatternMode,
+        xSymmetryEligible,
+        ySymmetryEligible
+      }
+    };
+  }
+
+  const top = Number(guides.top);
+  const bottom = Number(guides.bottom);
+  const left = Number(guides.left);
+  const right = Number(guides.right);
+  if (![top, bottom, left, right].every(Number.isFinite) || bottom <= top || right <= left) {
+    return { guides, corners: quad, applied: false, addedRows: 0, reason: 'invalid-guide-bounds' };
+  }
+
+  const rowCount = Math.max(1, Number(gridRows) || (yPeaks.length - 1));
+  const colCount = Math.max(1, Number(gridCols) || (xPeaks.length - 1));
+  const yGaps = yPeaks.slice(1).map((value, index) => value - yPeaks[index]).filter((gap) => gap > 0);
+  const xGaps = xPeaks.slice(1).map((value, index) => value - xPeaks[index]).filter((gap) => gap > 0);
+  const medianYGap = median(yGaps);
+  const medianXGap = median(xGaps);
+  if (!(medianYGap > 0) || !(medianXGap > 0)) {
+    return { guides, corners: quad, applied: false, addedRows: 0, reason: 'invalid-median-gap' };
+  }
+
+  const topMargin = top;
+  const bottomMargin = Math.max(0, height - bottom);
+  const leftMargin = left;
+  const rightMargin = Math.max(0, width - right);
+  const topExcess = topMargin - bottomMargin;
+  const sideBalance = Math.abs(leftMargin - rightMargin);
+  const sideBalanceTolerance = Math.max(24, medianXGap * 0.22);
+  const topExcessThreshold = Math.max(96, medianYGap * 1.35);
+  const topMarginThreshold = medianYGap * 1.85;
+
+  if (
+    topExcess < topExcessThreshold
+    || topMargin < topMarginThreshold
+    || sideBalance > sideBalanceTolerance
+  ) {
+    return {
+      guides,
+      corners: quad,
+      applied: false,
+      addedRows: 0,
+      reason: 'top-margin-not-consistent-with-leading-row-loss'
+    };
+  }
+
+  const inferredMissingRows = clamp(Math.round(topExcess / Math.max(1, medianYGap)), 1, 3);
+  const shift = Math.round(inferredMissingRows * medianYGap);
+  const repairedTop = clamp(top - shift, 0, Math.max(0, bottom - (rowCount + inferredMissingRows)));
+  const repairedRowCount = rowCount + inferredMissingRows;
+  const impliedGap = (bottom - repairedTop) / Math.max(1, repairedRowCount);
+  const impliedGapRatio = Math.abs(impliedGap - medianYGap) / Math.max(1, medianYGap);
+  if (impliedGapRatio > 0.14) {
+    return {
+      guides,
+      corners: quad,
+      applied: false,
+      addedRows: 0,
+      reason: 'repaired-gap-not-consistent-with-uniform-grid',
+      diagnostics: {
+        medianYGap: Number(medianYGap.toFixed(3)),
+        impliedGap: Number(impliedGap.toFixed(3)),
+        impliedGapRatio: Number(impliedGapRatio.toFixed(4))
+      }
+    };
+  }
+
+  const repairedYPeaks = buildUniformGuidePeaks(repairedTop, bottom, repairedRowCount);
+  const repairedCorners = quad.map(([x, y], index) => (
+    index < 2
+      ? [x, clamp(y - shift, 0, Math.max(0, height - 1))]
+      : [x, y]
+  ));
+
+  return {
+    guides: {
+      ...guides,
+      top: repairedTop,
+      yPeaks: repairedYPeaks,
+      ySource: `${guides.ySource || '检测峰值筛选'} + 顶部整行缺失补全(${inferredMissingRows}行)`
+    },
+    corners: repairedCorners,
+    applied: true,
+    addedRows: inferredMissingRows,
+    repairedGridRows: repairedRowCount,
+    diagnostics: {
+      rowCount,
+      repairedRowCount,
+      inferredMissingRows,
+      topMargin: Number(topMargin.toFixed(3)),
+      bottomMargin: Number(bottomMargin.toFixed(3)),
+      topExcess: Number(topExcess.toFixed(3)),
+      leftMargin: Number(leftMargin.toFixed(3)),
+      rightMargin: Number(rightMargin.toFixed(3)),
+      sideBalance: Number(sideBalance.toFixed(3)),
+      medianYGap: Number(medianYGap.toFixed(3)),
+      medianXGap: Number(medianXGap.toFixed(3)),
+      impliedGap: Number(impliedGap.toFixed(3)),
+      impliedGapRatio: Number(impliedGapRatio.toFixed(4)),
+      repairedTop
+    }
+  };
+}
+
 function buildUniformGuidePeaks(start, end, cells) {
   if (!Number.isFinite(start) || !Number.isFinite(end) || !cells || cells <= 0) {
     return [];
@@ -402,12 +2540,127 @@ function sanitizeGuidePeaks(peaks) {
   return deduped;
 }
 
-function selectRepresentativeGuidePeaks(rawPeaks, start, end, cells) {
+function describeGridPatternMode(mode) {
+  switch (String(mode || '')) {
+    case 'alternating-box-gap':
+      return '框宽/间隔交替';
+    case 'uniform-cells-with-inner-dashed':
+      return '平均分割+内部虚框';
+    case 'uniform-boundary-grid':
+      return '平均分割';
+    case 'mixed':
+      return '混合模式';
+    default:
+      return mode ? String(mode) : '未识别';
+  }
+}
+
+function tryBuildAlternatingGuidePeaks(rawPeaks, start, end, cells) {
+  const targetCount = (cells || 0) + 1;
+  const alternatingCount = Math.max(0, targetCount * 2 - 1);
+  if (!targetCount || alternatingCount < 3 || !Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+    return null;
+  }
+
+  const sanitized = sanitizeGuidePeaks(rawPeaks).filter((value) => value >= start - 8 && value <= end + 8);
+  if (sanitized.length < alternatingCount) {
+    return null;
+  }
+
+  const edgeTolerance = Math.max(12, ((end - start) / Math.max(cells, 1)) * 0.45);
+  let best = null;
+
+  for (let offset = 0; offset <= sanitized.length - alternatingCount; offset += 1) {
+    const window = sanitized.slice(offset, offset + alternatingCount);
+    const widths = [];
+    const gaps = [];
+    let monotonic = true;
+
+    for (let index = 0; index < targetCount - 1; index += 1) {
+      const leftEdge = window[index * 2];
+      const rightEdge = window[index * 2 + 1];
+      const width = rightEdge - leftEdge;
+      if (!(width > 2)) {
+        monotonic = false;
+        break;
+      }
+      widths.push(width);
+      if (index < targetCount - 2) {
+        const nextLeftEdge = window[index * 2 + 2];
+        const gap = nextLeftEdge - rightEdge;
+        if (!(gap > 2)) {
+          monotonic = false;
+          break;
+        }
+        gaps.push(gap);
+      }
+    }
+
+    if (!monotonic || !widths.length || !gaps.length) {
+      continue;
+    }
+
+    const medianWidth = median(widths);
+    const medianGap = median(gaps);
+    if (!Number.isFinite(medianWidth) || !Number.isFinite(medianGap) || medianWidth <= 0 || medianGap <= 0) {
+      continue;
+    }
+
+    const widthDeviation = average(widths.map((value) => Math.abs(value - medianWidth))) / medianWidth;
+    const gapDeviation = average(gaps.map((value) => Math.abs(value - medianGap))) / medianGap;
+    const pitchSeries = widths.slice(0, -1).map((value, index) => value + gaps[index]);
+    const medianPitch = median(pitchSeries);
+    const pitchDeviation = medianPitch > 0
+      ? average(pitchSeries.map((value) => Math.abs(value - medianPitch))) / medianPitch
+      : 1;
+    const leftDistance = Math.abs(window[0] - start);
+    const rightDistance = Math.abs(window[window.length - 1] - end);
+    const edgeDeviation = (leftDistance + rightDistance) / Math.max(end - start, 1);
+    const score = widthDeviation + gapDeviation + pitchDeviation + (edgeDeviation * 0.6);
+
+    const peaks = [start];
+    for (let index = 1; index < targetCount - 1; index += 1) {
+      peaks.push((window[index * 2 - 1] + window[index * 2]) / 2);
+    }
+    peaks.push(end);
+
+    const candidate = {
+      peaks,
+      score,
+      diagnostics: {
+        mode: 'alternating-box-gap',
+        medianWidth: Number(medianWidth.toFixed(3)),
+        medianGap: Number(medianGap.toFixed(3)),
+        medianPitch: Number(medianPitch.toFixed(3)),
+        widthDeviation: Number(widthDeviation.toFixed(4)),
+        gapDeviation: Number(gapDeviation.toFixed(4)),
+        pitchDeviation: Number(pitchDeviation.toFixed(4)),
+        leftDistance: Number(leftDistance.toFixed(3)),
+        rightDistance: Number(rightDistance.toFixed(3)),
+        windowStart: offset,
+        windowEnd: offset + alternatingCount - 1
+      }
+    };
+    if (
+      leftDistance <= edgeTolerance
+      && rightDistance <= edgeTolerance
+      && (!best || candidate.score < best.score)
+    ) {
+      best = candidate;
+    }
+  }
+
+  return best;
+}
+
+function buildUniformGuideSelection(rawPeaks, start, end, cells) {
   const targetCount = (cells || 0) + 1;
   if (!targetCount || !Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
     return {
       peaks: [],
-      source: '外边界均分'
+      diagnostics: {
+        mode: 'uniform-boundary-grid'
+      }
     };
   }
 
@@ -415,7 +2668,10 @@ function selectRepresentativeGuidePeaks(rawPeaks, start, end, cells) {
   if (!sanitized.length) {
     return {
       peaks: buildUniformGuidePeaks(start, end, cells),
-      source: '外边界均分'
+      diagnostics: {
+        mode: 'uniform-boundary-grid',
+        fallback: 'outer-bound-uniform'
+      }
     };
   }
 
@@ -457,9 +2713,530 @@ function selectRepresentativeGuidePeaks(rawPeaks, start, end, cells) {
   }
 
   selected.push(end);
+  const snappedDistances = selected.map((value, index) => Math.abs(value - expected[index]));
+  const meanSnapDistance = average(snappedDistances);
+  const meanSnapRatio = meanSnapDistance / Math.max(10, gap);
+  const extraPeakCount = Math.max(0, sanitized.length - targetCount);
+  const mode = (
+    extraPeakCount >= Math.max(2, Math.floor(targetCount / 2))
+    && meanSnapRatio <= 0.2
+  )
+    ? 'uniform-cells-with-inner-dashed'
+    : 'uniform-boundary-grid';
   return {
     peaks: selected,
-    source: '检测峰值筛选'
+    diagnostics: {
+      mode,
+      meanSnapDistance: Number(meanSnapDistance.toFixed(3)),
+      meanSnapRatio: Number(meanSnapRatio.toFixed(4)),
+      extraPeakCount,
+      snapDistances: snappedDistances.map((value) => Number(value.toFixed(3)))
+    }
+  };
+}
+
+function analyzeUniformRescueCandidate(peaks, start, end, cells, uniformDiagnostics = null) {
+  const values = Array.isArray(peaks) ? peaks.map(Number).filter(Number.isFinite).sort((a, b) => a - b) : [];
+  const expectedCount = Math.max(0, Number(cells) || 0) + 1;
+  if (
+    values.length !== expectedCount
+    || expectedCount < 4
+    || !Number.isFinite(start)
+    || !Number.isFinite(end)
+    || end <= start
+  ) {
+    return {
+      eligible: false,
+      reason: 'insufficient-uniform-candidate'
+    };
+  }
+  const intervals = values.slice(1).map((value, index) => value - values[index]).filter((gap) => gap > 0);
+  if (intervals.length !== expectedCount - 1) {
+    return {
+      eligible: false,
+      reason: 'invalid-intervals'
+    };
+  }
+  const medianInterval = median(intervals);
+  if (!(medianInterval > 0)) {
+    return {
+      eligible: false,
+      reason: 'invalid-median-interval'
+    };
+  }
+  const stableToleranceRatio = 0.16;
+  const stableFlags = intervals.map((gap) => (Math.abs(gap - medianInterval) / Math.max(1, medianInterval)) <= stableToleranceRatio);
+  const stableCount = stableFlags.filter(Boolean).length;
+  const stableRatio = stableFlags.length ? stableCount / stableFlags.length : 0;
+  let longestStableRun = 0;
+  let currentStableRun = 0;
+  stableFlags.forEach((stable) => {
+    if (stable) {
+      currentStableRun += 1;
+      longestStableRun = Math.max(longestStableRun, currentStableRun);
+    } else {
+      currentStableRun = 0;
+    }
+  });
+  const edgeInstability = [
+    stableFlags[0] === false,
+    stableFlags[1] === false,
+    stableFlags[stableFlags.length - 1] === false,
+    stableFlags[stableFlags.length - 2] === false
+  ].filter(Boolean).length;
+  const meanSnapRatio = Number(uniformDiagnostics?.meanSnapRatio) || Number.POSITIVE_INFINITY;
+  const meanSnapDistance = Number(uniformDiagnostics?.meanSnapDistance) || Number.POSITIVE_INFINITY;
+  const expectedGap = (end - start) / Math.max(1, Number(cells) || 1);
+  const eligible = (
+    meanSnapRatio <= 0.16
+    && meanSnapDistance <= expectedGap * 0.22
+    && stableRatio >= 0.58
+    && longestStableRun >= Math.max(3, Math.floor(intervals.length * 0.35))
+    && edgeInstability >= 1
+  );
+  return {
+    eligible,
+    reason: eligible ? 'stable-majority-intervals-with-edge-disturbance' : 'uniform-rescue-not-supported',
+    medianInterval: Number(medianInterval.toFixed(3)),
+    stableRatio: Number(stableRatio.toFixed(4)),
+    longestStableRun,
+    edgeInstability,
+    meanSnapRatio: Number.isFinite(meanSnapRatio) ? Number(meanSnapRatio.toFixed(4)) : null,
+    meanSnapDistance: Number.isFinite(meanSnapDistance) ? Number(meanSnapDistance.toFixed(3)) : null,
+    stableFlags
+  };
+}
+
+function detectGuidePatternSelection(rawPeaks, start, end, cells) {
+  const targetCount = (cells || 0) + 1;
+  if (!targetCount || !Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+    return {
+      peaks: [],
+      source: '外边界均分',
+      mode: 'uniform-boundary-grid',
+      diagnostics: null
+    };
+  }
+  const sanitized = sanitizeGuidePeaks(rawPeaks).filter((value) => value >= start - 4 && value <= end + 4);
+  if (!sanitized.length) {
+    return {
+      peaks: buildUniformGuidePeaks(start, end, cells),
+      source: '外边界均分',
+      mode: 'uniform-boundary-grid',
+      diagnostics: {
+        mode: 'uniform-boundary-grid',
+        fallback: 'outer-bound-uniform'
+      }
+    };
+  }
+
+  const alternating = tryBuildAlternatingGuidePeaks(sanitized, start, end, cells);
+  const uniform = buildUniformGuideSelection(sanitized, start, end, cells);
+  const alternatingScore = alternating?.score ?? Number.POSITIVE_INFINITY;
+  const uniformScore = uniform?.diagnostics?.meanSnapRatio ?? Number.POSITIVE_INFINITY;
+  const globalPitch = (end - start) / Math.max(cells, 1);
+  const alternatingMedianWidth = Number(alternating?.diagnostics?.medianWidth) || 0;
+  const alternatingMedianGap = Number(alternating?.diagnostics?.medianGap) || 0;
+  const alternatingMedianPitch = Number(alternating?.diagnostics?.medianPitch) || 0;
+  const uniformSymmetry = analyzeSymmetricSubdivision(
+    uniform?.peaks || [],
+    start,
+    end,
+    cells,
+    { preferredMode: 'uniform-boundary-grid' }
+  );
+  const alternatingSymmetry = analyzeSymmetricSubdivision(
+    alternating?.peaks || [],
+    start,
+    end,
+    cells,
+    { preferredMode: 'alternating-box-gap' }
+  );
+  const alternatingWidthGapRatio = (
+    alternatingMedianWidth > 0
+    && alternatingMedianGap > 0
+  )
+    ? Math.max(alternatingMedianWidth, alternatingMedianGap) / Math.max(1e-6, Math.min(alternatingMedianWidth, alternatingMedianGap))
+    : Number.POSITIVE_INFINITY;
+  const alternatingPitchVsUniform = globalPitch > 0
+    ? Math.abs(alternatingMedianPitch - globalPitch) / globalPitch
+    : Number.POSITIVE_INFINITY;
+  const dashedLikeAlternatingEvidence = Boolean(
+    alternating?.peaks?.length === targetCount
+    && sanitized.length >= Math.max(targetCount + 4, targetCount * 2 - 1)
+    && alternatingWidthGapRatio <= 1.45
+    && alternatingMedianWidth <= globalPitch * 0.72
+    && alternatingMedianGap <= globalPitch * 0.72
+    && alternatingPitchVsUniform <= 0.16
+    && (uniform?.diagnostics?.meanSnapRatio ?? 1) <= 0.22
+    && uniformSymmetry.eligible
+  );
+  const dashedSpecific = resolveSpecificGridSubdivisionMode({
+    symmetry: uniformSymmetry,
+    uniformDiagnostics: uniform?.diagnostics || null,
+    alternatingDiagnostics: alternating?.diagnostics || null,
+    dashedLikeEvidence: dashedLikeAlternatingEvidence,
+    alternatingAccepted: false
+  });
+  if (dashedLikeAlternatingEvidence) {
+    return {
+      peaks: uniform.peaks,
+      source: '检测峰值筛选(平均分割+内部虚框)',
+      mode: 'uniform-cells-with-inner-dashed',
+      diagnostics: {
+        mode: 'uniform-cells-with-inner-dashed',
+        inferredFrom: 'alternating-peak-pairs-inside-uniform-cells',
+        alternatingMedianWidth: Number(alternatingMedianWidth.toFixed(3)),
+        alternatingMedianGap: Number(alternatingMedianGap.toFixed(3)),
+        alternatingWidthGapRatio: Number(alternatingWidthGapRatio.toFixed(4)),
+        alternatingMedianPitch: Number(alternatingMedianPitch.toFixed(3)),
+        alternatingPitchVsUniform: Number(alternatingPitchVsUniform.toFixed(4)),
+        uniformMeanSnapRatio: Number((uniform?.diagnostics?.meanSnapRatio ?? 0).toFixed(4)),
+        extraPeakCount: Number(uniform?.diagnostics?.extraPeakCount || 0),
+        specificMode: dashedSpecific.specificMode,
+        specificReason: dashedSpecific.reason,
+        symmetry: {
+          uniform: uniformSymmetry,
+          alternating: alternatingSymmetry
+        }
+      }
+    };
+  }
+  if (
+    alternating?.peaks?.length === targetCount
+    && alternatingSymmetry.eligible
+    && (
+      alternatingScore <= 0.24
+      || (
+        sanitized.length >= Math.max(targetCount * 2 - 1, targetCount + 4)
+        && alternatingScore <= uniformScore * 1.35
+      )
+    )
+  ) {
+    const alternatingSpecific = resolveSpecificGridSubdivisionMode({
+      symmetry: alternatingSymmetry,
+      uniformDiagnostics: uniform?.diagnostics || null,
+      alternatingDiagnostics: alternating?.diagnostics || null,
+      dashedLikeEvidence: false,
+      alternatingAccepted: true
+    });
+    return {
+      peaks: alternating.peaks,
+      source: '检测峰值筛选(框宽/间隔分离)',
+      mode: 'alternating-box-gap',
+      diagnostics: {
+        ...(alternating.diagnostics || {}),
+        specificMode: alternatingSpecific.specificMode,
+        specificReason: alternatingSpecific.reason,
+        symmetry: alternatingSymmetry
+      }
+    };
+  }
+
+  const fallbackMode = uniformSymmetry.eligible ? (uniform?.diagnostics?.mode || 'uniform-boundary-grid') : 'mixed';
+  const fallbackSpecific = resolveSpecificGridSubdivisionMode({
+    symmetry: uniformSymmetry,
+    uniformDiagnostics: uniform?.diagnostics || null,
+    alternatingDiagnostics: alternating?.diagnostics || null,
+    dashedLikeEvidence: false,
+    alternatingAccepted: false
+  });
+  const uniformRescue = analyzeUniformRescueCandidate(
+    uniform?.peaks || [],
+    start,
+    end,
+    cells,
+    uniform?.diagnostics || null
+  );
+  if (!uniformSymmetry.eligible && uniformRescue.eligible) {
+    const rescuedPeaks = buildUniformGuidePeaks(start, end, cells);
+    const rescuedSymmetry = analyzeSymmetricSubdivision(
+      rescuedPeaks,
+      start,
+      end,
+      cells,
+      { preferredMode: 'uniform-boundary-grid' }
+    );
+    const rescuedSpecific = resolveSpecificGridSubdivisionMode({
+      symmetry: rescuedSymmetry,
+      uniformDiagnostics: { ...(uniform?.diagnostics || {}), mode: 'uniform-boundary-grid' },
+      alternatingDiagnostics: alternating?.diagnostics || null,
+      dashedLikeEvidence: false,
+      alternatingAccepted: false
+    });
+    return {
+      peaks: rescuedPeaks,
+      source: '检测峰值筛选(边界扰动后均分补正)',
+      mode: 'uniform-boundary-grid',
+      diagnostics: {
+        ...(uniform?.diagnostics || {}),
+        mode: 'uniform-boundary-grid',
+        rescuedFrom: 'mixed',
+        rescueReason: uniformRescue.reason,
+        rescueDiagnostics: uniformRescue,
+        specificMode: rescuedSpecific.specificMode,
+        specificReason: rescuedSpecific.reason,
+        symmetry: rescuedSymmetry
+      }
+    };
+  }
+  return {
+    peaks: uniform.peaks,
+    source: uniform?.diagnostics?.mode === 'uniform-cells-with-inner-dashed'
+      ? '检测峰值筛选(平均分割+内部虚框)'
+      : '检测峰值筛选',
+    mode: fallbackMode,
+    diagnostics: {
+      ...(uniform?.diagnostics || {}),
+      mode: fallbackMode,
+      specificMode: fallbackSpecific.specificMode,
+      specificReason: fallbackSpecific.reason,
+      symmetry: uniformSymmetry
+    }
+  };
+}
+
+function selectRepresentativeGuidePeaks(rawPeaks, start, end, cells) {
+  return detectGuidePatternSelection(rawPeaks, start, end, cells);
+}
+
+function maybeForceUniformAxisSelection(selection, start, end, cells, axis = 'x') {
+  if (!selection || !Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+    return selection;
+  }
+  const diagnostics = selection.diagnostics || null;
+  const symmetry = diagnostics?.symmetry || null;
+  const uniformLikeMode = (
+    selection.mode === 'uniform-boundary-grid'
+    || (axis === 'y' && selection.mode === 'uniform-cells-with-inner-dashed')
+  );
+  if (
+    !uniformLikeMode
+    || !symmetry?.eligible
+  ) {
+    return selection;
+  }
+
+  const values = Array.isArray(selection.peaks)
+    ? selection.peaks.map(Number).filter(Number.isFinite).sort((a, b) => a - b)
+    : [];
+  const expectedCount = Math.max(1, Number(cells) || 1) + 1;
+  if (values.length !== expectedCount) {
+    return selection;
+  }
+
+  const intervals = values.slice(1).map((value, index) => value - values[index]).filter((gap) => gap > 0);
+  if (intervals.length !== expectedCount - 1) {
+    return selection;
+  }
+  const medianInterval = median(intervals);
+  if (!(medianInterval > 0)) {
+    return selection;
+  }
+
+  const meanSnapRatio = Number(diagnostics?.meanSnapRatio) || 0;
+  const symmetryScore = Number(symmetry?.symmetryScore) || 0;
+  const extraPeakCount = Number(diagnostics?.extraPeakCount) || 0;
+  const minInterval = Math.min(...intervals);
+  const maxInterval = Math.max(...intervals);
+  const compressedIntervals = intervals.filter((gap) => gap <= medianInterval * 0.62).length;
+  const expandedIntervals = intervals.filter((gap) => gap >= medianInterval * 1.38).length;
+  const severeInstability = minInterval > 0 && (maxInterval / minInterval) >= 2.35;
+  const hasLeadingOrTrailingCompression = (
+    intervals[0] <= medianInterval * 0.72
+    || intervals[intervals.length - 1] <= medianInterval * 0.72
+  );
+
+  const shouldForce = (
+    symmetryScore >= 0.74
+    && meanSnapRatio >= 0.12
+    && extraPeakCount >= Math.max(4, Math.floor(expectedCount * 0.45))
+    && severeInstability
+    && compressedIntervals >= 1
+    && expandedIntervals >= 1
+    && (axis === 'y' || hasLeadingOrTrailingCompression)
+  );
+
+  if (!shouldForce) {
+    return selection;
+  }
+
+  const forcedPeaks = buildUniformGuidePeaks(start, end, cells);
+  const forcedSymmetry = analyzeSymmetricSubdivision(
+    forcedPeaks,
+    start,
+    end,
+    cells,
+    { preferredMode: 'uniform-boundary-grid' }
+  );
+  return {
+    ...selection,
+    peaks: forcedPeaks,
+    source: `${selection.source || '检测峰值筛选'} + 等间距主导均分补正`,
+    mode: 'uniform-boundary-grid',
+    diagnostics: {
+      ...diagnostics,
+      mode: 'uniform-boundary-grid',
+      rescuedFromMode: selection.mode || null,
+      forcedUniformRepair: {
+        axis,
+        meanSnapRatio: Number(meanSnapRatio.toFixed(4)),
+        symmetryScore: Number(symmetryScore.toFixed(4)),
+        extraPeakCount,
+        medianInterval: Number(medianInterval.toFixed(3)),
+        minInterval: Number(minInterval.toFixed(3)),
+        maxInterval: Number(maxInterval.toFixed(3)),
+        compressedIntervals,
+        expandedIntervals,
+        severeInstability,
+        hasLeadingOrTrailingCompression
+      },
+      symmetry: forcedSymmetry
+    }
+  };
+}
+
+function analyzeSymmetricSubdivision(peaks, start, end, cells, options = {}) {
+  const values = Array.isArray(peaks) ? peaks.map(Number).filter(Number.isFinite).sort((a, b) => a - b) : [];
+  const expectedCount = Math.max(0, Number(cells) || 0) + 1;
+  if (
+    values.length < 2
+    || expectedCount < 2
+    || !Number.isFinite(start)
+    || !Number.isFinite(end)
+    || end <= start
+  ) {
+    return {
+      eligible: false,
+      mode: 'asymmetric',
+      symmetryScore: 0,
+      pairCount: 0,
+      reason: 'insufficient-peaks'
+    };
+  }
+
+  const totalSpan = end - start;
+  const center = (start + end) / 2;
+  const tolerance = Math.max(6, totalSpan * 0.012);
+  const edgeTolerance = Math.max(8, totalSpan * 0.018);
+  const normalized = values.map((value) => (value - start) / Math.max(1e-6, totalSpan));
+  const intervalPairs = [];
+  const intervals = values.slice(1).map((value, index) => value - values[index]).filter((gap) => gap > 0);
+  for (let i = 0; i < Math.floor(intervals.length / 2); i += 1) {
+    const left = intervals[i];
+    const right = intervals[intervals.length - 1 - i];
+    const ratio = Math.abs(left - right) / Math.max(1, Math.max(left, right));
+    intervalPairs.push({
+      left: Number(left.toFixed(3)),
+      right: Number(right.toFixed(3)),
+      ratio: Number(ratio.toFixed(4)),
+      symmetric: ratio <= 0.16
+    });
+  }
+
+  const mirrorPairs = [];
+  for (let i = 0; i < values.length; i += 1) {
+    const left = values[i];
+    const right = values[values.length - 1 - i];
+    const mirrorDelta = Math.abs((left + right) - (start + end));
+    mirrorPairs.push({
+      left: Number(left.toFixed(3)),
+      right: Number(right.toFixed(3)),
+      mirrorDelta: Number(mirrorDelta.toFixed(3)),
+      symmetric: mirrorDelta <= tolerance
+    });
+  }
+
+  const edgeAligned = (
+    Math.abs(values[0] - start) <= edgeTolerance
+    && Math.abs(values[values.length - 1] - end) <= edgeTolerance
+  );
+  const intervalSymmetryRatio = intervalPairs.length
+    ? intervalPairs.filter((entry) => entry.symmetric).length / intervalPairs.length
+    : 1;
+  const mirrorSymmetryRatio = mirrorPairs.length
+    ? mirrorPairs.filter((entry) => entry.symmetric).length / mirrorPairs.length
+    : 1;
+  const centerOffset = values.length % 2 === 1
+    ? Math.abs(values[Math.floor(values.length / 2)] - center)
+    : 0;
+  const centerAligned = values.length % 2 === 0 || centerOffset <= tolerance;
+  const countAligned = Math.abs(values.length - expectedCount) <= Math.max(1, Math.floor(expectedCount * 0.35));
+  const symmetryScore = clamp01(
+    intervalSymmetryRatio * 0.44
+    + mirrorSymmetryRatio * 0.38
+    + (edgeAligned ? 0.1 : 0)
+    + (centerAligned ? 0.08 : 0)
+  );
+  const eligible = symmetryScore >= 0.72 && edgeAligned && centerAligned && countAligned;
+  const preferredMode = options.preferredMode || null;
+
+  return {
+    eligible,
+    mode: eligible ? (preferredMode || 'symmetric-subdivision') : 'asymmetric',
+    symmetryScore: Number(symmetryScore.toFixed(4)),
+    intervalSymmetryRatio: Number(intervalSymmetryRatio.toFixed(4)),
+    mirrorSymmetryRatio: Number(mirrorSymmetryRatio.toFixed(4)),
+    edgeAligned,
+    centerAligned,
+    centerOffset: Number(centerOffset.toFixed(3)),
+    countAligned,
+    pairCount: intervalPairs.length,
+    expectedCount,
+    actualCount: values.length,
+    normalizedPeaks: normalized.map((value) => Number(value.toFixed(4))),
+    intervalPairs,
+    mirrorPairs
+  };
+}
+
+function resolveSpecificGridSubdivisionMode(options = {}) {
+  const {
+    symmetry = null,
+    uniformDiagnostics = null,
+    alternatingDiagnostics = null,
+    dashedLikeEvidence = false,
+    alternatingAccepted = false
+  } = options;
+  if (!symmetry?.eligible) {
+    return {
+      specificMode: 'unspecified-asymmetric',
+      reason: 'symmetry-not-established'
+    };
+  }
+  if (dashedLikeEvidence) {
+    return {
+      specificMode: 'symmetric-uniform-cells-with-inner-dashed',
+      reason: 'symmetric-subdivision-with-inner-dashed-evidence'
+    };
+  }
+  if (alternatingAccepted) {
+    return {
+      specificMode: 'symmetric-alternating-box-gap',
+      reason: 'symmetric-subdivision-with-alternating-width-gap'
+    };
+  }
+  if ((uniformDiagnostics?.mode || null) === 'uniform-boundary-grid') {
+    return {
+      specificMode: 'symmetric-uniform-boundary-grid',
+      reason: 'symmetric-subdivision-with-uniform-cells'
+    };
+  }
+  if ((uniformDiagnostics?.mode || null) === 'uniform-cells-with-inner-dashed') {
+    return {
+      specificMode: 'symmetric-uniform-cells-with-inner-dashed',
+      reason: 'uniform-selection-reports-inner-dashed'
+    };
+  }
+  if ((alternatingDiagnostics?.mode || null) === 'alternating-box-gap') {
+    return {
+      specificMode: 'symmetric-alternating-box-gap',
+      reason: 'alternating-selection-reports-box-gap'
+    };
+  }
+  return {
+    specificMode: 'symmetric-unknown-subdivision',
+    reason: 'symmetry-established-but-no-specific-subdivision-match'
   };
 }
 
@@ -475,8 +3252,34 @@ function buildGuidesFromRawPeaks(guides, gridRows, gridCols, boundsOverride = nu
     return null;
   }
 
-  const xSelection = selectRepresentativeGuidePeaks(guides.xPeaks, left, right, gridCols);
-  const ySelection = selectRepresentativeGuidePeaks(guides.yPeaks, top, bottom, gridRows);
+  const xSelection = maybeForceUniformAxisSelection(
+    selectRepresentativeGuidePeaks(guides.xPeaks, left, right, gridCols),
+    left,
+    right,
+    gridCols,
+    'x'
+  );
+  const ySelection = maybeForceUniformAxisSelection(
+    selectRepresentativeGuidePeaks(guides.yPeaks, top, bottom, gridRows),
+    top,
+    bottom,
+    gridRows,
+    'y'
+  );
+  const representativeGuides = {
+    left,
+    right,
+    top,
+    bottom,
+    xPeaks: xSelection.peaks,
+    yPeaks: ySelection.peaks
+  };
+  const globalPattern = detectGlobalGridPattern(
+    representativeGuides,
+    guides,
+    gridRows,
+    gridCols
+  );
 
   return {
     left,
@@ -486,7 +3289,12 @@ function buildGuidesFromRawPeaks(guides, gridRows, gridCols, boundsOverride = nu
     xPeaks: xSelection.peaks,
     yPeaks: ySelection.peaks,
     xSource: xSelection.source,
-    ySource: ySelection.source
+    ySource: ySelection.source,
+    xPattern: xSelection.mode || null,
+    yPattern: ySelection.mode || null,
+    xPatternDiagnostics: xSelection.diagnostics || null,
+    yPatternDiagnostics: ySelection.diagnostics || null,
+    globalPattern
   };
 }
 
@@ -512,11 +3320,382 @@ function buildNormalizedGuideSet(guides, gridRows, gridCols) {
     top,
     bottom,
     xPeaks: normalizedX,
-    yPeaks: normalizedY
+    yPeaks: normalizedY,
+    xSource: rawPeakGuides?.xSource || guides?.xSource || null,
+    ySource: rawPeakGuides?.ySource || guides?.ySource || null,
+    xPattern: rawPeakGuides?.xPattern || guides?.xPattern || null,
+    yPattern: rawPeakGuides?.yPattern || guides?.yPattern || null,
+    xPatternDiagnostics: rawPeakGuides?.xPatternDiagnostics || guides?.xPatternDiagnostics || null,
+    yPatternDiagnostics: rawPeakGuides?.yPatternDiagnostics || guides?.yPatternDiagnostics || null,
+    globalPattern: detectGlobalGridPattern(
+      {
+        left,
+        right,
+        top,
+        bottom,
+        xPeaks: normalizedX,
+        yPeaks: normalizedY,
+        xPattern: rawPeakGuides?.xPattern || guides?.xPattern || null,
+        yPattern: rawPeakGuides?.yPattern || guides?.yPattern || null,
+        xPatternDiagnostics: rawPeakGuides?.xPatternDiagnostics || guides?.xPatternDiagnostics || null,
+        yPatternDiagnostics: rawPeakGuides?.yPatternDiagnostics || guides?.yPatternDiagnostics || null
+      },
+      guides,
+      gridRows,
+      gridCols
+    )
   };
 }
 
-function inferGridOuterBoundHints(rawGuides, cellWidth, cellHeight, width, height) {
+function analyzeDividerBandPattern(rawPeaks, representativePeaks, medianSpan) {
+  const raw = Array.isArray(rawPeaks) ? rawPeaks.map(Number).filter(Number.isFinite).sort((a, b) => a - b) : [];
+  const representative = Array.isArray(representativePeaks) ? representativePeaks.map(Number).filter(Number.isFinite).sort((a, b) => a - b) : [];
+  if (raw.length < 3 || representative.length < 3 || !(medianSpan > 0)) {
+    return {
+      dividerType: 'unknown',
+      dividerBands: [],
+      dominantDividerType: 'unknown',
+      consistentCellSpanRatio: 0,
+      consistentDividerRatio: 0
+    };
+  }
+  const sideMin = medianSpan * 0.05;
+  const sideMax = medianSpan * 0.22;
+  const centerTolerance = Math.max(4, medianSpan * 0.08);
+  const spanTolerance = Math.max(8, medianSpan * 0.18);
+  const dividerBands = [];
+
+  for (let index = 1; index < representative.length - 1; index += 1) {
+    const divider = representative[index];
+    const prevSpan = representative[index] - representative[index - 1];
+    const nextSpan = representative[index + 1] - representative[index];
+    const localRaw = raw.filter((value) => value >= divider - sideMax * 1.2 && value <= divider + sideMax * 1.2);
+    const center = localRaw.find((value) => Math.abs(value - divider) <= centerTolerance) ?? null;
+    const leftCompanions = localRaw.filter((value) => {
+      const delta = divider - value;
+      return delta >= sideMin && delta <= sideMax;
+    });
+    const rightCompanions = localRaw.filter((value) => {
+      const delta = value - divider;
+      return delta >= sideMin && delta <= sideMax;
+    });
+    let dividerType = 'single-divider';
+    if (center !== null && leftCompanions.length && rightCompanions.length) {
+      dividerType = 'solid-divider-with-double-inner-dashed';
+    } else if (leftCompanions.length && rightCompanions.length) {
+      dividerType = 'double-inner-dashed-without-solid-center';
+    } else if (center !== null && (leftCompanions.length || rightCompanions.length)) {
+      dividerType = 'solid-divider-with-single-inner-dashed';
+    }
+    dividerBands.push({
+      index,
+      divider: Number(divider.toFixed(3)),
+      prevSpan: Number(prevSpan.toFixed(3)),
+      nextSpan: Number(nextSpan.toFixed(3)),
+      spansSimilar: Math.abs(prevSpan - nextSpan) <= spanTolerance,
+      centerLine: center !== null ? Number(center.toFixed(3)) : null,
+      leftCompanions: leftCompanions.map((value) => Number(value.toFixed(3))),
+      rightCompanions: rightCompanions.map((value) => Number(value.toFixed(3))),
+      dividerType
+    });
+  }
+
+  const consistentCellSpanCount = dividerBands.filter((entry) => entry.spansSimilar).length;
+  const dividerTypeCounts = dividerBands.reduce((acc, entry) => {
+    acc[entry.dividerType] = (acc[entry.dividerType] || 0) + 1;
+    return acc;
+  }, {});
+  const dominantDividerType = Object.entries(dividerTypeCounts)
+    .sort((a, b) => b[1] - a[1])[0]?.[0] || 'unknown';
+  const consistentDividerCount = dividerBands.filter((entry) => entry.dividerType === dominantDividerType).length;
+
+  return {
+    dividerBands,
+    dominantDividerType,
+    consistentCellSpanRatio: dividerBands.length ? Number((consistentCellSpanCount / dividerBands.length).toFixed(4)) : 0,
+    consistentDividerRatio: dividerBands.length ? Number((consistentDividerCount / dividerBands.length).toFixed(4)) : 0
+  };
+}
+
+function detectGlobalGridPattern(guides, rawGuides, gridRows, gridCols) {
+  if (!guides) {
+    return null;
+  }
+  const xPeaks = Array.isArray(guides.xPeaks) ? guides.xPeaks.map(Number).filter(Number.isFinite) : [];
+  const yPeaks = Array.isArray(guides.yPeaks) ? guides.yPeaks.map(Number).filter(Number.isFinite) : [];
+  const rawXPeaks = Array.isArray(rawGuides?.xPeaks) ? rawGuides.xPeaks.map(Number).filter(Number.isFinite) : xPeaks;
+  const rawYPeaks = Array.isArray(rawGuides?.yPeaks) ? rawGuides.yPeaks.map(Number).filter(Number.isFinite) : yPeaks;
+  const medianCellWidth = xPeaks.length >= 2
+    ? median(xPeaks.slice(1).map((value, index) => value - xPeaks[index]).filter((gap) => gap > 0))
+    : null;
+  const medianCellHeight = yPeaks.length >= 2
+    ? median(yPeaks.slice(1).map((value, index) => value - yPeaks[index]).filter((gap) => gap > 0))
+    : null;
+  const xDividerPattern = analyzeDividerBandPattern(rawXPeaks, xPeaks, medianCellWidth || 0);
+  const yDividerPattern = analyzeDividerBandPattern(rawYPeaks, yPeaks, medianCellHeight || 0);
+  const xSymmetry = analyzeSymmetricSubdivision(xPeaks, Number(guides.left), Number(guides.right), gridCols, {
+    preferredMode: guides?.xPattern || null
+  });
+  const ySymmetry = analyzeSymmetricSubdivision(yPeaks, Number(guides.top), Number(guides.bottom), gridRows, {
+    preferredMode: guides?.yPattern || null
+  });
+  const declaredGuideMode = (
+    guides?.xPattern
+    && guides?.yPattern
+    && guides.xPattern === guides.yPattern
+    && xSymmetry.eligible
+    && ySymmetry.eligible
+  ) ? guides.xPattern : null;
+  const xSpanStable = xDividerPattern.consistentCellSpanRatio >= 0.7;
+  const ySpanStable = yDividerPattern.consistentCellSpanRatio >= 0.7;
+  const xDoubleDashed = xDividerPattern.dominantDividerType === 'solid-divider-with-double-inner-dashed';
+  const yDoubleDashed = yDividerPattern.dominantDividerType === 'solid-divider-with-double-inner-dashed';
+
+  let mode = 'mixed';
+  if (declaredGuideMode && ['uniform-boundary-grid', 'uniform-cells-with-inner-dashed', 'alternating-box-gap'].includes(declaredGuideMode)) {
+    mode = declaredGuideMode;
+  } else if (xSymmetry.eligible && ySymmetry.eligible && xSpanStable && ySpanStable && xDoubleDashed && yDoubleDashed) {
+    mode = 'uniform-cells-with-inner-dashed';
+  } else if (xSymmetry.eligible && ySymmetry.eligible && xSpanStable && ySpanStable) {
+    mode = 'uniform-boundary-grid';
+  } else if (xSymmetry.eligible && ySymmetry.eligible && xDividerPattern.dominantDividerType === 'single-divider' && yDividerPattern.dominantDividerType === 'single-divider') {
+    mode = 'single-divider-grid';
+  }
+  const specificMode = (
+    guides?.xPatternDiagnostics?.specificMode
+    && guides?.yPatternDiagnostics?.specificMode
+    && guides.xPatternDiagnostics.specificMode === guides.yPatternDiagnostics.specificMode
+  ) ? guides.xPatternDiagnostics.specificMode : (
+    xSymmetry.eligible && ySymmetry.eligible
+      ? 'symmetric-mixed-subdivision'
+      : 'unspecified-asymmetric'
+  );
+
+  return {
+    mode,
+    basedOn: 'adjacent-cell-span-and-divider-band',
+    gridRows,
+    gridCols,
+    specificMode,
+    patternProfile: guides?.globalPattern?.patternProfile || null,
+    symmetry: {
+      x: xSymmetry,
+      y: ySymmetry,
+      eligible: Boolean(xSymmetry.eligible && ySymmetry.eligible)
+    },
+    medianCellWidth: Number.isFinite(medianCellWidth) ? Number(medianCellWidth.toFixed(3)) : null,
+    medianCellHeight: Number.isFinite(medianCellHeight) ? Number(medianCellHeight.toFixed(3)) : null,
+    x: xDividerPattern,
+    y: yDividerPattern
+  };
+}
+
+function getPatternProfileSettings(profileFamily, outerFramePattern = null) {
+  const normalizedOuterFramePattern = normalizeOuterFramePattern(outerFramePattern);
+  switch (profileFamily) {
+    case 'inner-dashed-box-grid':
+      return {
+        preferLeftBottomTraversal: true,
+        allowTopRecoveryByInnerGuide: true,
+        prioritizeInnerFrameWhenDarkest: true,
+        prioritizeOuterFrameWhenDarkest: false,
+        referenceSamples: ['test/obj/1.jpg']
+      };
+    case 'circle-mi-grid':
+      return {
+        preferLeftBottomTraversal: false,
+        allowTopRecoveryByInnerGuide: false,
+        prioritizeInnerFrameWhenDarkest: false,
+        prioritizeOuterFrameWhenDarkest: Boolean(normalizedOuterFramePattern),
+        referenceSamples: ['test/obj/2.jpg']
+      };
+    case 'diagonal-mi-grid':
+      return {
+        preferLeftBottomTraversal: true,
+        allowTopRecoveryByInnerGuide: false,
+        prioritizeInnerFrameWhenDarkest: !normalizedOuterFramePattern,
+        prioritizeOuterFrameWhenDarkest: Boolean(normalizedOuterFramePattern),
+        referenceSamples: normalizedOuterFramePattern === 'full-margin-outer-frame'
+          ? ['test/obj/3.jpg']
+          : ['test/obj/4.jpg']
+      };
+    default:
+      return {
+        preferLeftBottomTraversal: false,
+        allowTopRecoveryByInnerGuide: true,
+        prioritizeInnerFrameWhenDarkest: !normalizedOuterFramePattern,
+        prioritizeOuterFrameWhenDarkest: Boolean(normalizedOuterFramePattern),
+        referenceSamples: []
+      };
+  }
+}
+
+function normalizeOuterFramePattern(outerFramePattern = null) {
+  const allowedPatterns = new Set([
+    'full-margin-outer-frame',
+    'top-bottom-separated-outer-frame',
+    'left-right-separated-outer-frame',
+    'three-side-or-asymmetric-outer-frame',
+    'mixed-outer-frame'
+  ]);
+  return allowedPatterns.has(outerFramePattern) ? outerFramePattern : null;
+}
+
+function classifyGridPatternProfile(signals, globalPattern = null, outerFramePattern = null) {
+  const ringSignal = Number(signals?.ringBandDarkness) || 0;
+  const diagonalSignal = Number(signals?.diagonalDarkness) || 0;
+  const crossSignal = Number(signals?.crossDarkness) || 0;
+  const insetSignal = Number(signals?.insetBoxDarkness) || 0;
+  const centerSignal = Number(signals?.centerDarkness) || 0;
+  const redGuideRatio = Number(signals?.redGuideRatio) || 0;
+  const redGuideStrength = Number(signals?.redGuideStrength) || 0;
+  const normalizedOuterFramePattern = normalizeOuterFramePattern(outerFramePattern);
+  let profileFamily = 'plain-uniform-grid';
+  let reason = 'uniform-grid-without-strong-inner-subdivision-structure';
+
+  if (redGuideRatio >= 0.18 && redGuideStrength >= 0.12) {
+    profileFamily = 'circle-mi-grid';
+    reason = 'red-guide-lines-match-circle-mi-reference-template';
+  } else if (normalizedOuterFramePattern) {
+    profileFamily = 'diagonal-mi-grid';
+    reason = 'four-side-outer-frame-template-defaults-to-diagonal-mi-reference';
+  } else if (
+    diagonalSignal >= insetSignal + 0.012
+    || diagonalSignal >= crossSignal + 0.01
+  ) {
+    profileFamily = 'diagonal-mi-grid';
+    reason = 'diagonal-strokes-dominate-inner-cell-structure';
+  } else if (!normalizedOuterFramePattern) {
+    profileFamily = 'inner-dashed-box-grid';
+    reason = 'no-explicit-outer-frame-and-non-red-grid-better-match-inner-dashed-reference';
+  } else if (
+    insetSignal >= diagonalSignal - 0.006
+    && insetSignal >= ringSignal - 0.008
+    && centerSignal <= Math.max(insetSignal + 0.02, 0.28)
+  ) {
+    profileFamily = 'inner-dashed-box-grid';
+    reason = 'inset-box-structure-better-matches-inner-dashed-reference';
+  }
+
+  const outerFrameLayout = normalizedOuterFramePattern || 'no-explicit-outer-frame';
+  const profileMode = `template-${profileFamily}-${outerFrameLayout}`;
+  return {
+    family: profileFamily,
+    profileMode,
+    outerFrameLayout,
+    reason,
+    matchedBy: 'blank-cell-structure-sampling',
+    signals: {
+      ringSignal: Number(ringSignal.toFixed(4)),
+      diagonalSignal: Number(diagonalSignal.toFixed(4)),
+      crossSignal: Number(crossSignal.toFixed(4)),
+      insetSignal: Number(insetSignal.toFixed(4)),
+      centerSignal: Number(centerSignal.toFixed(4)),
+      redGuideRatio: Number(redGuideRatio.toFixed(4)),
+      redGuideStrength: Number(redGuideStrength.toFixed(4))
+    },
+    id: `${profileFamily}:${outerFrameLayout}`,
+    settings: getPatternProfileSettings(profileFamily, normalizedOuterFramePattern),
+    globalMode: globalPattern?.mode || null,
+    globalSpecificMode: globalPattern?.specificMode || null
+  };
+}
+
+function mergePatternProfileIntoGuides(guides, patternProfile, outerFramePattern = null) {
+  if (!guides || !patternProfile) {
+    return guides || null;
+  }
+  const normalizedOuterFramePattern = normalizeOuterFramePattern(outerFramePattern);
+  const nextProfile = {
+    ...patternProfile,
+    outerFrameLayout: normalizedOuterFramePattern || 'no-explicit-outer-frame',
+    profileMode: `template-${patternProfile.family}-${normalizedOuterFramePattern || 'no-explicit-outer-frame'}`,
+    id: `${patternProfile.family}:${normalizedOuterFramePattern || 'no-explicit-outer-frame'}`,
+    settings: getPatternProfileSettings(patternProfile.family, normalizedOuterFramePattern)
+  };
+  return {
+    ...guides,
+    globalPattern: {
+      ...(guides.globalPattern || {}),
+      patternProfile: nextProfile
+    }
+  };
+}
+
+function resolveRepresentativeBoundarySupport(options = {}) {
+  const {
+    patternMode = 'mixed',
+    representativePeaks = [],
+    expectedUniformPeaks = [],
+    start = NaN,
+    end = NaN,
+    uniformGap = NaN,
+    medianGap = NaN,
+    side = 'start'
+  } = options;
+  const useRepresentativeMode = (
+    patternMode === 'uniform-cells-with-inner-dashed'
+    || patternMode === 'uniform-boundary-grid'
+    || patternMode === 'mixed'
+  );
+  const representative = Array.isArray(representativePeaks)
+    ? representativePeaks.map(Number).filter(Number.isFinite)
+    : [];
+  const expected = Array.isArray(expectedUniformPeaks)
+    ? expectedUniformPeaks.map(Number).filter(Number.isFinite)
+    : [];
+  const fallbackGap = Number.isFinite(uniformGap) && uniformGap > 0
+    ? uniformGap
+    : (Number.isFinite(medianGap) && medianGap > 0 ? medianGap : NaN);
+  const isStart = side !== 'end';
+  const representativeIndex = isStart ? 1 : Math.max(0, representative.length - 2);
+  const expectedIndex = isStart ? 1 : Math.max(0, expected.length - 2);
+  const representativeValue = representative.length >= 2 ? Number(representative[representativeIndex]) : NaN;
+  const inferredValueFromGap = Number.isFinite(fallbackGap)
+    ? (isStart ? Number(start) + fallbackGap : Number(end) - fallbackGap)
+    : NaN;
+  const expectedValue = expected.length >= 2
+    ? Number(expected[expectedIndex])
+    : inferredValueFromGap;
+  const toleranceBase = Number.isFinite(fallbackGap) && fallbackGap > 0 ? fallbackGap : medianGap;
+  const reliabilityTolerance = Math.max(18, Math.round((Number(toleranceBase) || 0) * 0.28));
+  const representativeReliable = (
+    Number.isFinite(representativeValue)
+    && Number.isFinite(expectedValue)
+    && Math.abs(representativeValue - expectedValue) <= reliabilityTolerance
+  );
+
+  let resolvedValue = representativeValue;
+  let resolvedSource = 'representative-peak';
+  if (useRepresentativeMode && Number.isFinite(expectedValue) && !representativeReliable) {
+    resolvedValue = expectedValue;
+    resolvedSource = Number.isFinite(representativeValue)
+      ? 'uniform-gap-inferred'
+      : 'uniform-gap-fallback';
+  } else if (!Number.isFinite(resolvedValue) && Number.isFinite(expectedValue)) {
+    resolvedValue = expectedValue;
+    resolvedSource = 'uniform-gap-fallback';
+  }
+
+  return {
+    side,
+    value: Number.isFinite(resolvedValue) ? resolvedValue : null,
+    source: resolvedSource,
+    representativeValue: Number.isFinite(representativeValue) ? representativeValue : null,
+    expectedValue: Number.isFinite(expectedValue) ? expectedValue : null,
+    uniformGap: Number.isFinite(uniformGap) ? Number(uniformGap.toFixed(3)) : null,
+    medianGap: Number.isFinite(medianGap) ? Number(medianGap.toFixed(3)) : null,
+    representativeReliable,
+    reliabilityTolerance: Number.isFinite(reliabilityTolerance) ? reliabilityTolerance : null,
+    representativeDelta: (
+      Number.isFinite(representativeValue) && Number.isFinite(expectedValue)
+        ? Number((representativeValue - expectedValue).toFixed(3))
+        : null
+    )
+  };
+}
+
+function inferGridOuterBoundHints(rawGuides, cellWidth, cellHeight, width, height, options = {}) {
   if (!rawGuides) {
     return null;
   }
@@ -531,6 +3710,10 @@ function inferGridOuterBoundHints(rawGuides, cellWidth, cellHeight, width, heigh
   const rawY = Array.isArray(rawGuides.yPeaks) ? rawGuides.yPeaks.map(Number).filter(Number.isFinite).sort((a, b) => a - b) : [];
   const innerX = rawX.filter((value) => value > left + 1 && value < right - 1);
   const innerY = rawY.filter((value) => value > top + 1 && value < bottom - 1);
+  const gridCols = Math.max(1, Number(options.gridCols) || 0);
+  const gridRows = Math.max(1, Number(options.gridRows) || 0);
+  const xPatternSelection = gridCols ? detectGuidePatternSelection(rawX, left, right, gridCols) : null;
+  const yPatternSelection = gridRows ? detectGuidePatternSelection(rawY, top, bottom, gridRows) : null;
   const medianXGap = median(innerX.slice(1).map((value, index) => value - innerX[index]).filter((gap) => gap > 0)) || cellWidth;
   const medianYGap = median(innerY.slice(1).map((value, index) => value - innerY[index]).filter((gap) => gap > 0)) || cellHeight;
   let hintedLeft = left;
@@ -542,6 +3725,15 @@ function inferGridOuterBoundHints(rawGuides, cellWidth, cellHeight, width, heigh
   let topReason = 'raw-bound';
   let bottomReason = 'raw-bound';
   const diagnostics = {
+    xPattern: xPatternSelection?.mode || null,
+    yPattern: yPatternSelection?.mode || null,
+    overallPattern: (
+      xPatternSelection?.mode
+      && yPatternSelection?.mode
+      && xPatternSelection.mode === yPatternSelection.mode
+    ) ? xPatternSelection.mode : 'mixed',
+    xPatternDiagnostics: xPatternSelection?.diagnostics || null,
+    yPatternDiagnostics: yPatternSelection?.diagnostics || null,
     firstInnerX: innerX[0] ?? null,
     secondInnerX: innerX[1] ?? null,
     lastInnerX: innerX.length ? innerX[innerX.length - 1] : null,
@@ -551,6 +3743,35 @@ function inferGridOuterBoundHints(rawGuides, cellWidth, cellHeight, width, heigh
     lastInnerY: innerY.length ? innerY[innerY.length - 1] : null,
     prevInnerY: innerY.length > 1 ? innerY[innerY.length - 2] : null
   };
+  const globalPattern = rawGuides?.globalPattern || detectGlobalGridPattern(
+    {
+      left,
+      right,
+      top,
+      bottom,
+      xPeaks: Array.isArray(xPatternSelection?.peaks) ? xPatternSelection.peaks : [],
+      yPeaks: Array.isArray(yPatternSelection?.peaks) ? yPatternSelection.peaks : []
+    },
+    rawGuides,
+    gridRows,
+    gridCols
+  );
+  if (globalPattern) {
+    diagnostics.globalPattern = globalPattern;
+    diagnostics.overallPattern = globalPattern.mode || diagnostics.overallPattern;
+  }
+  const representativeX = Array.isArray(xPatternSelection?.peaks) ? xPatternSelection.peaks.map(Number).filter(Number.isFinite) : [];
+  const representativeY = Array.isArray(yPatternSelection?.peaks) ? yPatternSelection.peaks.map(Number).filter(Number.isFinite) : [];
+  const uniformRepresentativeXGap = representativeX.length >= 3
+    ? median(representativeX.slice(1).map((value, index) => value - representativeX[index]).filter((gap) => gap > 0))
+    : null;
+  const uniformRepresentativeYGap = representativeY.length >= 3
+    ? median(representativeY.slice(1).map((value, index) => value - representativeY[index]).filter((gap) => gap > 0))
+    : null;
+  const expectedUniformX = gridCols ? buildUniformGuidePeaks(left, right, gridCols) : [];
+  const expectedUniformY = gridRows ? buildUniformGuidePeaks(top, bottom, gridRows) : [];
+  diagnostics.majorXGap = Number.isFinite(uniformRepresentativeXGap) ? Number(uniformRepresentativeXGap.toFixed(3)) : null;
+  diagnostics.majorYGap = Number.isFinite(uniformRepresentativeYGap) ? Number(uniformRepresentativeYGap.toFixed(3)) : null;
 
   const countStableGaps = (values, medianGap, fromStart = true) => {
     if (!Array.isArray(values) || values.length < 3 || !Number.isFinite(medianGap) || medianGap <= 0) {
@@ -571,6 +3792,15 @@ function inferGridOuterBoundHints(rawGuides, cellWidth, cellHeight, width, heigh
     }
     return stable;
   };
+  const countAllStableGaps = (values, medianGap) => {
+    if (!Array.isArray(values) || values.length < 3 || !Number.isFinite(medianGap) || medianGap <= 0) {
+      return 0;
+    }
+    const gaps = values.slice(1).map((value, index) => value - values[index]).filter((gap) => gap > 0);
+    return gaps.filter((gap) => gap >= medianGap * 0.45 && gap <= medianGap * 1.85).length;
+  };
+  diagnostics.xGlobalStableGapCount = countAllStableGaps(innerX, medianXGap);
+  diagnostics.yGlobalStableGapCount = countAllStableGaps(innerY, medianYGap);
 
   if (innerX.length >= 2) {
     const firstGap = innerX[0] - left;
@@ -648,6 +3878,151 @@ function inferGridOuterBoundHints(rawGuides, cellWidth, cellHeight, width, heigh
       bottomReason = 'drop-outer-frame';
     }
   }
+
+  diagnostics.leftBoundarySupport = resolveRepresentativeBoundarySupport({
+    patternMode: diagnostics.xPattern || 'mixed',
+    representativePeaks: representativeX,
+    expectedUniformPeaks: expectedUniformX,
+    start: left,
+    end: right,
+    uniformGap: uniformRepresentativeXGap,
+    medianGap: medianXGap,
+    side: 'start'
+  });
+  diagnostics.rightBoundarySupport = resolveRepresentativeBoundarySupport({
+    patternMode: diagnostics.xPattern || 'mixed',
+    representativePeaks: representativeX,
+    expectedUniformPeaks: expectedUniformX,
+    start: left,
+    end: right,
+    uniformGap: uniformRepresentativeXGap,
+    medianGap: medianXGap,
+    side: 'end'
+  });
+  diagnostics.topBoundarySupport = resolveRepresentativeBoundarySupport({
+    patternMode: diagnostics.yPattern || 'mixed',
+    representativePeaks: representativeY,
+    expectedUniformPeaks: expectedUniformY,
+    start: top,
+    end: bottom,
+    uniformGap: uniformRepresentativeYGap,
+    medianGap: medianYGap,
+    side: 'start'
+  });
+  diagnostics.bottomBoundarySupport = resolveRepresentativeBoundarySupport({
+    patternMode: diagnostics.yPattern || 'mixed',
+    representativePeaks: representativeY,
+    expectedUniformPeaks: expectedUniformY,
+    start: top,
+    end: bottom,
+    uniformGap: uniformRepresentativeYGap,
+    medianGap: medianYGap,
+    side: 'end'
+  });
+
+  const leftBottomJointSupport = (() => {
+    const xPatternMode = diagnostics.xPattern || 'mixed';
+    const yPatternMode = diagnostics.yPattern || 'mixed';
+    const leftBoundarySupport = xPatternMode === 'alternating-box-gap'
+      ? {
+          side: 'left',
+          value: Number(diagnostics.firstInnerX),
+          source: 'first-inner-line',
+          representativeValue: Number(diagnostics.firstInnerX),
+          expectedValue: Number.isFinite(medianXGap) ? Number(left) + medianXGap : null,
+          representativeReliable: true,
+          representativeDelta: 0
+        }
+      : resolveRepresentativeBoundarySupport({
+          patternMode: xPatternMode,
+          representativePeaks: representativeX,
+          expectedUniformPeaks: expectedUniformX,
+          start: left,
+          end: right,
+          uniformGap: uniformRepresentativeXGap,
+          medianGap: medianXGap,
+          side: 'start'
+        });
+    const bottomBoundarySupport = yPatternMode === 'alternating-box-gap'
+      ? {
+          side: 'bottom',
+          value: Number(diagnostics.lastInnerY),
+          source: 'last-inner-line',
+          representativeValue: Number(diagnostics.lastInnerY),
+          expectedValue: Number.isFinite(medianYGap) ? Number(bottom) - medianYGap : null,
+          representativeReliable: true,
+          representativeDelta: 0
+        }
+      : resolveRepresentativeBoundarySupport({
+          patternMode: yPatternMode,
+          representativePeaks: representativeY,
+          expectedUniformPeaks: expectedUniformY,
+          start: top,
+          end: bottom,
+          uniformGap: uniformRepresentativeYGap,
+          medianGap: medianYGap,
+          side: 'end'
+        });
+    const supportFirstX = Number(leftBoundarySupport?.value);
+    const supportLastY = Number(bottomBoundarySupport?.value);
+    const expectedLeftGap = xPatternMode === 'alternating-box-gap'
+      ? medianXGap
+      : (uniformRepresentativeXGap || medianXGap);
+    const expectedBottomGap = yPatternMode === 'alternating-box-gap'
+      ? medianYGap
+      : (uniformRepresentativeYGap || medianYGap);
+    const leftGap = Number(supportFirstX) - Number(hintedLeft);
+    const bottomGap = Number(hintedBottom) - Number(supportLastY);
+    if (
+      !Number.isFinite(leftGap)
+      || !Number.isFinite(bottomGap)
+      || !Number.isFinite(expectedLeftGap)
+      || !Number.isFinite(expectedBottomGap)
+      || expectedLeftGap <= 0
+      || expectedBottomGap <= 0
+    ) {
+      return null;
+    }
+    const leftGapScore = clamp01(1 - Math.abs(leftGap - expectedLeftGap) / Math.max(14, expectedLeftGap * 0.22));
+    const bottomGapScore = clamp01(1 - Math.abs(bottomGap - expectedBottomGap) / Math.max(14, expectedBottomGap * 0.22));
+    const leftRunScore = clamp01(Math.max(Number(diagnostics.leftStableInnerRun) || 0, Number(diagnostics.xGlobalStableGapCount) || 0) / 5);
+    const bottomRunScore = clamp01(Math.max(Number(diagnostics.bottomStableInnerRun) || 0, Number(diagnostics.yGlobalStableGapCount) || 0) / 5);
+    const continuityScore = average([leftRunScore, bottomRunScore]);
+    const score = average([leftGapScore, bottomGapScore, continuityScore]);
+    const softEligible = (
+      score >= 0.84
+      && leftGapScore >= 0.8
+      && bottomGapScore >= 0.58
+      && continuityScore >= 0.9
+    );
+    return {
+      eligible: (
+        (
+          leftGapScore >= 0.72
+          && bottomGapScore >= 0.72
+          && (Number(diagnostics.leftStableInnerRun) || 0) >= 2
+          && (Number(diagnostics.bottomStableInnerRun) || 0) >= 2
+        )
+        || softEligible
+      ),
+      eligibilityMode: softEligible ? 'soft-high-score' : 'strict',
+      score: Number(score.toFixed(4)),
+      xPatternMode,
+      yPatternMode,
+      leftBoundarySupport,
+      bottomBoundarySupport,
+      leftGap: Number(leftGap.toFixed(3)),
+      bottomGap: Number(bottomGap.toFixed(3)),
+      expectedLeftGap: Number(expectedLeftGap.toFixed(3)),
+      expectedBottomGap: Number(expectedBottomGap.toFixed(3)),
+      leftGapScore: Number(leftGapScore.toFixed(4)),
+      bottomGapScore: Number(bottomGapScore.toFixed(4)),
+      leftRunScore: Number(leftRunScore.toFixed(4)),
+      bottomRunScore: Number(bottomRunScore.toFixed(4)),
+      continuityScore: Number(continuityScore.toFixed(4))
+    };
+  })();
+  diagnostics.leftBottomJointSupport = leftBottomJointSupport;
 
   return {
     left: clamp(hintedLeft, 0, Math.max(0, width - 1)),
@@ -980,6 +4355,217 @@ function computeGray(rgbData, channels) {
     gray[i] = 0.299 * r + 0.587 * g + 0.114 * b;
   }
   return gray;
+}
+
+function scoreCellPatternSignature(gray, width, height, bounds) {
+  const left = Math.max(0, Math.min(width - 1, Math.round(bounds.left)));
+  const right = Math.max(left + 1, Math.min(width, Math.round(bounds.right)));
+  const top = Math.max(0, Math.min(height - 1, Math.round(bounds.top)));
+  const bottom = Math.max(top + 1, Math.min(height, Math.round(bounds.bottom)));
+  const cellWidth = right - left;
+  const cellHeight = bottom - top;
+  if (cellWidth < 24 || cellHeight < 24) {
+    return null;
+  }
+
+  const step = Math.max(1, Math.round(Math.min(cellWidth, cellHeight) / 42));
+  const inset = 0.18;
+  const lineTol = 0.04;
+  const ringRadius = 0.34;
+  const ringTol = 0.05;
+  const centerHalf = 0.13;
+  let totalDarkness = 0;
+  let totalCount = 0;
+  let centerDarkness = 0;
+  let centerCount = 0;
+  let diagonalDarkness = 0;
+  let diagonalCount = 0;
+  let crossDarkness = 0;
+  let crossCount = 0;
+  let ringDarkness = 0;
+  let ringCount = 0;
+  let insetBoxDarkness = 0;
+  let insetBoxCount = 0;
+
+  for (let y = top; y < bottom; y += step) {
+    for (let x = left; x < right; x += step) {
+      const nx = ((x - left) + 0.5) / Math.max(1, cellWidth);
+      const ny = ((y - top) + 0.5) / Math.max(1, cellHeight);
+      if (nx <= 0.06 || nx >= 0.94 || ny <= 0.06 || ny >= 0.94) {
+        continue;
+      }
+      const darkness = clamp01((255 - gray[y * width + x]) / 255);
+      totalDarkness += darkness;
+      totalCount += 1;
+      const dx = nx - 0.5;
+      const dy = ny - 0.5;
+      const radius = Math.hypot(dx, dy);
+      if (Math.abs(nx - 0.5) <= lineTol || Math.abs(ny - 0.5) <= lineTol) {
+        crossDarkness += darkness;
+        crossCount += 1;
+      }
+      if (Math.abs(ny - nx) <= lineTol || Math.abs(ny - (1 - nx)) <= lineTol) {
+        diagonalDarkness += darkness;
+        diagonalCount += 1;
+      }
+      if (Math.abs(radius - ringRadius) <= ringTol) {
+        ringDarkness += darkness;
+        ringCount += 1;
+      }
+      if (
+        (Math.abs(nx - inset) <= lineTol && ny >= inset && ny <= (1 - inset))
+        || (Math.abs(nx - (1 - inset)) <= lineTol && ny >= inset && ny <= (1 - inset))
+        || (Math.abs(ny - inset) <= lineTol && nx >= inset && nx <= (1 - inset))
+        || (Math.abs(ny - (1 - inset)) <= lineTol && nx >= inset && nx <= (1 - inset))
+      ) {
+        insetBoxDarkness += darkness;
+        insetBoxCount += 1;
+      }
+      if (Math.abs(dx) <= centerHalf && Math.abs(dy) <= centerHalf) {
+        centerDarkness += darkness;
+        centerCount += 1;
+      }
+    }
+  }
+
+  return {
+    cellWidth,
+    cellHeight,
+    totalDarkness: totalCount ? totalDarkness / totalCount : 0,
+    centerDarkness: centerCount ? centerDarkness / centerCount : 0,
+    diagonalDarkness: diagonalCount ? diagonalDarkness / diagonalCount : 0,
+    crossDarkness: crossCount ? crossDarkness / crossCount : 0,
+    ringBandDarkness: ringCount ? ringDarkness / ringCount : 0,
+    insetBoxDarkness: insetBoxCount ? insetBoxDarkness / insetBoxCount : 0
+  };
+}
+
+async function analyzeGridPatternProfileByCells(imagePath, guides, options = {}) {
+  if (!imagePath || !guides) {
+    return null;
+  }
+  const xPeaks = Array.isArray(guides.xPeaks) ? guides.xPeaks.map(Number).filter(Number.isFinite) : [];
+  const yPeaks = Array.isArray(guides.yPeaks) ? guides.yPeaks.map(Number).filter(Number.isFinite) : [];
+  if (xPeaks.length < 3 || yPeaks.length < 3) {
+    return null;
+  }
+
+  const { data, info } = await loadRgbImage(imagePath);
+  const gray = computeGray(data, info.channels);
+  const colorPack = options.colorImagePath
+    ? await loadRgbImage(options.colorImagePath).catch(() => null)
+    : null;
+  const colorData = colorPack?.data || data;
+  const colorInfo = colorPack?.info || info;
+  const guideColorStats = (() => {
+    let sampled = 0;
+    let redGuideCount = 0;
+    let redStrengthSum = 0;
+    const xPeaksRounded = xPeaks.map((value) => Math.round(value));
+    const yPeaksRounded = yPeaks.map((value) => Math.round(value));
+    const scaleX = colorInfo.width / Math.max(1, info.width);
+    const scaleY = colorInfo.height / Math.max(1, info.height);
+    const leftBound = Math.max(0, Math.round((guides.left || 0) * scaleX));
+    const rightBound = Math.min(colorInfo.width - 1, Math.round((guides.right || (info.width - 1)) * scaleX));
+    const topBound = Math.max(0, Math.round((guides.top || 0) * scaleY));
+    const bottomBound = Math.min(colorInfo.height - 1, Math.round((guides.bottom || (info.height - 1)) * scaleY));
+    for (let y = topBound; y <= bottomBound; y += 3) {
+      for (let x = leftBound; x <= rightBound; x += 3) {
+        const nearVertical = xPeaksRounded.some((peak) => Math.abs(Math.round(peak * scaleX) - x) <= 2);
+        const nearHorizontal = yPeaksRounded.some((peak) => Math.abs(Math.round(peak * scaleY) - y) <= 2);
+        if (!nearVertical && !nearHorizontal) {
+          continue;
+        }
+        const grayIndex = Math.min(info.width - 1, Math.round(x / Math.max(scaleX, 1e-6)))
+          + Math.min(info.height - 1, Math.round(y / Math.max(scaleY, 1e-6))) * info.width;
+        if ((255 - gray[grayIndex]) < 14) {
+          continue;
+        }
+        const offset = (y * colorInfo.width + x) * colorInfo.channels;
+        const r = colorData[offset];
+        const g = colorData[offset + 1];
+        const b = colorData[offset + 2];
+        const redExcess = r - Math.max(g, b);
+        sampled += 1;
+        if (r > 120 && redExcess > 18) {
+          redGuideCount += 1;
+          redStrengthSum += redExcess / 255;
+        }
+      }
+    }
+    return {
+      sampled,
+      redGuideRatio: sampled ? redGuideCount / sampled : 0,
+      redGuideStrength: redGuideCount ? redStrengthSum / redGuideCount : 0
+    };
+  })();
+  const candidates = [];
+  for (let row = 0; row < yPeaks.length - 1; row += 1) {
+    const top = Math.max(0, Math.min(yPeaks[row], yPeaks[row + 1]));
+    const bottom = Math.min(info.height, Math.max(yPeaks[row], yPeaks[row + 1]));
+    for (let col = 0; col < xPeaks.length - 1; col += 1) {
+      const left = Math.max(0, Math.min(xPeaks[col], xPeaks[col + 1]));
+      const right = Math.min(info.width, Math.max(xPeaks[col], xPeaks[col + 1]));
+      const signature = scoreCellPatternSignature(gray, info.width, info.height, { left, top, right, bottom });
+      if (!signature) {
+        continue;
+      }
+      candidates.push({
+        row,
+        col,
+        ...signature
+      });
+    }
+  }
+  if (!candidates.length) {
+    return null;
+  }
+
+  candidates.sort((a, b) => a.totalDarkness - b.totalDarkness);
+  const sampleCount = Math.min(Math.max(6, Math.round(candidates.length * 0.22)), candidates.length);
+  const selected = candidates.slice(0, sampleCount);
+  const averagedSignals = {
+    sampleCount,
+    totalDarkness: average(selected.map((item) => item.totalDarkness)),
+    centerDarkness: average(selected.map((item) => item.centerDarkness)),
+    diagonalDarkness: average(selected.map((item) => item.diagonalDarkness)),
+    crossDarkness: average(selected.map((item) => item.crossDarkness)),
+    ringBandDarkness: average(selected.map((item) => item.ringBandDarkness)),
+    insetBoxDarkness: average(selected.map((item) => item.insetBoxDarkness)),
+    redGuideRatio: guideColorStats.redGuideRatio,
+    redGuideStrength: guideColorStats.redGuideStrength,
+    meanCellWidth: average(selected.map((item) => item.cellWidth)),
+    meanCellHeight: average(selected.map((item) => item.cellHeight))
+  };
+  const patternProfile = classifyGridPatternProfile(
+    averagedSignals,
+    guides.globalPattern || null,
+    options.outerFramePattern || null
+  );
+  return {
+    ...patternProfile,
+    sampling: {
+      method: 'lowest-ink-cells',
+      sampleCount,
+      sampledCells: selected.slice(0, 8).map((item) => ({
+        row: item.row,
+        col: item.col,
+        totalDarkness: Number(item.totalDarkness.toFixed(4))
+      })),
+      averagedSignals: {
+        totalDarkness: Number(averagedSignals.totalDarkness.toFixed(4)),
+        centerDarkness: Number(averagedSignals.centerDarkness.toFixed(4)),
+        diagonalDarkness: Number(averagedSignals.diagonalDarkness.toFixed(4)),
+        crossDarkness: Number(averagedSignals.crossDarkness.toFixed(4)),
+        ringBandDarkness: Number(averagedSignals.ringBandDarkness.toFixed(4)),
+        insetBoxDarkness: Number(averagedSignals.insetBoxDarkness.toFixed(4)),
+        redGuideRatio: Number(averagedSignals.redGuideRatio.toFixed(4)),
+        redGuideStrength: Number(averagedSignals.redGuideStrength.toFixed(4)),
+        meanCellWidth: Number(averagedSignals.meanCellWidth.toFixed(3)),
+        meanCellHeight: Number(averagedSignals.meanCellHeight.toFixed(3))
+      }
+    }
+  };
 }
 
 function getMedianGap(peaks, fallback) {
@@ -1467,10 +5053,138 @@ function scoreVerticalDashedGuideAt(gray, width, height, centerX, startY, endY) 
   return topScore * 0.5 + bottomScore * 0.5;
 }
 
+function analyzeTopBorderPatternByTripleLine(gray, width, height, options = {}) {
+  const {
+    outerX,
+    outerY,
+    inward = 1,
+    cellWidth = 0,
+    cellHeight = 0
+  } = options;
+  if (!Number.isFinite(outerX) || !Number.isFinite(outerY) || !(cellWidth > 0) || !(cellHeight > 0)) {
+    return null;
+  }
+  const span = Math.max(24, Math.round(cellWidth * 0.9));
+  const x0 = clamp(
+    Math.round(inward > 0 ? outerX : outerX - span),
+    0,
+    Math.max(0, width - 1)
+  );
+  const x1 = clamp(
+    Math.round(inward > 0 ? outerX + span : outerX),
+    x0,
+    Math.max(0, width - 1)
+  );
+  const yStart = clamp(Math.round(outerY - cellHeight * 0.18), 0, Math.max(0, height - 1));
+  const yEnd = clamp(Math.round(outerY + cellHeight * 0.2), yStart, Math.max(0, height - 1));
+  const entries = [];
+  let maxScore = 0;
+  for (let y = yStart; y <= yEnd; y += 1) {
+    const lineScore = scoreHorizontalLineAt(gray, width, height, y, x0, x1);
+    const dashedScore = scoreHorizontalDashedGuideAt(gray, width, height, y, x0, x1);
+    const score = lineScore * 0.7 + dashedScore * 0.3;
+    entries.push({ y, score, lineScore, dashedScore });
+    maxScore = Math.max(maxScore, score);
+  }
+  if (!entries.length || maxScore <= 0) {
+    return null;
+  }
+  const localThreshold = maxScore * 0.58;
+  const peaks = [];
+  for (let index = 1; index < entries.length - 1; index += 1) {
+    const current = entries[index];
+    if (
+      current.score >= localThreshold
+      && current.score >= entries[index - 1].score
+      && current.score >= entries[index + 1].score
+    ) {
+      peaks.push(current);
+    }
+  }
+  if (!peaks.length) {
+    return null;
+  }
+  const clusterGap = Math.max(5, Math.round(cellHeight * 0.07));
+  const clusters = [];
+  let currentCluster = [peaks[0]];
+  for (let index = 1; index < peaks.length; index += 1) {
+    if (Math.abs(peaks[index].y - peaks[index - 1].y) <= clusterGap) {
+      currentCluster.push(peaks[index]);
+    } else {
+      clusters.push(currentCluster);
+      currentCluster = [peaks[index]];
+    }
+  }
+  clusters.push(currentCluster);
+  const bestCluster = clusters
+    .map((cluster) => {
+      const ys = cluster.map((entry) => entry.y);
+      const clusterCenter = average(ys);
+      const nearestToOuter = cluster
+        .slice()
+        .sort((a, b) => Math.abs(a.y - outerY) - Math.abs(b.y - outerY))[0];
+      return {
+        cluster,
+        clusterSize: cluster.length,
+        clusterCenter,
+        nearestToOuter,
+        spread: Math.max(...ys) - Math.min(...ys),
+        averageScore: average(cluster.map((entry) => entry.score))
+      };
+    })
+    .sort((a, b) => {
+      if (b.clusterSize !== a.clusterSize) {
+        return b.clusterSize - a.clusterSize;
+      }
+      const outerDelta = Math.abs(a.nearestToOuter.y - outerY) - Math.abs(b.nearestToOuter.y - outerY);
+      if (Math.abs(outerDelta) > 1e-6) {
+        return outerDelta;
+      }
+      return (b.averageScore || 0) - (a.averageScore || 0);
+    })[0];
+  if (!bestCluster) {
+    return null;
+  }
+  const outerBoundaryCandidate = bestCluster.nearestToOuter;
+  const topMost = bestCluster.cluster[0];
+  const mode = bestCluster.clusterSize >= 3
+    ? 'triple-line-box-inner-dashed'
+    : (bestCluster.clusterSize === 2 ? 'double-line-box-inner-dashed' : 'single-line');
+  return {
+    mode,
+    outerBoundaryY: outerBoundaryCandidate.y,
+    topMostY: topMost.y,
+    outerBoundaryScore: Number(outerBoundaryCandidate.score.toFixed(3)),
+    topMostScore: Number(topMost.score.toFixed(3)),
+    clusterSize: bestCluster.clusterSize,
+    spread: Number(bestCluster.spread.toFixed(3)),
+    clusterCenter: Number(bestCluster.clusterCenter.toFixed(3)),
+    peaks: bestCluster.cluster.map((entry) => ({
+      y: entry.y,
+      score: Number(entry.score.toFixed(3)),
+      lineScore: Number(entry.lineScore.toFixed(3)),
+      dashedScore: Number(entry.dashedScore.toFixed(3))
+    }))
+  };
+}
+
 async function recoverTopCornersByInnerGuide(imagePath, corners, guides) {
   const quad = normalizeCornerQuad(corners);
   if (!imagePath || !quad || !guides) {
     return { corners: quad, applied: false, diagnostics: null };
+  }
+  const patternProfile = guides?.globalPattern?.patternProfile || null;
+  if (patternProfile?.settings?.allowTopRecoveryByInnerGuide === false) {
+    return {
+      corners: quad,
+      applied: false,
+      diagnostics: {
+        method: 'top-corner recovery by inner dashed guide',
+        skipped: true,
+        reason: 'pattern-profile-disables-inner-guide-top-recovery',
+        patternProfile
+      }
+    };
   }
 
   const { data: rgbData, info } = await loadRgbImage(imagePath);
@@ -1480,6 +5194,15 @@ async function recoverTopCornersByInnerGuide(imagePath, corners, guides) {
   const yPeaks = Array.isArray(guides.yPeaks) ? guides.yPeaks.map(Number).filter(Number.isFinite) : [];
   const cellWidth = Math.max(24, Math.round(getMedianGap(xPeaks, info.width * 0.12)));
   const cellHeight = Math.max(24, Math.round(getMedianGap(yPeaks, info.height * 0.08)));
+  const overallPattern = guides?.globalPattern?.mode || (
+    (
+      guides?.xPattern
+      && guides?.yPattern
+      && guides.xPattern === guides.yPattern
+    )
+      ? guides.xPattern
+      : 'mixed'
+  );
   const diagnostics = {};
   const recovered = quad.map((point) => [...point]);
 
@@ -1521,6 +5244,13 @@ async function recoverTopCornersByInnerGuide(imagePath, corners, guides) {
       0.38
     );
     const dashedX = dashedXPick.index;
+    const topBorderPattern = analyzeTopBorderPatternByTripleLine(gray, info.width, info.height, {
+      outerX,
+      outerY,
+      inward: spec.inward,
+      cellWidth,
+      cellHeight
+    });
     const inset = Math.abs(dashedX - outerX);
     const dashedYStart = clamp(outerY - Math.round(cellHeight * 0.48), 0, Math.max(0, info.height - 1));
     const dashedYEnd = clamp(outerY - Math.round(cellHeight * 0.04), dashedYStart, Math.max(0, info.height - 1));
@@ -1609,10 +5339,29 @@ async function recoverTopCornersByInnerGuide(imagePath, corners, guides) {
       },
       0.45
     );
-    const refinedOuterY = refinedOuterYPick.index;
-    const shouldApply = refinedOuterY < outerY - Math.round(cellHeight * 0.1);
+    let refinedOuterY = refinedOuterYPick.index;
+    if (
+      overallPattern === 'uniform-cells-with-inner-dashed'
+      && topBorderPattern
+      && topBorderPattern.mode !== 'single-line'
+      && Math.abs(topBorderPattern.outerBoundaryY - outerY) <= Math.max(10, Math.round(cellHeight * 0.08))
+    ) {
+      refinedOuterY = topBorderPattern.outerBoundaryY;
+    }
+    const shouldApply = (
+      refinedOuterY < outerY - Math.round(cellHeight * 0.1)
+      && !(
+        overallPattern === 'uniform-cells-with-inner-dashed'
+        && topBorderPattern
+        && topBorderPattern.mode !== 'single-line'
+        && Math.abs(topBorderPattern.outerBoundaryY - outerY) <= Math.max(10, Math.round(cellHeight * 0.08))
+      )
+    );
     diagnostics[spec.name] = {
       expected: [outerX, outerY],
+      patternMode: overallPattern,
+      globalPattern: guides?.globalPattern || null,
+      topBorderPattern,
       dashedX,
       dashedY,
       inset,
@@ -1640,9 +5389,2095 @@ async function recoverTopCornersByInnerGuide(imagePath, corners, guides) {
     applied,
     diagnostics: {
       method: 'top-corner recovery by inner dashed guide',
+      globalPattern: guides?.globalPattern || null,
       cellWidth,
       cellHeight,
       corners: diagnostics
+    }
+  };
+}
+
+function evaluateRelaxedOuterFrameEvidence(options = {}) {
+  const {
+    topGap = NaN,
+    bottomGap = NaN,
+    leftGap = NaN,
+    rightGap = NaN,
+    topScore = NaN,
+    bottomScore = NaN,
+    leftScore = NaN,
+    rightScore = NaN,
+    horizontalGapRatio = Number.POSITIVE_INFINITY,
+    verticalGapRatio = Number.POSITIVE_INFINITY,
+    cellWidth = 0,
+    cellHeight = 0,
+    relaxedFourSideEvidence = false
+  } = options;
+  const topBottomGapDelta = Math.abs(Number(topGap) - Number(bottomGap));
+  const leftRightGapDelta = Math.abs(Number(leftGap) - Number(rightGap));
+  const topBottomBalanced = topBottomGapDelta <= Math.max(16, Math.round(cellHeight * 0.18));
+  const leftRightBalanced = (
+    leftRightGapDelta <= Math.max(16, Math.round(cellWidth * 0.1))
+    || verticalGapRatio <= 2.25
+  );
+  const topHeaderInterferenceRisk = (
+    Number.isFinite(topScore)
+    && Number.isFinite(bottomScore)
+    && Number.isFinite(topGap)
+    && Number.isFinite(bottomGap)
+    && topScore < Math.max(20, bottomScore * 0.58)
+    && topGap > bottomGap + Math.max(18, Math.round(cellHeight * 0.14))
+  );
+  const bottomShadowInterferenceRisk = (
+    Number.isFinite(topScore)
+    && Number.isFinite(bottomScore)
+    && Number.isFinite(topGap)
+    && Number.isFinite(bottomGap)
+    && bottomScore < Math.max(20, topScore * 0.58)
+    && bottomGap > topGap + Math.max(18, Math.round(cellHeight * 0.14))
+  );
+  const sideEnvelopeStable = (
+    Number.isFinite(leftScore)
+    && Number.isFinite(rightScore)
+    && leftScore >= 28
+    && rightScore >= 28
+    && leftRightBalanced
+  );
+  const allowRelaxedAcceptance = Boolean(
+    relaxedFourSideEvidence
+    && topBottomBalanced
+    && sideEnvelopeStable
+    && !topHeaderInterferenceRisk
+    && !bottomShadowInterferenceRisk
+  );
+  return {
+    topBottomGapDelta,
+    leftRightGapDelta,
+    topBottomBalanced,
+    leftRightBalanced,
+    sideEnvelopeStable,
+    topHeaderInterferenceRisk,
+    bottomShadowInterferenceRisk,
+    allowRelaxedAcceptance
+  };
+}
+
+function inferOuterFrameFromBroadGuideWindow(gray, width, height, detection, options = {}) {
+  const guides = detection?.guides || null;
+  const rawGuides = detection?.rawGuides || guides || null;
+  if (!guides || !rawGuides) {
+    return null;
+  }
+  const rawLeft = Number(rawGuides.left);
+  const rawRight = Number(rawGuides.right);
+  const rawTop = Number(rawGuides.top);
+  const rawBottom = Number(rawGuides.bottom);
+  if (![rawLeft, rawRight, rawTop, rawBottom].every(Number.isFinite)) {
+    return null;
+  }
+  const guideTop = Number(guides.top);
+  const guideBottom = Number(guides.bottom);
+  const rawXPeaks = Array.isArray(rawGuides.xPeaks) ? rawGuides.xPeaks.map(Number).filter(Number.isFinite) : [];
+  const rawYPeaks = Array.isArray(rawGuides.yPeaks) ? rawGuides.yPeaks.map(Number).filter(Number.isFinite) : [];
+  const cellWidth = Math.max(
+    24,
+    Math.round(Number(options.cellWidth) || getMedianGap(rawXPeaks, width * 0.12))
+  );
+  const cellHeight = Math.max(
+    24,
+    Math.round(Number(options.cellHeight) || getMedianGap(rawYPeaks, height * 0.08))
+  );
+  const spanInsetX = Math.max(18, Math.round(cellWidth * 0.12));
+  const coarseSpanTop = clamp(
+    Math.round(Math.max(rawTop, Number.isFinite(guideTop) ? guideTop : rawTop) + cellHeight * 0.45),
+    0,
+    Math.max(0, height - 1)
+  );
+  const coarseSpanBottom = clamp(
+    Math.round(Math.min(rawBottom, Number.isFinite(guideBottom) ? guideBottom : rawBottom) - cellHeight * 0.45),
+    coarseSpanTop + 1,
+    Math.max(1, height - 1)
+  );
+  const sideSearch = Math.max(14, Math.round(cellWidth * 0.24));
+  const leftPoints = collectGlobalVerticalBoundaryPoints(gray, width, height, {
+    expectedX: rawLeft,
+    xStart: clamp(Math.round(rawLeft - sideSearch), 0, Math.max(0, width - 1)),
+    xEnd: clamp(Math.round(rawLeft + Math.max(8, cellWidth * 0.1)), 0, Math.max(0, width - 1)),
+    yStart: coarseSpanTop,
+    yEnd: coarseSpanBottom,
+    inwardDir: 1,
+    step: 8,
+    outwardBias: 0.08
+  });
+  const rightPoints = collectGlobalVerticalBoundaryPoints(gray, width, height, {
+    expectedX: rawRight,
+    xStart: clamp(Math.round(rawRight - Math.max(8, cellWidth * 0.1)), 0, Math.max(0, width - 1)),
+    xEnd: clamp(Math.round(rawRight + sideSearch), 0, Math.max(0, width - 1)),
+    yStart: coarseSpanTop,
+    yEnd: coarseSpanBottom,
+    inwardDir: -1,
+    step: 8,
+    outwardBias: 0.08
+  });
+  const leftLineFit = fitLineRobust(leftPoints, 4);
+  const rightLineFit = fitLineRobust(rightPoints, 4);
+  if (!leftLineFit || !rightLineFit) {
+    return null;
+  }
+  const probeStartY = Math.round(average([coarseSpanTop, coarseSpanBottom]));
+  const leftTopPoint = probeVerticalLineEndpoint(leftLineFit, gray, width, height, {
+    startY: probeStartY,
+    endY: 0,
+    inwardDir: 1,
+    direction: 'top'
+  });
+  const rightTopPoint = probeVerticalLineEndpoint(rightLineFit, gray, width, height, {
+    startY: probeStartY,
+    endY: 0,
+    inwardDir: -1,
+    direction: 'top'
+  });
+  const leftBottomPoint = probeVerticalLineEndpoint(leftLineFit, gray, width, height, {
+    startY: probeStartY,
+    endY: height - 1,
+    inwardDir: 1,
+    direction: 'bottom'
+  });
+  const rightBottomPoint = probeVerticalLineEndpoint(rightLineFit, gray, width, height, {
+    startY: probeStartY,
+    endY: height - 1,
+    inwardDir: -1,
+    direction: 'bottom'
+  });
+  const topProbeY = medianCoordinate([leftTopPoint, rightTopPoint], 1);
+  const bottomProbeY = medianCoordinate([leftBottomPoint, rightBottomPoint], 1);
+  if (!Number.isFinite(topProbeY) || !Number.isFinite(bottomProbeY) || bottomProbeY <= topProbeY) {
+    return null;
+  }
+  const spanX0 = clamp(rawLeft + spanInsetX, 0, Math.max(0, width - 1));
+  const spanX1 = clamp(rawRight - spanInsetX, spanX0 + 1, Math.max(1, width - 1));
+  const horizontalWindow = Math.max(26, Math.round(cellHeight * 0.28));
+  const topLine = findStrongDirectionalLine(
+    clamp(Math.round(topProbeY - horizontalWindow), 0, Math.max(0, height - 1)),
+    clamp(Math.round(topProbeY + horizontalWindow), 0, Math.max(0, height - 1)),
+    (y) => scoreOuterHorizontalBoundaryAt(gray, width, height, y, spanX0, spanX1, 1)
+  );
+  const bottomLine = findStrongDirectionalLine(
+    clamp(Math.round(bottomProbeY - horizontalWindow), 0, Math.max(0, height - 1)),
+    clamp(Math.round(bottomProbeY + horizontalWindow), 0, Math.max(0, height - 1)),
+    (y) => scoreOuterHorizontalBoundaryAt(gray, width, height, y, spanX0, spanX1, -1)
+  );
+  if (!topLine || !bottomLine || bottomLine.index <= topLine.index) {
+    return null;
+  }
+  const leftAnchorX = medianCoordinate([leftTopPoint, leftBottomPoint], 0);
+  const rightAnchorX = medianCoordinate([rightTopPoint, rightBottomPoint], 0);
+  const solvedLeftX = solveLineXAtY(leftLineFit, probeStartY);
+  const solvedRightX = solveLineXAtY(rightLineFit, probeStartY);
+  const outerRect = {
+    left: Math.round(Number.isFinite(leftAnchorX) ? leftAnchorX : (Number.isFinite(solvedLeftX) ? solvedLeftX : rawLeft)),
+    right: Math.round(Number.isFinite(rightAnchorX) ? rightAnchorX : (Number.isFinite(solvedRightX) ? solvedRightX : rawRight)),
+    top: Math.round(topLine.index),
+    bottom: Math.round(bottomLine.index)
+  };
+  const outerQuad = normalizeCornerQuad([
+    [outerRect.left, outerRect.top],
+    [outerRect.right, outerRect.top],
+    [outerRect.right, outerRect.bottom],
+    [outerRect.left, outerRect.bottom]
+  ]);
+  const headerBandHeight = Math.max(0, outerRect.top - rawTop);
+  const footerBandHeight = Math.max(0, rawBottom - outerRect.bottom);
+  const widthSpan = outerRect.right - outerRect.left;
+  const heightSpan = outerRect.bottom - outerRect.top;
+  const horizontalScoreMin = Math.max(20, cellHeight * 0.09);
+  const verticalScoreMin = Math.max(14, cellWidth * 0.08);
+  const leftScore = scoreOuterVerticalBoundaryAt(gray, width, height, outerRect.left, coarseSpanTop, coarseSpanBottom, 1);
+  const rightScore = scoreOuterVerticalBoundaryAt(gray, width, height, outerRect.right, coarseSpanTop, coarseSpanBottom, -1);
+  const meaningfulHeaderBand = headerBandHeight >= Math.max(36, Math.round(cellHeight * 0.32));
+  const meaningfulFooterBand = footerBandHeight >= Math.max(96, Math.round(cellHeight * 0.92));
+  const strongSingleBandThreshold = Math.max(120, Math.round(cellHeight * 1.05));
+  const strongSingleBand = (
+    (meaningfulHeaderBand || meaningfulFooterBand)
+    && Math.max(headerBandHeight, footerBandHeight) >= strongSingleBandThreshold
+  );
+  const dualBandConfirmation = meaningfulHeaderBand && meaningfulFooterBand;
+  const allowPatternDrivenSingleBandWindow = String(options.patternProfileFamily || '') === 'circle-mi-grid';
+  const singleBandSideGapThresholdX = Math.max(8, Math.round(cellWidth * 0.05));
+  const singleBandSideGapThresholdY = Math.max(8, Math.round(cellHeight * 0.05));
+  const singleBandSideEvidenceCount = [
+    rawLeft - outerRect.left >= singleBandSideGapThresholdX,
+    outerRect.right - rawRight >= singleBandSideGapThresholdX,
+    rawTop - outerRect.top >= singleBandSideGapThresholdY,
+    outerRect.bottom - rawBottom >= singleBandSideGapThresholdY
+  ].filter(Boolean).length;
+  const eligible = Boolean(
+    outerQuad
+    && topLine.score >= horizontalScoreMin
+    && bottomLine.score >= horizontalScoreMin
+    && leftScore >= verticalScoreMin
+    && rightScore >= verticalScoreMin
+    && widthSpan >= Math.max(Math.round(width * 0.55), Math.round(cellWidth * 4.8))
+    && heightSpan >= Math.max(Math.round(height * 0.55), Math.round(cellHeight * 5.5))
+    && (
+      dualBandConfirmation
+      || (
+        strongSingleBand
+        && (
+          allowPatternDrivenSingleBandWindow
+          || singleBandSideEvidenceCount >= 2
+        )
+      )
+    )
+  );
+  if (!eligible) {
+    return {
+      applied: false,
+      reason: 'broad-guide-window-not-confirmed',
+      diagnostics: {
+        method: 'broad-raw-guide-window-outer-frame',
+        rawGuideBounds: { left: rawLeft, right: rawRight, top: rawTop, bottom: rawBottom },
+        candidateBounds: outerRect,
+        candidateScores: {
+          top: Number((topLine.score || 0).toFixed(3)),
+          bottom: Number((bottomLine.score || 0).toFixed(3)),
+          left: Number((leftScore || 0).toFixed(3)),
+          right: Number((rightScore || 0).toFixed(3))
+        },
+        headerBandHeight,
+        footerBandHeight,
+        widthSpan,
+        heightSpan,
+        cellWidth,
+        cellHeight,
+        meaningfulHeaderBand,
+        meaningfulFooterBand,
+        dualBandConfirmation,
+        strongSingleBand,
+        strongSingleBandThreshold,
+        allowPatternDrivenSingleBandWindow,
+        singleBandSideEvidenceCount,
+        singleBandSideGapThresholdX,
+        singleBandSideGapThresholdY,
+        verticalEndpoints: {
+          leftTop: leftTopPoint ? leftTopPoint.map((value) => Number(value.toFixed(3))) : null,
+          rightTop: rightTopPoint ? rightTopPoint.map((value) => Number(value.toFixed(3))) : null,
+          leftBottom: leftBottomPoint ? leftBottomPoint.map((value) => Number(value.toFixed(3))) : null,
+          rightBottom: rightBottomPoint ? rightBottomPoint.map((value) => Number(value.toFixed(3))) : null
+        }
+      }
+    };
+  }
+  return {
+    applied: true,
+    reason: 'broad-guide-window-outer-frame',
+    outerQuad,
+    refinedOuterFrame: outerRect,
+    diagnostics: {
+      method: 'broad-raw-guide-window-outer-frame',
+      outerFramePattern: 'full-margin-outer-frame',
+      rawGuideBounds: { left: rawLeft, right: rawRight, top: rawTop, bottom: rawBottom },
+      guideBounds: {
+        left: Number.isFinite(Number(guides.left)) ? Math.round(Number(guides.left)) : null,
+        right: Number.isFinite(Number(guides.right)) ? Math.round(Number(guides.right)) : null,
+        top: Number.isFinite(guideTop) ? Math.round(guideTop) : null,
+        bottom: Number.isFinite(guideBottom) ? Math.round(guideBottom) : null
+      },
+      headerBandHeight,
+      footerBandHeight,
+      candidateScores: {
+        top: Number((topLine.score || 0).toFixed(3)),
+        bottom: Number((bottomLine.score || 0).toFixed(3)),
+        left: Number((leftScore || 0).toFixed(3)),
+        right: Number((rightScore || 0).toFixed(3))
+      },
+      verticalEndpoints: {
+        leftTop: leftTopPoint ? leftTopPoint.map((value) => Number(value.toFixed(3))) : null,
+        rightTop: rightTopPoint ? rightTopPoint.map((value) => Number(value.toFixed(3))) : null,
+        leftBottom: leftBottomPoint ? leftBottomPoint.map((value) => Number(value.toFixed(3))) : null,
+        rightBottom: rightBottomPoint ? rightBottomPoint.map((value) => Number(value.toFixed(3))) : null
+      },
+      cellWidth,
+      cellHeight,
+      dualBandConfirmation,
+      strongSingleBand,
+      strongSingleBandThreshold,
+      allowPatternDrivenSingleBandWindow,
+      singleBandSideEvidenceCount,
+      singleBandSideGapThresholdX,
+      singleBandSideGapThresholdY
+    }
+  };
+}
+
+function fitTiltedOuterFrameQuadFromBounds(gray, width, height, outerBounds, innerBounds, options = {}) {
+  if (!gray || !outerBounds || !innerBounds || width <= 0 || height <= 0) {
+    return null;
+  }
+  const outerLeft = clamp(Math.round(Number(outerBounds.left)), 0, Math.max(0, width - 1));
+  const outerRight = clamp(Math.round(Number(outerBounds.right)), outerLeft + 1, Math.max(1, width - 1));
+  const outerTop = clamp(Math.round(Number(outerBounds.top)), 0, Math.max(0, height - 1));
+  const outerBottom = clamp(Math.round(Number(outerBounds.bottom)), outerTop + 1, Math.max(1, height - 1));
+  const innerLeft = clamp(Math.round(Number(innerBounds.left)), outerLeft, outerRight);
+  const innerRight = clamp(Math.round(Number(innerBounds.right)), innerLeft + 1, outerRight);
+  const innerTop = clamp(Math.round(Number(innerBounds.top)), outerTop, outerBottom);
+  const innerBottom = clamp(Math.round(Number(innerBounds.bottom)), innerTop + 1, outerBottom);
+  const cellWidth = Math.max(24, Math.round(Number(options.cellWidth) || 0));
+  const cellHeight = Math.max(24, Math.round(Number(options.cellHeight) || 0));
+  const sideSearch = Math.max(10, Math.round(cellWidth * 0.12));
+  const topLift = Math.max(18, Math.round(cellHeight * 0.34));
+  const topReturn = Math.max(8, Math.round(cellHeight * 0.08));
+  const bottomDrop = Math.max(18, Math.round(cellHeight * 0.2));
+  const coarseY0 = clamp(
+    Math.round(Math.min(outerTop, innerTop) - topLift),
+    0,
+    Math.max(0, height - 1)
+  );
+  const coarseY1 = clamp(
+    Math.round(Math.max(outerBottom, innerBottom) + bottomDrop),
+    coarseY0,
+    Math.max(0, height - 1)
+  );
+
+  const leftPoints = collectGlobalVerticalBoundaryPoints(gray, width, height, {
+    expectedX: outerLeft,
+    xStart: clamp(Math.round(outerLeft - sideSearch), 0, Math.max(0, width - 1)),
+    xEnd: clamp(Math.round(Math.min(innerLeft - 2, outerLeft + sideSearch)), 0, Math.max(0, width - 1)),
+    yStart: coarseY0,
+    yEnd: coarseY1,
+    inwardDir: 1,
+    step: 8,
+    outwardBias: 0.12
+  });
+  const rightPoints = collectGlobalVerticalBoundaryPoints(gray, width, height, {
+    expectedX: outerRight,
+    xStart: clamp(Math.round(Math.max(innerRight + 2, outerRight - sideSearch)), 0, Math.max(0, width - 1)),
+    xEnd: clamp(Math.round(outerRight + sideSearch), 0, Math.max(0, width - 1)),
+    yStart: coarseY0,
+    yEnd: coarseY1,
+    inwardDir: -1,
+    step: 8,
+    outwardBias: 0.12
+  });
+  const leftLineFit = fitLineRobust(leftPoints, 4);
+  const rightLineFit = fitLineRobust(rightPoints, 4);
+  if (!leftLineFit || !rightLineFit) {
+    return null;
+  }
+
+  const topProbeStartY = clamp(
+    Math.round(Math.min(innerBottom, outerTop + Math.max(16, cellHeight * 0.6))),
+    coarseY0,
+    coarseY1
+  );
+  const bottomProbeStartY = clamp(
+    Math.round(Math.max(innerTop, outerBottom - Math.max(16, cellHeight * 0.6))),
+    coarseY0,
+    coarseY1
+  );
+  const leftTop = probeVerticalLineEndpoint(leftLineFit, gray, width, height, {
+    startY: topProbeStartY,
+    endY: coarseY0,
+    inwardDir: 1,
+    direction: 'top'
+  });
+  const rightTop = probeVerticalLineEndpoint(rightLineFit, gray, width, height, {
+    startY: topProbeStartY,
+    endY: coarseY0,
+    inwardDir: -1,
+    direction: 'top'
+  });
+  const leftBottom = probeVerticalLineEndpoint(leftLineFit, gray, width, height, {
+    startY: bottomProbeStartY,
+    endY: coarseY1,
+    inwardDir: 1,
+    direction: 'bottom'
+  });
+  const rightBottom = probeVerticalLineEndpoint(rightLineFit, gray, width, height, {
+    startY: bottomProbeStartY,
+    endY: coarseY1,
+    inwardDir: -1,
+    direction: 'bottom'
+  });
+
+  const topProbeMedian = medianCoordinate([leftTop, rightTop], 1);
+  const bottomProbeMedian = medianCoordinate([leftBottom, rightBottom], 1);
+  const topProbeExpected = Number.isFinite(topProbeMedian) ? topProbeMedian : outerTop;
+  const bottomProbeExpected = Number.isFinite(bottomProbeMedian) ? bottomProbeMedian : outerBottom;
+  const topPoints = collectGlobalHorizontalBoundaryPoints(gray, width, height, {
+    expectedY: topProbeExpected,
+    xStart: outerLeft,
+    xEnd: outerRight,
+    yStart: clamp(Math.round(topProbeExpected - topLift), 0, Math.max(0, height - 1)),
+    yEnd: clamp(Math.round(Math.min(innerTop - 2, topProbeExpected + topReturn)), 0, Math.max(0, height - 1)),
+    inwardDir: 1,
+    step: 8,
+    outwardBias: 0.12
+  });
+  const bottomPoints = collectGlobalHorizontalBoundaryPoints(gray, width, height, {
+    expectedY: bottomProbeExpected,
+    xStart: outerLeft,
+    xEnd: outerRight,
+    yStart: clamp(Math.round(Math.max(innerBottom + 2, bottomProbeExpected - topReturn)), 0, Math.max(0, height - 1)),
+    yEnd: clamp(Math.round(bottomProbeExpected + bottomDrop), 0, Math.max(0, height - 1)),
+    inwardDir: -1,
+    step: 8,
+    outwardBias: 0.12
+  });
+  const topLineFit = fitLineRobust(topPoints, 4);
+  const bottomLineFit = fitLineRobust(bottomPoints, 4);
+
+  const topAnchorLine = buildLineFromEndAnchors(leftTop, rightTop, topLineFit);
+  const bottomAnchorLine = buildLineFromEndAnchors(leftBottom, rightBottom, bottomLineFit);
+  const leftAnchorLine = buildLineFromEndAnchors(leftTop, leftBottom, leftLineFit);
+  const rightAnchorLine = buildLineFromEndAnchors(rightTop, rightBottom, rightLineFit);
+  const topLine = blendLines(topLineFit, topAnchorLine, 0.62) || topAnchorLine || topLineFit;
+  const bottomLine = blendLines(bottomLineFit, bottomAnchorLine, 0.62) || bottomAnchorLine || bottomLineFit;
+  const leftLine = blendLines(leftLineFit, leftAnchorLine, 0.28) || leftAnchorLine || leftLineFit;
+  const rightLine = blendLines(rightLineFit, rightAnchorLine, 0.28) || rightAnchorLine || rightLineFit;
+  const quad = normalizeCornerQuad([
+    intersectLines(topLine, leftLine),
+    intersectLines(topLine, rightLine),
+    intersectLines(bottomLine, rightLine),
+    intersectLines(bottomLine, leftLine)
+  ]);
+  if (!quad) {
+    return null;
+  }
+  const bounds = getQuadBounds(quad);
+  if (!bounds) {
+    return null;
+  }
+  const maxShiftX = Math.max(14, Math.round(cellWidth * 0.2));
+  const maxShiftY = Math.max(16, Math.round(cellHeight * 0.2));
+  const withinShiftLimit = (
+    Math.abs(bounds.left - outerLeft) <= maxShiftX
+    && Math.abs(bounds.right - outerRight) <= maxShiftX
+    && Math.abs(bounds.top - outerTop) <= maxShiftY
+    && Math.abs(bounds.bottom - outerBottom) <= maxShiftY
+  );
+  const wrapsInner = (
+    bounds.left <= innerLeft - 2
+    && bounds.right >= innerRight + 2
+    && bounds.top <= innerTop - 2
+    && bounds.bottom >= innerBottom + 2
+  );
+  if (!withinShiftLimit || !wrapsInner) {
+    return null;
+  }
+  return {
+    quad,
+    bounds,
+    diagnostics: {
+      verticalEndpoints: {
+        leftTop: leftTop ? leftTop.map((value) => Number(value.toFixed(3))) : null,
+        rightTop: rightTop ? rightTop.map((value) => Number(value.toFixed(3))) : null,
+        leftBottom: leftBottom ? leftBottom.map((value) => Number(value.toFixed(3))) : null,
+        rightBottom: rightBottom ? rightBottom.map((value) => Number(value.toFixed(3))) : null
+      },
+      coarseWindow: {
+        y: [coarseY0, coarseY1],
+        sideSearch
+      },
+      topProbeExpected: Number.isFinite(topProbeExpected) ? Number(topProbeExpected.toFixed(3)) : null,
+      bottomProbeExpected: Number.isFinite(bottomProbeExpected) ? Number(bottomProbeExpected.toFixed(3)) : null,
+      topPointCount: topPoints.length,
+      bottomPointCount: bottomPoints.length,
+      leftPointCount: leftPoints.length,
+      rightPointCount: rightPoints.length
+    }
+  };
+}
+
+async function inferOuterFrameFromPattern(imagePath, detection, cornerRefinement = null, options = {}) {
+  const guides = detection?.guides || null;
+  const innerQuad = normalizeCornerQuad(
+    detection?.cornerAnchors?.corners
+    || detection?.corners
+    || null
+  );
+  if (!imagePath || !guides || !innerQuad) {
+    return { applied: false, reason: 'missing-inner-guides' };
+  }
+
+  const globalPattern = (
+    guides?.globalPattern
+    || cornerRefinement?.globalPattern
+    || cornerRefinement?.rawGuideHints?.diagnostics?.globalPattern
+    || null
+  );
+  const patternProfileFamily = (
+    globalPattern?.patternProfile?.family
+    || detection?.rawGuides?.globalPattern?.patternProfile?.family
+    || null
+  );
+  const patternMode = globalPattern?.mode || 'mixed';
+  if (!['uniform-boundary-grid', 'uniform-cells-with-inner-dashed', 'mixed'].includes(patternMode)) {
+    return {
+      applied: false,
+      reason: 'pattern-not-supported',
+      patternMode
+    };
+  }
+
+  const { data: rgbData, info } = await loadRgbImage(imagePath);
+  const baseGray = computeGray(rgbData, info.channels);
+  const gray = await buildOuterFrameEnhancedGray(baseGray, info.width, info.height, guides);
+  const xPeaks = Array.isArray(guides.xPeaks) ? guides.xPeaks.map(Number).filter(Number.isFinite) : [];
+  const yPeaks = Array.isArray(guides.yPeaks) ? guides.yPeaks.map(Number).filter(Number.isFinite) : [];
+  const cellWidth = Math.max(24, Math.round(getMedianGap(xPeaks, info.width * 0.12)));
+  const cellHeight = Math.max(24, Math.round(getMedianGap(yPeaks, info.height * 0.08)));
+  const innerLeft = clamp(Math.round(Number(guides.left)), 0, Math.max(0, info.width - 1));
+  const innerRight = clamp(Math.round(Number(guides.right)), innerLeft + 1, Math.max(1, info.width - 1));
+  const innerTop = clamp(Math.round(Number(guides.top)), 0, Math.max(0, info.height - 1));
+  const innerBottom = clamp(Math.round(Number(guides.bottom)), innerTop + 1, Math.max(1, info.height - 1));
+  const spanX0 = clamp(innerLeft + Math.round(cellWidth * 0.08), 0, Math.max(0, info.width - 1));
+  const spanX1 = clamp(innerRight - Math.round(cellWidth * 0.08), spanX0 + 1, Math.max(1, info.width - 1));
+  const spanY0 = clamp(innerTop + Math.round(cellHeight * 0.08), 0, Math.max(0, info.height - 1));
+  const spanY1 = clamp(innerBottom - Math.round(cellHeight * 0.08), spanY0 + 1, Math.max(1, info.height - 1));
+  const outwardSearchX = Math.max(10, Math.round(cellWidth * 0.22));
+  const outwardSearchY = Math.max(10, Math.round(cellHeight * 0.22));
+  const minGapX = Math.max(4, Math.round(cellWidth * 0.018));
+  const minGapY = Math.max(4, Math.round(cellHeight * 0.018));
+
+  const topPick = pickBestDirectionalIndex(
+    clamp(innerTop - outwardSearchY, 0, Math.max(0, info.height - 1)),
+    clamp(innerTop - minGapY, 0, Math.max(0, info.height - 1)),
+    clamp(innerTop - Math.round(outwardSearchY * 0.72), 0, Math.max(0, info.height - 1)),
+    (candidateY) => scoreHorizontalLineAt(gray, info.width, info.height, candidateY, spanX0, spanX1),
+    {
+      distancePenalty: 0.18,
+      outwardTarget: clamp(innerTop - outwardSearchY, 0, Math.max(0, info.height - 1)),
+      outwardBias: 0.34
+    }
+  );
+  const bottomPick = pickBestDirectionalIndex(
+    clamp(innerBottom + minGapY, 0, Math.max(0, info.height - 1)),
+    clamp(innerBottom + outwardSearchY, 0, Math.max(0, info.height - 1)),
+    clamp(innerBottom + Math.round(outwardSearchY * 0.72), 0, Math.max(0, info.height - 1)),
+    (candidateY) => scoreHorizontalLineAt(gray, info.width, info.height, candidateY, spanX0, spanX1),
+    {
+      distancePenalty: 0.18,
+      outwardTarget: clamp(innerBottom + outwardSearchY, 0, Math.max(0, info.height - 1)),
+      outwardBias: 0.34
+    }
+  );
+  const leftPick = pickBestDirectionalIndex(
+    clamp(innerLeft - outwardSearchX, 0, Math.max(0, info.width - 1)),
+    clamp(innerLeft - minGapX, 0, Math.max(0, info.width - 1)),
+    clamp(innerLeft - Math.round(outwardSearchX * 0.72), 0, Math.max(0, info.width - 1)),
+    (candidateX) => scoreVerticalLineAt(gray, info.width, info.height, candidateX, spanY0, spanY1),
+    {
+      distancePenalty: 0.18,
+      outwardTarget: clamp(innerLeft - outwardSearchX, 0, Math.max(0, info.width - 1)),
+      outwardBias: 0.34
+    }
+  );
+  const rightPick = pickBestDirectionalIndex(
+    clamp(innerRight + minGapX, 0, Math.max(0, info.width - 1)),
+    clamp(innerRight + outwardSearchX, 0, Math.max(0, info.width - 1)),
+    clamp(innerRight + Math.round(outwardSearchX * 0.72), 0, Math.max(0, info.width - 1)),
+    (candidateX) => scoreVerticalLineAt(gray, info.width, info.height, candidateX, spanY0, spanY1),
+    {
+      distancePenalty: 0.18,
+      outwardTarget: clamp(innerRight + outwardSearchX, 0, Math.max(0, info.width - 1)),
+      outwardBias: 0.34
+    }
+  );
+
+  const topGap = innerTop - topPick.index;
+  const bottomGap = bottomPick.index - innerBottom;
+  const leftGap = innerLeft - leftPick.index;
+  const rightGap = rightPick.index - innerRight;
+  const gaps = [topGap, bottomGap, leftGap, rightGap].filter((value) => Number.isFinite(value) && value > 0);
+  const horizontalGaps = [topGap, bottomGap].filter((value) => Number.isFinite(value) && value > 0);
+  const verticalGaps = [leftGap, rightGap].filter((value) => Number.isFinite(value) && value > 0);
+  const gapRatio = gaps.length ? Math.max(...gaps) / Math.max(1, Math.min(...gaps)) : Number.POSITIVE_INFINITY;
+  const horizontalGapRatio = horizontalGaps.length === 2 ? Math.max(...horizontalGaps) / Math.max(1, Math.min(...horizontalGaps)) : Number.POSITIVE_INFINITY;
+  const verticalGapRatio = verticalGaps.length === 2 ? Math.max(...verticalGaps) / Math.max(1, Math.min(...verticalGaps)) : Number.POSITIVE_INFINITY;
+  const normalizedMarginRatios = {
+    top: topGap / Math.max(cellHeight, 1),
+    bottom: bottomGap / Math.max(cellHeight, 1),
+    left: leftGap / Math.max(cellWidth, 1),
+    right: rightGap / Math.max(cellWidth, 1)
+  };
+  const minHorizontalMarginRatio = Math.min(normalizedMarginRatios.top, normalizedMarginRatios.bottom);
+  const minVerticalMarginRatio = Math.min(normalizedMarginRatios.left, normalizedMarginRatios.right);
+  const meanHorizontalMarginRatio = average([normalizedMarginRatios.top, normalizedMarginRatios.bottom].filter(Number.isFinite));
+  const meanVerticalMarginRatio = average([normalizedMarginRatios.left, normalizedMarginRatios.right].filter(Number.isFinite));
+  const axisMarginDominanceRatio = (
+    Number.isFinite(meanHorizontalMarginRatio)
+    && Number.isFinite(meanVerticalMarginRatio)
+    && Math.min(meanHorizontalMarginRatio, meanVerticalMarginRatio) > 1e-6
+  )
+    ? Math.max(meanHorizontalMarginRatio, meanVerticalMarginRatio) / Math.max(1e-6, Math.min(meanHorizontalMarginRatio, meanVerticalMarginRatio))
+    : Number.POSITIVE_INFINITY;
+  const lineScores = [topPick.score, bottomPick.score, leftPick.score, rightPick.score].filter(Number.isFinite);
+  const strongSideCount = lineScores.filter((score) => score >= 24).length;
+  const moderateSideCount = lineScores.filter((score) => score >= 18).length;
+  const sideGapCount = gaps.filter((gap) => gap >= 4).length;
+  const relaxedFourSideEvidence = Boolean(
+    moderateSideCount >= 4
+    && strongSideCount >= 3
+    && sideGapCount >= 4
+    && topPick.score >= 18
+    && bottomPick.score >= 18
+    && leftPick.score >= 28
+    && rightPick.score >= 28
+    && horizontalGapRatio <= 3.4
+    && verticalGapRatio <= 3.2
+  );
+  const relaxedEvidenceDiagnostics = evaluateRelaxedOuterFrameEvidence({
+    topGap,
+    bottomGap,
+    leftGap,
+    rightGap,
+    topScore: topPick.score,
+    bottomScore: bottomPick.score,
+    leftScore: leftPick.score,
+    rightScore: rightPick.score,
+    horizontalGapRatio,
+    verticalGapRatio,
+    cellWidth,
+    cellHeight,
+    relaxedFourSideEvidence
+  });
+  const significantGapFlags = {
+    top: topGap >= 4,
+    bottom: bottomGap >= 4,
+    left: leftGap >= 4,
+    right: rightGap >= 4
+  };
+  let outerFramePattern = 'mixed-outer-frame';
+  if (significantGapFlags.top && significantGapFlags.bottom && !significantGapFlags.left && !significantGapFlags.right) {
+    outerFramePattern = 'top-bottom-separated-outer-frame';
+  } else if (!significantGapFlags.top && !significantGapFlags.bottom && significantGapFlags.left && significantGapFlags.right) {
+    outerFramePattern = 'left-right-separated-outer-frame';
+  } else if (significantGapFlags.top && significantGapFlags.bottom && significantGapFlags.left && significantGapFlags.right) {
+    outerFramePattern = 'full-margin-outer-frame';
+  } else if ((significantGapFlags.top || significantGapFlags.bottom) && (significantGapFlags.left || significantGapFlags.right)) {
+    outerFramePattern = 'three-side-or-asymmetric-outer-frame';
+  }
+  const requiresPageWindowConfirmation = Boolean(
+    patternProfileFamily !== 'circle-mi-grid'
+    && (
+    outerFramePattern === 'full-margin-outer-frame'
+    && (
+      relaxedEvidenceDiagnostics.allowRelaxedAcceptance
+      || minVerticalMarginRatio < 0.08
+      || minHorizontalMarginRatio < 0.08
+      || axisMarginDominanceRatio > 2.6
+    )
+    )
+  );
+  const weakFullMarginSideMargins = Boolean(
+    outerFramePattern === 'full-margin-outer-frame'
+    && (
+      minVerticalMarginRatio < 0.035
+      || minHorizontalMarginRatio < 0.035
+      || axisMarginDominanceRatio > 4.2
+    )
+  );
+  const axisAlignedOuterQuad = normalizeCornerQuad([
+    [leftPick.index, topPick.index],
+    [rightPick.index, topPick.index],
+    [rightPick.index, bottomPick.index],
+    [leftPick.index, bottomPick.index]
+  ]);
+  const axisAlignedOuterRect = axisAlignedOuterQuad
+    ? {
+        left: Math.round(Math.min(...axisAlignedOuterQuad.map((point) => point[0]))),
+        right: Math.round(Math.max(...axisAlignedOuterQuad.map((point) => point[0]))),
+        top: Math.round(Math.min(...axisAlignedOuterQuad.map((point) => point[1]))),
+        bottom: Math.round(Math.max(...axisAlignedOuterQuad.map((point) => point[1])))
+      }
+    : null;
+  const fittedOuterQuad = axisAlignedOuterRect
+    ? fitTiltedOuterFrameQuadFromBounds(
+      gray,
+      info.width,
+      info.height,
+      axisAlignedOuterRect,
+      { left: innerLeft, right: innerRight, top: innerTop, bottom: innerBottom },
+      { cellWidth, cellHeight }
+    )
+    : null;
+  const outerQuad = fittedOuterQuad?.quad || axisAlignedOuterQuad;
+  const outerRect = fittedOuterQuad?.bounds || axisAlignedOuterRect;
+  const wrapsInner = Boolean(
+    outerRect
+    && outerRect.left <= innerLeft
+    && outerRect.right >= innerRight
+    && outerRect.top <= innerTop
+    && outerRect.bottom >= innerBottom
+  );
+  const eligible = Boolean(
+    outerQuad
+    && wrapsInner
+    && (strongSideCount >= 4 || relaxedEvidenceDiagnostics.allowRelaxedAcceptance)
+    && sideGapCount >= 4
+    && horizontalGapRatio <= 6.5
+    && verticalGapRatio <= 3.2
+    && (
+      gapRatio <= 6.5
+      || (
+        relaxedEvidenceDiagnostics.allowRelaxedAcceptance
+        && strongSideCount >= 4
+        && outerFramePattern === 'full-margin-outer-frame'
+      )
+    )
+    && (
+      Math.max(...gaps) >= Math.max(8, Math.round(Math.min(cellWidth, cellHeight) * 0.06))
+      || average(gaps) >= Math.max(6, Math.round(Math.min(cellWidth, cellHeight) * 0.035))
+    )
+    && (
+      outerFramePattern !== 'full-margin-outer-frame'
+      || (
+        minHorizontalMarginRatio >= 0.04
+        && minVerticalMarginRatio >= 0.045
+        && axisMarginDominanceRatio <= 4.2
+      )
+      || (
+        relaxedEvidenceDiagnostics.allowRelaxedAcceptance
+        && minVerticalMarginRatio >= 0.035
+        && minHorizontalMarginRatio >= 0.035
+        && axisMarginDominanceRatio <= 3.8
+      )
+    )
+  );
+  const broadGuideWindowCandidate = (
+    !eligible || requiresPageWindowConfirmation
+  )
+    ? inferOuterFrameFromBroadGuideWindow(gray, info.width, info.height, detection, {
+      cellWidth,
+      cellHeight,
+      patternProfileFamily
+    })
+    : null;
+
+  if (!eligible) {
+    if (broadGuideWindowCandidate?.applied) {
+      return broadGuideWindowCandidate;
+    }
+    return {
+      applied: false,
+      reason: weakFullMarginSideMargins
+        ? 'pattern-outer-frame-lacks-page-window-confirmation'
+        : 'pattern-outer-frame-not-confirmed',
+      diagnostics: {
+        patternMode,
+        gaps: { top: topGap, bottom: bottomGap, left: leftGap, right: rightGap },
+        scores: {
+          top: Number((topPick.score || 0).toFixed(3)),
+          bottom: Number((bottomPick.score || 0).toFixed(3)),
+          left: Number((leftPick.score || 0).toFixed(3)),
+          right: Number((rightPick.score || 0).toFixed(3))
+        },
+        outerFramePattern,
+        strongSideCount,
+        moderateSideCount,
+        sideGapCount,
+        relaxedFourSideEvidence,
+        relaxedEvidenceDiagnostics,
+        normalizedMarginRatios: {
+          top: Number(normalizedMarginRatios.top.toFixed(4)),
+          bottom: Number(normalizedMarginRatios.bottom.toFixed(4)),
+          left: Number(normalizedMarginRatios.left.toFixed(4)),
+          right: Number(normalizedMarginRatios.right.toFixed(4))
+        },
+        minHorizontalMarginRatio: Number(minHorizontalMarginRatio.toFixed(4)),
+        minVerticalMarginRatio: Number(minVerticalMarginRatio.toFixed(4)),
+        axisMarginDominanceRatio: Number.isFinite(axisMarginDominanceRatio)
+          ? Number(axisMarginDominanceRatio.toFixed(4))
+          : null,
+        requiresPageWindowConfirmation,
+        weakFullMarginSideMargins,
+        broadGuideWindowCandidate: broadGuideWindowCandidate?.diagnostics || null,
+        gapRatio: Number.isFinite(gapRatio) ? Number(gapRatio.toFixed(4)) : null,
+        horizontalGapRatio: Number.isFinite(horizontalGapRatio) ? Number(horizontalGapRatio.toFixed(4)) : null,
+        verticalGapRatio: Number.isFinite(verticalGapRatio) ? Number(verticalGapRatio.toFixed(4)) : null,
+        wrapsInner,
+        cellWidth,
+        cellHeight
+      }
+    };
+  }
+  if (requiresPageWindowConfirmation && !broadGuideWindowCandidate?.applied) {
+    return {
+      applied: false,
+      reason: 'pattern-outer-frame-needs-page-window-confirmation',
+      diagnostics: {
+        patternMode,
+        outerFramePattern,
+        requiresPageWindowConfirmation,
+        weakFullMarginSideMargins,
+        gaps: { top: topGap, bottom: bottomGap, left: leftGap, right: rightGap },
+        scores: {
+          top: Number((topPick.score || 0).toFixed(3)),
+          bottom: Number((bottomPick.score || 0).toFixed(3)),
+          left: Number((leftPick.score || 0).toFixed(3)),
+          right: Number((rightPick.score || 0).toFixed(3))
+        },
+        normalizedMarginRatios: {
+          top: Number(normalizedMarginRatios.top.toFixed(4)),
+          bottom: Number(normalizedMarginRatios.bottom.toFixed(4)),
+          left: Number(normalizedMarginRatios.left.toFixed(4)),
+          right: Number(normalizedMarginRatios.right.toFixed(4))
+        },
+        minHorizontalMarginRatio: Number(minHorizontalMarginRatio.toFixed(4)),
+        minVerticalMarginRatio: Number(minVerticalMarginRatio.toFixed(4)),
+        axisMarginDominanceRatio: Number.isFinite(axisMarginDominanceRatio)
+          ? Number(axisMarginDominanceRatio.toFixed(4))
+          : null,
+        strongSideCount,
+        moderateSideCount,
+        sideGapCount,
+        relaxedFourSideEvidence,
+        relaxedEvidenceDiagnostics,
+        broadGuideWindowCandidate: broadGuideWindowCandidate?.diagnostics || null,
+        wrapsInner,
+        cellWidth,
+        cellHeight
+      }
+    };
+  }
+  if (requiresPageWindowConfirmation && broadGuideWindowCandidate?.applied) {
+    return {
+      ...broadGuideWindowCandidate,
+      diagnostics: {
+        ...(broadGuideWindowCandidate.diagnostics || {}),
+        confirmedPatternCandidate: {
+          method: 'pattern-driven-outer-frame-inference',
+          outerFramePattern,
+          gaps: { top: topGap, bottom: bottomGap, left: leftGap, right: rightGap },
+          scores: {
+            top: Number((topPick.score || 0).toFixed(3)),
+            bottom: Number((bottomPick.score || 0).toFixed(3)),
+            left: Number((leftPick.score || 0).toFixed(3)),
+            right: Number((rightPick.score || 0).toFixed(3))
+          },
+          normalizedMarginRatios: {
+            top: Number(normalizedMarginRatios.top.toFixed(4)),
+            bottom: Number(normalizedMarginRatios.bottom.toFixed(4)),
+            left: Number(normalizedMarginRatios.left.toFixed(4)),
+            right: Number(normalizedMarginRatios.right.toFixed(4))
+          },
+          minHorizontalMarginRatio: Number(minHorizontalMarginRatio.toFixed(4)),
+          minVerticalMarginRatio: Number(minVerticalMarginRatio.toFixed(4)),
+          axisMarginDominanceRatio: Number.isFinite(axisMarginDominanceRatio)
+            ? Number(axisMarginDominanceRatio.toFixed(4))
+            : null
+        },
+        confirmedByPageWindow: true
+      }
+    };
+  }
+
+  return {
+    applied: true,
+    reason: 'pattern-outer-frame-inferred',
+    outerQuad,
+    refinedOuterFrame: outerRect,
+    diagnostics: {
+      method: 'pattern-driven-outer-frame-inference',
+      patternMode,
+      patternProfileFamily,
+      patternProfileMode: globalPattern?.patternProfile?.profileMode || null,
+      outerFramePattern,
+      gaps: { top: topGap, bottom: bottomGap, left: leftGap, right: rightGap },
+      scores: {
+        top: Number((topPick.score || 0).toFixed(3)),
+        bottom: Number((bottomPick.score || 0).toFixed(3)),
+        left: Number((leftPick.score || 0).toFixed(3)),
+        right: Number((rightPick.score || 0).toFixed(3))
+      },
+      gapRatio: Number(gapRatio.toFixed(4)),
+      horizontalGapRatio: Number.isFinite(horizontalGapRatio) ? Number(horizontalGapRatio.toFixed(4)) : null,
+      verticalGapRatio: Number.isFinite(verticalGapRatio) ? Number(verticalGapRatio.toFixed(4)) : null,
+      strongSideCount,
+      moderateSideCount,
+      sideGapCount,
+      relaxedFourSideEvidence,
+      relaxedEvidenceDiagnostics,
+      normalizedMarginRatios: {
+        top: Number(normalizedMarginRatios.top.toFixed(4)),
+        bottom: Number(normalizedMarginRatios.bottom.toFixed(4)),
+        left: Number(normalizedMarginRatios.left.toFixed(4)),
+        right: Number(normalizedMarginRatios.right.toFixed(4))
+      },
+      minHorizontalMarginRatio: Number(minHorizontalMarginRatio.toFixed(4)),
+      minVerticalMarginRatio: Number(minVerticalMarginRatio.toFixed(4)),
+      axisMarginDominanceRatio: Number.isFinite(axisMarginDominanceRatio)
+        ? Number(axisMarginDominanceRatio.toFixed(4))
+        : null,
+      requiresPageWindowConfirmation,
+      innerBounds: { left: innerLeft, right: innerRight, top: innerTop, bottom: innerBottom },
+      outerBounds: outerRect,
+      tiltedQuadFitted: Boolean(fittedOuterQuad?.quad),
+      tiltedQuadFitDiagnostics: fittedOuterQuad?.diagnostics || null,
+      cellWidth,
+      cellHeight
+    }
+  };
+}
+
+function inferOuterFrameFromGridRectification(gridRectification, detection) {
+  const outerQuad = normalizeCornerQuad(gridRectification?.corners || null);
+  const guides = detection?.guides || null;
+  if (!outerQuad || !guides) {
+    return { applied: false, reason: 'missing-grid-rectification-outer-quad' };
+  }
+  const outerLeft = Math.min(...outerQuad.map((point) => point[0]));
+  const outerRight = Math.max(...outerQuad.map((point) => point[0]));
+  const outerTop = Math.min(...outerQuad.map((point) => point[1]));
+  const outerBottom = Math.max(...outerQuad.map((point) => point[1]));
+  const innerLeft = Number(guides.left);
+  const innerRight = Number(guides.right);
+  const innerTop = Number(guides.top);
+  const innerBottom = Number(guides.bottom);
+  if (![outerLeft, outerRight, outerTop, outerBottom, innerLeft, innerRight, innerTop, innerBottom].every(Number.isFinite)) {
+    return { applied: false, reason: 'invalid-outer-or-inner-bounds' };
+  }
+  const wrapsInner = (
+    outerLeft <= innerLeft + 2
+    && outerRight >= innerRight - 2
+    && outerTop <= innerTop + 2
+    && outerBottom >= innerBottom - 2
+  );
+  const gaps = {
+    top: Math.max(0, Math.round(innerTop - outerTop)),
+    bottom: Math.max(0, Math.round(outerBottom - innerBottom)),
+    left: Math.max(0, Math.round(innerLeft - outerLeft)),
+    right: Math.max(0, Math.round(outerRight - innerRight))
+  };
+  const gapValues = Object.values(gaps).filter((value) => Number.isFinite(value));
+  const significantGapFlags = {
+    top: gaps.top >= 4,
+    bottom: gaps.bottom >= 4,
+    left: gaps.left >= 4,
+    right: gaps.right >= 4
+  };
+  const maxGap = gapValues.length ? Math.max(...gapValues) : 0;
+  const minGap = gapValues.length ? Math.min(...gapValues) : 0;
+  const nonZeroGapCount = gapValues.filter((value) => value >= 4).length;
+  const xGapThreshold = Math.max(
+    4,
+    Math.round(getMedianGap(guides?.xPeaks || [], Math.max(outerRight - outerLeft, 0) * 0.12) * 0.25)
+  );
+  const yGapThreshold = Math.max(
+    4,
+    Math.round(getMedianGap(guides?.yPeaks || [], Math.max(outerBottom - outerTop, 0) * 0.08) * 0.25)
+  );
+  const allSidesLargeEnough = (
+    gaps.top >= yGapThreshold
+    && gaps.bottom >= yGapThreshold
+    && gaps.left >= xGapThreshold
+    && gaps.right >= xGapThreshold
+  );
+  const gapSimilarityRatio = maxGap > 0 ? minGap / maxGap : 0;
+  const allSidesBalanced = gapSimilarityRatio >= 0.58;
+  let outerFramePattern = 'mixed-outer-frame';
+  if (significantGapFlags.top && significantGapFlags.bottom && !significantGapFlags.left && !significantGapFlags.right) {
+    outerFramePattern = 'top-bottom-separated-outer-frame';
+  } else if (!significantGapFlags.top && !significantGapFlags.bottom && significantGapFlags.left && significantGapFlags.right) {
+    outerFramePattern = 'left-right-separated-outer-frame';
+  } else if (significantGapFlags.top && significantGapFlags.bottom && significantGapFlags.left && significantGapFlags.right) {
+    outerFramePattern = 'full-margin-outer-frame';
+  } else if ((significantGapFlags.top || significantGapFlags.bottom) && (significantGapFlags.left || significantGapFlags.right)) {
+    outerFramePattern = 'three-side-or-asymmetric-outer-frame';
+  }
+  const eligible = (
+    wrapsInner
+    && significantGapFlags.top
+    && significantGapFlags.bottom
+    && significantGapFlags.left
+    && significantGapFlags.right
+    && allSidesLargeEnough
+    && allSidesBalanced
+    && outerFramePattern === 'full-margin-outer-frame'
+  );
+  if (!eligible) {
+    return {
+      applied: false,
+      reason: 'grid-rectification-outer-quad-not-four-side-distinct',
+      diagnostics: {
+        wrapsInner,
+        gaps,
+        significantGapFlags,
+        outerFramePattern,
+        maxGap,
+        minGap,
+        nonZeroGapCount,
+        xGapThreshold,
+        yGapThreshold,
+        allSidesLargeEnough,
+        gapSimilarityRatio: Number(gapSimilarityRatio.toFixed(4)),
+        allSidesBalanced
+      }
+    };
+  }
+  return {
+    applied: true,
+    reason: 'grid-rectification-outer-frame',
+    outerQuad,
+    refinedOuterFrame: {
+      left: Math.round(outerLeft),
+      right: Math.round(outerRight),
+      top: Math.round(outerTop),
+      bottom: Math.round(outerBottom)
+    },
+    diagnostics: {
+      method: 'grid-rectification-vs-inner-guides',
+      wrapsInner,
+      gaps,
+      significantGapFlags,
+      outerFramePattern,
+      maxGap,
+      minGap,
+      nonZeroGapCount,
+      xGapThreshold,
+      yGapThreshold,
+      allSidesLargeEnough,
+      gapSimilarityRatio: Number(gapSimilarityRatio.toFixed(4)),
+      allSidesBalanced
+    }
+  };
+}
+
+function buildInnerQuadConstrainedByOuterFrame(primaryGuides, fallbackGuides, outerFrame, options = {}) {
+  const source = primaryGuides || fallbackGuides || null;
+  if (!source || !outerFrame) {
+    return null;
+  }
+  const rawLeft = Number(source.left);
+  const rawRight = Number(source.right);
+  const rawTop = Number(source.top);
+  const rawBottom = Number(source.bottom);
+  const outerLeft = Number(outerFrame.left);
+  const outerRight = Number(outerFrame.right);
+  const outerTop = Number(outerFrame.top);
+  const outerBottom = Number(outerFrame.bottom);
+  if (![rawLeft, rawRight, rawTop, rawBottom, outerLeft, outerRight, outerTop, outerBottom].every(Number.isFinite)) {
+    return null;
+  }
+  const estimateGuideGap = (peaks) => {
+    const sanitized = Array.isArray(peaks)
+      ? peaks.map(Number).filter(Number.isFinite).sort((a, b) => a - b)
+      : [];
+    if (sanitized.length < 2) {
+      return null;
+    }
+    const gaps = [];
+    for (let index = 1; index < sanitized.length; index += 1) {
+      const gap = sanitized[index] - sanitized[index - 1];
+      if (gap > 8) {
+        gaps.push(gap);
+      }
+    }
+    if (!gaps.length) {
+      return null;
+    }
+    gaps.sort((a, b) => a - b);
+    return gaps[Math.floor(gaps.length / 2)];
+  };
+  const width = Math.max(1, outerRight - outerLeft);
+  const height = Math.max(1, outerBottom - outerTop);
+  const minInsetX = Math.max(0, Math.round(width * 0.001));
+  const minInsetY = Math.max(0, Math.round(height * 0.001));
+  const estimatedCellWidth = (
+    estimateGuideGap(source.xPeaks)
+    || estimateGuideGap(fallbackGuides?.xPeaks)
+    || ((rawRight - rawLeft) > 0 ? (rawRight - rawLeft) / 7 : 0)
+  );
+  const estimatedCellHeight = (
+    estimateGuideGap(source.yPeaks)
+    || estimateGuideGap(fallbackGuides?.yPeaks)
+    || ((rawBottom - rawTop) > 0 ? (rawBottom - rawTop) / 10 : 0)
+  );
+  const minimalSemanticInsetX = Math.max(
+    minInsetX,
+    Math.max(4, Math.round((Number.isFinite(estimatedCellWidth) ? estimatedCellWidth : 0) * 0.03))
+  );
+  const minimalSemanticInsetY = Math.max(
+    minInsetY,
+    Math.max(4, Math.round((Number.isFinite(estimatedCellHeight) ? estimatedCellHeight : 0) * 0.03))
+  );
+  const topCornerCandidate = normalizeCornerQuad(options.topCornerCandidate || null);
+  const topGapFromOuter = rawTop - outerTop;
+  const leftGapFromOuter = rawLeft - outerLeft;
+  const rightGapFromOuter = outerRight - rawRight;
+  const bottomGapFromOuter = outerBottom - rawBottom;
+  const fallbackTop = Number(fallbackGuides?.top);
+  const shallowTopInsetThreshold = Math.max(
+    20,
+    Math.round((Number.isFinite(estimatedCellHeight) ? estimatedCellHeight : 0) * 0.22)
+  );
+  const minimalSemanticTopInset = Math.max(
+    minimalSemanticInsetY,
+    Math.max(2, Math.round((Number.isFinite(estimatedCellHeight) ? estimatedCellHeight : 0) * 0.04))
+  );
+  const fallbackShowsHigherTop = (
+    Number.isFinite(fallbackTop)
+    && fallbackTop < rawTop - Math.max(12, Math.round((Number.isFinite(estimatedCellHeight) ? estimatedCellHeight : 0) * 0.12))
+  );
+  const topInsetLooksLikeThinFrameMargin = (
+    topGapFromOuter >= 0
+    && topGapFromOuter <= shallowTopInsetThreshold
+  );
+  const candidateTopShiftThreshold = Math.max(
+    14,
+    Math.round((Number.isFinite(estimatedCellHeight) ? estimatedCellHeight : 0) * 0.12)
+  );
+  let candidateTop = null;
+  if (topCornerCandidate) {
+    const candidateTopYs = [topCornerCandidate[0]?.[1], topCornerCandidate[1]?.[1]]
+      .map(Number)
+      .filter(Number.isFinite);
+    if (candidateTopYs.length === 2) {
+      const candidateTopSpread = Math.abs(candidateTopYs[0] - candidateTopYs[1]);
+      const candidateTopAverage = average(candidateTopYs);
+      if (
+        candidateTopSpread <= Math.max(18, Math.round((Number.isFinite(estimatedCellHeight) ? estimatedCellHeight : 0) * 0.16))
+        && candidateTopAverage < rawTop - candidateTopShiftThreshold
+      ) {
+        candidateTop = candidateTopAverage;
+      }
+    }
+  }
+  const candidateTopUsable = (
+    Number.isFinite(candidateTop)
+    && candidateTop >= outerTop + minimalSemanticTopInset
+    && candidateTop < rawTop - candidateTopShiftThreshold
+  );
+  const resolvedRawTop = (
+    candidateTopUsable
+      ? clamp(
+        Math.round(candidateTop),
+        Math.round(outerTop + minimalSemanticTopInset),
+        Math.round(rawTop - 1)
+      )
+      : (
+        topInsetLooksLikeThinFrameMargin && fallbackShowsHigherTop
+          ? outerTop + minimalSemanticTopInset
+          : rawTop
+      )
+  );
+  const resolvedRawLeft = (
+    leftGapFromOuter < minimalSemanticInsetX
+      ? outerLeft + minimalSemanticInsetX
+      : rawLeft
+  );
+  const resolvedRawRight = (
+    rightGapFromOuter < minimalSemanticInsetX
+      ? outerRight - minimalSemanticInsetX
+      : rawRight
+  );
+  const resolvedRawBottom = (
+    bottomGapFromOuter < minimalSemanticInsetY
+      ? outerBottom - minimalSemanticInsetY
+      : rawBottom
+  );
+  const left = clamp(
+    Math.round(resolvedRawLeft),
+    Math.round(outerLeft + minimalSemanticInsetX),
+    Math.round(outerRight - minimalSemanticInsetX - 1)
+  );
+  const right = clamp(
+    Math.round(resolvedRawRight),
+    left + 1,
+    Math.round(outerRight - minimalSemanticInsetX)
+  );
+  const top = clamp(
+    Math.round(resolvedRawTop),
+    Math.round(outerTop + minimalSemanticTopInset),
+    Math.round(outerBottom - minimalSemanticInsetY - 1)
+  );
+  const bottom = clamp(
+    Math.round(resolvedRawBottom),
+    top + 1,
+    Math.round(outerBottom - minimalSemanticInsetY)
+  );
+  return normalizeCornerQuad([
+    [left, top],
+    [right, top],
+    [right, bottom],
+    [left, bottom]
+  ]);
+}
+
+function tightenInnerQuadWithinOuterFrame(innerQuad, outerFrame, options = {}) {
+  const quad = normalizeCornerQuad(innerQuad);
+  if (!quad || !outerFrame) {
+    return quad || null;
+  }
+  const outerLeft = Number(outerFrame.left);
+  const outerRight = Number(outerFrame.right);
+  const outerTop = Number(outerFrame.top);
+  const outerBottom = Number(outerFrame.bottom);
+  if (![outerLeft, outerRight, outerTop, outerBottom].every(Number.isFinite)) {
+    return quad;
+  }
+  const cellWidth = Number(options.cellWidth) || 0;
+  const cellHeight = Number(options.cellHeight) || 0;
+  const insetRatioX = Math.max(0.03, Number(options.insetRatioX) || 0.03);
+  const insetRatioY = Math.max(0.03, Number(options.insetRatioY) || 0.03);
+  const minInsetX = Math.max(
+    4,
+    Math.round(Math.max((outerRight - outerLeft) * 0.001, cellWidth * insetRatioX))
+  );
+  const minInsetY = Math.max(
+    4,
+    Math.round(Math.max((outerBottom - outerTop) * 0.001, cellHeight * insetRatioY))
+  );
+  const bounds = {
+    left: Math.min(...quad.map((point) => Number(point[0]))),
+    right: Math.max(...quad.map((point) => Number(point[0]))),
+    top: Math.min(...quad.map((point) => Number(point[1]))),
+    bottom: Math.max(...quad.map((point) => Number(point[1])))
+  };
+  const tightened = {
+    left: clamp(Math.round(bounds.left), Math.round(outerLeft + minInsetX), Math.round(outerRight - minInsetX - 1)),
+    right: clamp(Math.round(bounds.right), Math.round(outerLeft + minInsetX + 1), Math.round(outerRight - minInsetX)),
+    top: clamp(Math.round(bounds.top), Math.round(outerTop + minInsetY), Math.round(outerBottom - minInsetY - 1)),
+    bottom: clamp(Math.round(bounds.bottom), Math.round(outerTop + minInsetY + 1), Math.round(outerBottom - minInsetY))
+  };
+  if (tightened.right <= tightened.left || tightened.bottom <= tightened.top) {
+    return quad;
+  }
+  return normalizeCornerQuad([
+    [tightened.left, tightened.top],
+    [tightened.right, tightened.top],
+    [tightened.right, tightened.bottom],
+    [tightened.left, tightened.bottom]
+  ]) || quad;
+}
+
+function detectRectifiedRegularGridInnerCrop(gray, width, height) {
+  if (!gray || width < 240 || height < 240) {
+    return null;
+  }
+  const marginX = clamp(Math.round(width * 0.04), 12, Math.max(12, Math.round(width * 0.12)));
+  const marginY = clamp(Math.round(height * 0.04), 12, Math.max(12, Math.round(height * 0.12)));
+  const scanTop = clamp(Math.round(height * 0.1), 0, Math.max(0, height - 1));
+  const scanBottom = clamp(Math.round(height * 0.9), scanTop + 1, Math.max(1, height - 1));
+  const scanLeft = clamp(Math.round(width * 0.08), 0, Math.max(0, width - 1));
+  const scanRight = clamp(Math.round(width * 0.92), scanLeft + 1, Math.max(1, width - 1));
+
+  const verticalSeries = new Float32Array(Math.max(0, width - (marginX * 2)));
+  for (let x = marginX; x <= width - 1 - marginX; x += 1) {
+    verticalSeries[x - marginX] = scoreVerticalLineAt(gray, width, height, x, scanTop, scanBottom);
+  }
+  const horizontalSeries = new Float32Array(Math.max(0, height - (marginY * 2)));
+  for (let y = marginY; y <= height - 1 - marginY; y += 1) {
+    horizontalSeries[y - marginY] = scoreHorizontalLineAt(gray, width, height, y, scanLeft, scanRight);
+  }
+  if (!verticalSeries.length || !horizontalSeries.length) {
+    return null;
+  }
+
+  const regularVertical = detectRegularLinePeaks(smoothSeries(verticalSeries, 2), {
+    minSpacing: Math.max(12, Math.round(width * 0.025)),
+    thresholdRatio: 0.48
+  });
+  const regularHorizontal = detectRegularLinePeaks(smoothSeries(horizontalSeries, 2), {
+    minSpacing: Math.max(12, Math.round(height * 0.02)),
+    thresholdRatio: 0.48
+  });
+  if (
+    regularVertical.peaks.length < 6
+    || regularHorizontal.peaks.length < 8
+    || regularVertical.stableGapCount < 4
+    || regularHorizontal.stableGapCount < 6
+  ) {
+    return null;
+  }
+
+  const extendPeakBoundary = (series, peak, medianGap, direction) => {
+    if (!peak || !Number.isFinite(medianGap) || medianGap <= 0) {
+      return peak ? peak.index : null;
+    }
+    const minGap = Math.max(18, Math.round(medianGap * 0.75));
+    const maxGap = Math.max(minGap + 8, Math.round(medianGap * 1.45));
+    const threshold = Math.max(12, peak.value * 0.42);
+    let best = null;
+    if (direction === 'before') {
+      const start = Math.max(1, peak.index - maxGap);
+      const end = Math.max(start, peak.index - minGap);
+      for (let i = start; i <= end; i += 1) {
+        const current = Number(series[i]) || 0;
+        if (current < threshold) {
+          continue;
+        }
+        if (current < (Number(series[i - 1]) || 0) || current < (Number(series[i + 1]) || 0)) {
+          continue;
+        }
+        if (!best || current > best.value) {
+          best = { index: i, value: current };
+        }
+      }
+    } else {
+      const start = Math.min(series.length - 2, peak.index + minGap);
+      const end = Math.min(series.length - 2, peak.index + maxGap);
+      for (let i = start; i <= end; i += 1) {
+        const current = Number(series[i]) || 0;
+        if (current < threshold) {
+          continue;
+        }
+        if (current < (Number(series[i - 1]) || 0) || current < (Number(series[i + 1]) || 0)) {
+          continue;
+        }
+        if (!best || current > best.value) {
+          best = { index: i, value: current };
+        }
+      }
+    }
+    return best ? best.index : peak.index;
+  };
+
+  const firstVerticalPeak = regularVertical.peaks[0];
+  const lastVerticalPeak = regularVertical.peaks[regularVertical.peaks.length - 1];
+  const firstHorizontalPeak = regularHorizontal.peaks[0];
+  const lastHorizontalPeak = regularHorizontal.peaks[regularHorizontal.peaks.length - 1];
+  const regularVerticalGap = Math.max(
+    Number(regularVertical.medianGap) || 0,
+    regularVertical.peaks.length >= 2
+      ? (lastVerticalPeak.index - firstVerticalPeak.index) / Math.max(1, regularVertical.peaks.length - 1)
+      : 0
+  );
+  const regularHorizontalGap = Math.max(
+    Number(regularHorizontal.medianGap) || 0,
+    regularHorizontal.peaks.length >= 2
+      ? (lastHorizontalPeak.index - firstHorizontalPeak.index) / Math.max(1, regularHorizontal.peaks.length - 1)
+      : 0
+  );
+  const left = clamp(
+    marginX + extendPeakBoundary(smoothSeries(verticalSeries, 2), firstVerticalPeak, regularVerticalGap, 'before'),
+    0,
+    width - 1
+  );
+  const right = clamp(
+    marginX + extendPeakBoundary(smoothSeries(verticalSeries, 2), lastVerticalPeak, regularVerticalGap, 'after'),
+    left + 1,
+    width - 1
+  );
+  const top = clamp(
+    marginY + extendPeakBoundary(smoothSeries(horizontalSeries, 2), firstHorizontalPeak, regularHorizontalGap, 'before'),
+    0,
+    height - 1
+  );
+  const bottom = clamp(
+    marginY + extendPeakBoundary(smoothSeries(horizontalSeries, 2), lastHorizontalPeak, regularHorizontalGap, 'after'),
+    top + 1,
+    height - 1
+  );
+  if (
+    (right - left + 1) < Math.round(width * 0.55)
+    || (bottom - top + 1) < Math.round(height * 0.55)
+  ) {
+    return null;
+  }
+
+  return {
+    cropBox: {
+      left: clamp(left - 1, 0, width - 1),
+      top: clamp(top - 1, 0, height - 1),
+      right: clamp(right + 1, left + 1, width - 1),
+      bottom: clamp(bottom + 1, top + 1, height - 1),
+      width: clamp(right + 1, left + 1, width - 1) - clamp(left - 1, 0, width - 1) + 1,
+      height: clamp(bottom + 1, top + 1, height - 1) - clamp(top - 1, 0, height - 1) + 1
+    },
+    immediateInnerFrame: { left, right, top, bottom },
+    regularGrid: {
+      verticalPeakCount: regularVertical.peaks.length,
+      verticalMedianGap: Number((regularVertical.medianGap || 0).toFixed(3)),
+      verticalStableGapCount: regularVertical.stableGapCount,
+      horizontalPeakCount: regularHorizontal.peaks.length,
+      horizontalMedianGap: Number((regularHorizontal.medianGap || 0).toFixed(3)),
+      horizontalStableGapCount: regularHorizontal.stableGapCount
+    },
+    method: 'rectified-regular-grid-inner-crop'
+  };
+}
+
+async function recoverInnerQuadFromRectifiedOuterCrop(imagePath, inferredOuterFrame, options = {}) {
+  if (!imagePath || !inferredOuterFrame?.applied) {
+    return null;
+  }
+  const method = String(inferredOuterFrame?.diagnostics?.method || '');
+  if (method !== 'broad-raw-guide-window-outer-frame') {
+    return null;
+  }
+  const outerQuad = normalizeCornerQuad(
+    inferredOuterFrame?.outerQuad
+    || (
+      inferredOuterFrame?.refinedOuterFrame
+        ? [
+            [inferredOuterFrame.refinedOuterFrame.left, inferredOuterFrame.refinedOuterFrame.top],
+            [inferredOuterFrame.refinedOuterFrame.right, inferredOuterFrame.refinedOuterFrame.top],
+            [inferredOuterFrame.refinedOuterFrame.right, inferredOuterFrame.refinedOuterFrame.bottom],
+            [inferredOuterFrame.refinedOuterFrame.left, inferredOuterFrame.refinedOuterFrame.bottom]
+          ]
+        : null
+    )
+  );
+  const outerBounds = inferredOuterFrame?.refinedOuterFrame || getQuadBounds(outerQuad);
+  if (!outerQuad || !outerBounds) {
+    return null;
+  }
+  const cellWidth = Number(options.cellWidth) || Number(inferredOuterFrame?.diagnostics?.cellWidth) || 0;
+  const cellHeight = Number(options.cellHeight) || Number(inferredOuterFrame?.diagnostics?.cellHeight) || 0;
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'outer-inner-recovery-'));
+  const rectifiedPath = path.join(tempDir, 'outer_frame_rectified_raw.png');
+  const rectifiedMetaPath = path.join(tempDir, 'outer_frame_rectified_raw.json');
+  try {
+    const rectifiedMeta = await runPaperQuadRectify(imagePath, outerQuad, rectifiedPath, rectifiedMetaPath);
+    const { data: rectifiedRgbData, info: rectifiedInfo } = await loadRgbImage(rectifiedPath);
+    const analyzedCrop = analyzeRectifiedOuterFrameCrop(rectifiedRgbData, rectifiedInfo);
+    const regularGridCrop = detectRectifiedRegularGridInnerCrop(
+      computeGray(rectifiedRgbData, rectifiedInfo.channels),
+      rectifiedInfo.width,
+      rectifiedInfo.height
+    );
+    const rectifiedCrop = (() => {
+      if (regularGridCrop?.cropBox && analyzedCrop?.cropBox) {
+        const analyzedInset = Math.min(
+          Number(analyzedCrop.cropBox.left) || 0,
+          Math.max(0, rectifiedInfo.width - 1 - (Number(analyzedCrop.cropBox.right) || 0)),
+          Number(analyzedCrop.cropBox.top) || 0,
+          Math.max(0, rectifiedInfo.height - 1 - (Number(analyzedCrop.cropBox.bottom) || 0))
+        );
+        const regularInset = Math.min(
+          Number(regularGridCrop.cropBox.left) || 0,
+          Math.max(0, rectifiedInfo.width - 1 - (Number(regularGridCrop.cropBox.right) || 0)),
+          Number(regularGridCrop.cropBox.top) || 0,
+          Math.max(0, rectifiedInfo.height - 1 - (Number(regularGridCrop.cropBox.bottom) || 0))
+        );
+        return regularInset >= analyzedInset + 12 ? regularGridCrop : analyzedCrop;
+      }
+      return regularGridCrop?.cropBox ? regularGridCrop : analyzedCrop;
+    })();
+    if (!rectifiedCrop?.cropBox) {
+      return null;
+    }
+    const projection = projectRectifiedCropBoxToSourceQuad(
+      outerQuad,
+      rectifiedMeta || rectifiedInfo,
+      rectifiedCrop.cropBox
+    );
+    if (!projection?.quad || !projection?.bounds) {
+      return null;
+    }
+    const trimLeft = Number(projection.rectifiedTrims?.left) || 0;
+    const trimRight = Number(projection.rectifiedTrims?.right) || 0;
+    const trimTop = Number(projection.rectifiedTrims?.top) || 0;
+    const trimBottom = Number(projection.rectifiedTrims?.bottom) || 0;
+    const rectifiedWidth = Number(rectifiedMeta?.targetWidth) || Number(rectifiedInfo?.width) || 0;
+    const rectifiedHeight = Number(rectifiedMeta?.targetHeight) || Number(rectifiedInfo?.height) || 0;
+    const minTrimX = Math.max(14, Math.round(Math.max(rectifiedWidth * 0.045, cellWidth * 0.45)));
+    const minTrimY = Math.max(14, Math.round(Math.max(rectifiedHeight * 0.04, cellHeight * 0.35)));
+    const maxTrimX = Math.max(minTrimX + 18, Math.round(rectifiedWidth * 0.22));
+    const maxTrimY = Math.max(minTrimY + 18, Math.round(rectifiedHeight * 0.18));
+    const meaningfulInset = (
+      trimLeft >= minTrimX
+      && trimRight >= minTrimX
+      && trimTop >= minTrimY
+      && trimBottom >= minTrimY
+      && trimLeft <= maxTrimX
+      && trimRight <= maxTrimX
+      && trimTop <= maxTrimY
+      && trimBottom <= maxTrimY
+    );
+    const stillInsideOuter = (
+      projection.bounds.left >= Number(outerBounds.left) + 4
+      && projection.bounds.right <= Number(outerBounds.right) - 4
+      && projection.bounds.top >= Number(outerBounds.top) + 4
+      && projection.bounds.bottom <= Number(outerBounds.bottom) - 4
+    );
+    if (!meaningfulInset || !stillInsideOuter) {
+      return null;
+    }
+    return {
+      quad: projection.quad,
+      bounds: projection.bounds,
+      diagnostics: {
+        method: 'rectified-outer-frame-inner-crop-reprojection',
+        cropBox: rectifiedCrop.cropBox,
+        cropMethod: rectifiedCrop.method || null,
+        regularGrid: rectifiedCrop.regularGrid || null,
+        rectifiedTrims: projection.rectifiedTrims,
+        minTrimX,
+        minTrimY,
+        maxTrimX,
+        maxTrimY
+      }
+    };
+  } finally {
+    await fs.promises.rm(tempDir, { recursive: true, force: true });
+  }
+}
+
+async function refinePatternInferredOuterFrameQuadByBoundaryFits(imagePath, inferredOuterFrame, guides = null) {
+  if (!imagePath || !inferredOuterFrame?.applied || !guides) {
+    return inferredOuterFrame || null;
+  }
+  if (String(inferredOuterFrame?.diagnostics?.method || '') !== 'pattern-driven-outer-frame-inference') {
+    return inferredOuterFrame || null;
+  }
+  const outer = inferredOuterFrame?.refinedOuterFrame || null;
+  if (!outer) {
+    return inferredOuterFrame || null;
+  }
+  const innerLeft = Number(guides.left);
+  const innerRight = Number(guides.right);
+  const innerTop = Number(guides.top);
+  const innerBottom = Number(guides.bottom);
+  const outerLeft = Number(outer.left);
+  const outerRight = Number(outer.right);
+  const outerTop = Number(outer.top);
+  const outerBottom = Number(outer.bottom);
+  if (![innerLeft, innerRight, innerTop, innerBottom, outerLeft, outerRight, outerTop, outerBottom].every(Number.isFinite)) {
+    return inferredOuterFrame || null;
+  }
+  const { data: rgbData, info } = await loadRgbImage(imagePath);
+  const gray = await buildOuterFrameEnhancedGray(
+    computeGray(rgbData, info.channels),
+    info.width,
+    info.height,
+    guides
+  );
+  const xPeaks = Array.isArray(guides.xPeaks) ? guides.xPeaks.map(Number).filter(Number.isFinite) : [];
+  const yPeaks = Array.isArray(guides.yPeaks) ? guides.yPeaks.map(Number).filter(Number.isFinite) : [];
+  const cellWidth = Math.max(24, Math.round(getMedianGap(xPeaks, Math.max(1, innerRight - innerLeft))));
+  const cellHeight = Math.max(24, Math.round(getMedianGap(yPeaks, Math.max(1, innerBottom - innerTop))));
+  const sideSearch = Math.max(10, Math.round(cellWidth * 0.12));
+  const verticalSearch = Math.max(12, Math.round(cellHeight * 0.14));
+
+  const topPoints = collectGlobalHorizontalBoundaryPoints(gray, info.width, info.height, {
+    expectedY: outerTop,
+    xStart: outerLeft,
+    xEnd: outerRight,
+    yStart: clamp(Math.round(outerTop - verticalSearch), 0, Math.max(0, info.height - 1)),
+    yEnd: clamp(Math.round(Math.min(innerTop - 2, outerTop + verticalSearch)), 0, Math.max(0, info.height - 1)),
+    inwardDir: 1,
+    step: 8,
+    outwardBias: 0.14
+  });
+  const bottomPoints = collectGlobalHorizontalBoundaryPoints(gray, info.width, info.height, {
+    expectedY: outerBottom,
+    xStart: outerLeft,
+    xEnd: outerRight,
+    yStart: clamp(Math.round(Math.max(innerBottom + 2, outerBottom - verticalSearch)), 0, Math.max(0, info.height - 1)),
+    yEnd: clamp(Math.round(outerBottom + verticalSearch), 0, Math.max(0, info.height - 1)),
+    inwardDir: -1,
+    step: 8,
+    outwardBias: 0.14
+  });
+  const leftPoints = collectGlobalVerticalBoundaryPoints(gray, info.width, info.height, {
+    expectedX: outerLeft,
+    xStart: clamp(Math.round(outerLeft - sideSearch), 0, Math.max(0, info.width - 1)),
+    xEnd: clamp(Math.round(Math.min(innerLeft - 2, outerLeft + sideSearch)), 0, Math.max(0, info.width - 1)),
+    yStart: outerTop,
+    yEnd: outerBottom,
+    inwardDir: 1,
+    step: 8,
+    outwardBias: 0.14
+  });
+  const rightPoints = collectGlobalVerticalBoundaryPoints(gray, info.width, info.height, {
+    expectedX: outerRight,
+    xStart: clamp(Math.round(Math.max(innerRight + 2, outerRight - sideSearch)), 0, Math.max(0, info.width - 1)),
+    xEnd: clamp(Math.round(outerRight + sideSearch), 0, Math.max(0, info.width - 1)),
+    yStart: outerTop,
+    yEnd: outerBottom,
+    inwardDir: -1,
+    step: 8,
+    outwardBias: 0.14
+  });
+
+  const topLine = fitLineRobust(topPoints, 4);
+  const bottomLine = fitLineRobust(bottomPoints, 4);
+  const leftLine = fitLineRobust(leftPoints, 4);
+  const rightLine = fitLineRobust(rightPoints, 4);
+  const rawBoundaryFitQuad = normalizeCornerQuad([
+    intersectLines(topLine, leftLine),
+    intersectLines(topLine, rightLine),
+    intersectLines(bottomLine, rightLine),
+    intersectLines(bottomLine, leftLine)
+  ]);
+  if (!rawBoundaryFitQuad) {
+    return inferredOuterFrame || null;
+  }
+  const rawBoundaryFitBounds = getQuadBounds(rawBoundaryFitQuad);
+  const endpointLiftFit = rawBoundaryFitBounds
+    ? fitTiltedOuterFrameQuadFromBounds(
+      gray,
+      info.width,
+      info.height,
+      rawBoundaryFitBounds,
+      { left: innerLeft, right: innerRight, top: innerTop, bottom: innerBottom },
+      { cellWidth, cellHeight }
+    )
+    : null;
+  const boundaryFitEndpointLift = liftAsymmetricTopCornerTowardEndpoint(
+    rawBoundaryFitQuad,
+    endpointLiftFit?.diagnostics?.verticalEndpoints || null,
+    { cellWidth, cellHeight }
+  );
+  const diagnostics = inferredOuterFrame?.diagnostics || {};
+  const pattern = String(diagnostics?.outerFramePattern || '');
+  const tightenedByFinalGuides = Boolean(diagnostics?.tightenedByFinalGuides);
+  const currentMargins = {
+    left: Math.max(0, innerLeft - outerLeft),
+    right: Math.max(0, outerRight - innerRight),
+    top: Math.max(0, innerTop - outerTop),
+    bottom: Math.max(0, outerBottom - innerBottom)
+  };
+  const maxShiftX = Math.max(10, Math.round(cellWidth * 0.16));
+  const maxShiftY = Math.max(10, Math.round(cellHeight * 0.16));
+  const evaluateBoundaryFitCandidate = (candidateQuad) => {
+    const candidateBounds = getQuadBounds(candidateQuad);
+    if (!candidateBounds) {
+      return null;
+    }
+    const withinShiftLimit = (
+      Math.abs(candidateBounds.left - outerLeft) <= maxShiftX
+      && Math.abs(candidateBounds.right - outerRight) <= maxShiftX
+      && Math.abs(candidateBounds.top - outerTop) <= maxShiftY
+      && Math.abs(candidateBounds.bottom - outerBottom) <= maxShiftY
+    );
+    const stillWrapsInner = (
+      candidateBounds.left <= innerLeft - 2
+      && candidateBounds.right >= innerRight + 2
+      && candidateBounds.top <= innerTop - 2
+      && candidateBounds.bottom >= innerBottom + 2
+    );
+    if (!withinShiftLimit || !stillWrapsInner) {
+      return null;
+    }
+    const candidateMargins = {
+      left: Math.max(0, innerLeft - candidateBounds.left),
+      right: Math.max(0, candidateBounds.right - innerRight),
+      top: Math.max(0, innerTop - candidateBounds.top),
+      bottom: Math.max(0, candidateBounds.bottom - innerBottom)
+    };
+    if (tightenedByFinalGuides && pattern === 'full-margin-outer-frame') {
+      const marginSlackX = Math.max(4, Math.round(cellWidth * 0.05));
+      const marginSlackY = Math.max(4, Math.round(cellHeight * 0.05));
+      const expandedOnAllSides = (
+        candidateMargins.left >= currentMargins.left
+        && candidateMargins.right >= currentMargins.right
+        && candidateMargins.top >= currentMargins.top
+        && candidateMargins.bottom >= currentMargins.bottom
+      );
+      const materiallyExpanded = (
+        (candidateMargins.left - currentMargins.left) >= marginSlackX
+        || (candidateMargins.right - currentMargins.right) >= marginSlackX
+        || (candidateMargins.top - currentMargins.top) >= marginSlackY
+        || (candidateMargins.bottom - currentMargins.bottom) >= marginSlackY
+      );
+      const currentAsymmetryX = Math.abs(currentMargins.left - currentMargins.right);
+      const currentAsymmetryY = Math.abs(currentMargins.top - currentMargins.bottom);
+      const candidateAsymmetryX = Math.abs(candidateMargins.left - candidateMargins.right);
+      const candidateAsymmetryY = Math.abs(candidateMargins.top - candidateMargins.bottom);
+      const asymmetryWorsened = (
+        candidateAsymmetryX > currentAsymmetryX + Math.max(4, Math.round(cellWidth * 0.04))
+        || candidateAsymmetryY > currentAsymmetryY + Math.max(4, Math.round(cellHeight * 0.04))
+      );
+      if (expandedOnAllSides && materiallyExpanded && asymmetryWorsened) {
+        return null;
+      }
+    }
+    return {
+      quad: candidateQuad,
+      bounds: candidateBounds,
+      margins: candidateMargins
+    };
+  };
+  const boundaryFitCandidates = [
+    boundaryFitEndpointLift?.diagnostics?.applied
+      ? {
+          quad: boundaryFitEndpointLift.quad,
+          endpointLift: boundaryFitEndpointLift.diagnostics
+        }
+      : null,
+    {
+      quad: rawBoundaryFitQuad,
+      endpointLift: null
+    }
+  ].filter(Boolean);
+  let acceptedBoundaryFit = null;
+  let selectedEndpointLift = null;
+  for (const candidate of boundaryFitCandidates) {
+    const evaluatedCandidate = evaluateBoundaryFitCandidate(candidate.quad);
+    if (evaluatedCandidate) {
+      acceptedBoundaryFit = evaluatedCandidate;
+      selectedEndpointLift = candidate.endpointLift;
+      break;
+    }
+  }
+  if (!acceptedBoundaryFit) {
+    return inferredOuterFrame || null;
+  }
+  const nextQuad = acceptedBoundaryFit.quad;
+  const nextBounds = acceptedBoundaryFit.bounds;
+  const boundaryFitLocalTopCornerRefinement = refineAsymmetricTopCornerByLocalTopSupport(
+    gray,
+    info.width,
+    info.height,
+    nextQuad,
+    {
+      outerBounds: nextBounds,
+      innerBounds: { left: innerLeft, right: innerRight, top: innerTop, bottom: innerBottom },
+      verticalEndpoints: endpointLiftFit?.diagnostics?.verticalEndpoints || null,
+      leftLine,
+      rightLine,
+      cellWidth,
+      cellHeight,
+      guides
+    }
+  );
+  const finalQuad = boundaryFitLocalTopCornerRefinement?.diagnostics?.applied
+    ? boundaryFitLocalTopCornerRefinement.quad
+    : nextQuad;
+  return {
+    ...inferredOuterFrame,
+    outerQuad: finalQuad,
+    refinedOuterFrame: nextBounds,
+    diagnostics: {
+      ...(inferredOuterFrame?.diagnostics || {}),
+      boundaryFitAdjusted: true,
+      boundaryFitAdjustedFromOuterBounds: outer,
+      boundaryFitEndpointLift: selectedEndpointLift || null,
+      boundaryFitLocalTopCornerRefinement: boundaryFitLocalTopCornerRefinement?.diagnostics || null,
+      boundaryFitShift: {
+        left: nextBounds.left - outerLeft,
+        right: nextBounds.right - outerRight,
+        top: nextBounds.top - outerTop,
+        bottom: nextBounds.bottom - outerBottom
+      }
+    }
+  };
+}
+
+function refineInferredOuterFrameTopByLocalCorners(inferredOuterFrame, topCornerCandidate, options = {}) {
+  if (!inferredOuterFrame?.applied || !inferredOuterFrame?.refinedOuterFrame) {
+    return inferredOuterFrame || null;
+  }
+  if (inferredOuterFrame?.diagnostics?.method === 'broad-raw-guide-window-outer-frame') {
+    return inferredOuterFrame;
+  }
+  const quad = normalizeCornerQuad(topCornerCandidate || null);
+  if (!quad) {
+    return inferredOuterFrame;
+  }
+  const topYs = [quad[0]?.[1], quad[1]?.[1]].map(Number).filter(Number.isFinite);
+  if (topYs.length !== 2) {
+    return inferredOuterFrame;
+  }
+  const cellHeight = Number(options.cellHeight) || 0;
+  const topSpread = Math.abs(topYs[0] - topYs[1]);
+  const alignedTolerance = Math.max(18, Math.round(cellHeight * 0.18));
+  if (topSpread > alignedTolerance) {
+    return inferredOuterFrame;
+  }
+  const currentTop = Number(inferredOuterFrame.refinedOuterFrame.top);
+  if (!Number.isFinite(currentTop)) {
+    return inferredOuterFrame;
+  }
+  const candidateTop = average(topYs);
+  const minLift = Math.max(14, Math.round(cellHeight * 0.14));
+  if (!(candidateTop < currentTop - minLift)) {
+    return inferredOuterFrame;
+  }
+  const outerInset = Math.max(3, Math.round(cellHeight * 0.02));
+  const refinedTop = Math.max(0, Math.round(candidateTop - outerInset));
+  if (!(refinedTop < currentTop)) {
+    return inferredOuterFrame;
+  }
+  const currentOuterQuad = normalizeCornerQuad(inferredOuterFrame.outerQuad || null);
+  const nextOuterQuad = currentOuterQuad
+    ? normalizeCornerQuad([
+        [currentOuterQuad[0][0], refinedTop],
+        [currentOuterQuad[1][0], refinedTop],
+        currentOuterQuad[2],
+        currentOuterQuad[3]
+      ])
+    : null;
+  return {
+    ...inferredOuterFrame,
+    outerQuad: nextOuterQuad || inferredOuterFrame.outerQuad || null,
+    refinedOuterFrame: {
+      ...inferredOuterFrame.refinedOuterFrame,
+      top: refinedTop
+    },
+    diagnostics: {
+      ...(inferredOuterFrame.diagnostics || {}),
+      topAdjustedByLocalCorners: true,
+      topAdjustedFrom: currentTop,
+      topAdjustedTo: refinedTop,
+      topAdjustedCandidateTop: Number(candidateTop.toFixed(3)),
+      topAdjustedCandidateSpread: Number(topSpread.toFixed(3))
+    }
+  };
+}
+
+function resolveConsistentTopCornerCandidate(cornerDiagnostics, options = {}) {
+  const leftTop = cornerDiagnostics?.leftTop?.refined || null;
+  const rightTop = cornerDiagnostics?.rightTop?.refined || null;
+  const leftY = Number(leftTop?.[1]);
+  const rightY = Number(rightTop?.[1]);
+  if (!Number.isFinite(leftY) || !Number.isFinite(rightY)) {
+    return null;
+  }
+  const cellHeight = Number(options.cellHeight) || 0;
+  const spread = Math.abs(leftY - rightY);
+  const maxSpread = Math.max(18, Math.round(cellHeight * 0.18));
+  if (spread > maxSpread) {
+    return null;
+  }
+  return {
+    top: average([leftY, rightY]),
+    spread
+  };
+}
+
+function shouldRecalibrateInferredOuterFrameAfterCornerRerun(inferredOuterFrame) {
+  if (!inferredOuterFrame?.applied) {
+    return false;
+  }
+  const reason = String(inferredOuterFrame.reason || '');
+  const method = String(inferredOuterFrame?.diagnostics?.method || '');
+  return (
+    reason === 'pattern-outer-frame-inferred'
+    || method === 'pattern-driven-outer-frame-inference'
+  );
+}
+
+function shouldRefineInferredOuterFrameToInnerEdge(inferredOuterFrame) {
+  if (!inferredOuterFrame?.applied || inferredOuterFrame?.diagnostics?.innerEdgeAdjusted) {
+    return false;
+  }
+  const method = String(inferredOuterFrame?.diagnostics?.method || '');
+  return method === 'pattern-driven-outer-frame-inference';
+}
+
+async function tightenPatternInferredOuterFrameByFinalGuides(imagePath, inferredOuterFrame, guides = null) {
+  if (!imagePath || !guides || !shouldRecalibrateInferredOuterFrameAfterCornerRerun(inferredOuterFrame)) {
+    return inferredOuterFrame || null;
+  }
+  const outer = inferredOuterFrame?.refinedOuterFrame || null;
+  if (!outer) {
+    return inferredOuterFrame || null;
+  }
+  const innerLeft = Number(guides.left);
+  const innerRight = Number(guides.right);
+  const innerTop = Number(guides.top);
+  const innerBottom = Number(guides.bottom);
+  const outerLeft = Number(outer.left);
+  const outerRight = Number(outer.right);
+  const outerTop = Number(outer.top);
+  const outerBottom = Number(outer.bottom);
+  if (![innerLeft, innerRight, innerTop, innerBottom, outerLeft, outerRight, outerTop, outerBottom].every(Number.isFinite)) {
+    return inferredOuterFrame || null;
+  }
+  const { data: rgbData, info } = await loadRgbImage(imagePath);
+  const gray = await buildOuterFrameEnhancedGray(
+    computeGray(rgbData, info.channels),
+    info.width,
+    info.height,
+    guides
+  );
+  const xPeaks = Array.isArray(guides.xPeaks) ? guides.xPeaks.map(Number).filter(Number.isFinite) : [];
+  const yPeaks = Array.isArray(guides.yPeaks) ? guides.yPeaks.map(Number).filter(Number.isFinite) : [];
+  const cellWidth = Math.max(24, Math.round(getMedianGap(xPeaks, Math.max(1, innerRight - innerLeft))));
+  const cellHeight = Math.max(24, Math.round(getMedianGap(yPeaks, Math.max(1, innerBottom - innerTop))));
+  const spanX0 = clamp(Math.round(innerLeft + cellWidth * 0.08), 0, Math.max(0, info.width - 1));
+  const spanX1 = clamp(Math.round(innerRight - cellWidth * 0.08), spanX0 + 1, Math.max(1, info.width - 1));
+  const spanY0 = clamp(Math.round(innerTop + cellHeight * 0.08), 0, Math.max(0, info.height - 1));
+  const spanY1 = clamp(Math.round(innerBottom - cellHeight * 0.08), spanY0 + 1, Math.max(1, info.height - 1));
+  const minInsetX = Math.max(6, Math.round(cellWidth * 0.05));
+  const minInsetY = Math.max(8, Math.round(cellHeight * 0.08));
+  const minBoundaryGapX = Math.max(10, Math.round(cellWidth * 0.08));
+  const minBoundaryGapY = Math.max(12, Math.round(cellHeight * 0.08));
+  const nearBoundaryGapX = 2;
+  const nearBoundaryGapY = 2;
+  const minScoreX = Math.max(22, cellWidth * 0.09);
+  const minScoreY = Math.max(22, cellHeight * 0.09);
+
+  const topCandidate = (innerTop - outerTop) > Math.max(minInsetY, minBoundaryGapY)
+    ? findStrongDirectionalLine(
+      clamp(Math.round(outerTop + 1), 0, Math.max(0, info.height - 1)),
+      clamp(Math.round(innerTop - minBoundaryGapY), 0, Math.max(0, info.height - 1)),
+      (y) => scoreHorizontalLineAt(gray, info.width, info.height, y, spanX0, spanX1)
+    )
+    : null;
+  const bottomCandidate = (() => {
+    if ((outerBottom - innerBottom) <= Math.max(minInsetY, nearBoundaryGapY)) {
+      return null;
+    }
+    const bottomSearchFrom = clamp(Math.round(innerBottom + nearBoundaryGapY), 0, Math.max(0, info.height - 1));
+    const bottomSearchTo = clamp(Math.round(outerBottom - 1), bottomSearchFrom, Math.max(0, info.height - 1));
+    const scoreAt = (y) => scoreHorizontalLineAt(gray, info.width, info.height, y, spanX0, spanX1);
+    return (
+      findNearestDirectionalPeak(
+        bottomSearchFrom,
+        bottomSearchTo,
+        scoreAt,
+        {
+          direction: 'forward',
+          minScore: Math.max(16, minScoreY * 0.62)
+        }
+      )
+      || findStrongDirectionalLine(bottomSearchFrom, bottomSearchTo, scoreAt)
+    );
+  })();
+  const leftCandidate = (() => {
+    if ((innerLeft - outerLeft) <= Math.max(minInsetX, nearBoundaryGapX)) {
+      return null;
+    }
+    const leftSearchFrom = clamp(Math.round(innerLeft - nearBoundaryGapX), 0, Math.max(0, info.width - 1));
+    const leftSearchTo = clamp(Math.round(outerLeft + 1), 0, leftSearchFrom);
+    const scoreAt = (x) => scoreVerticalLineAt(gray, info.width, info.height, x, spanY0, spanY1);
+    return (
+      findNearestDirectionalPeak(
+        leftSearchFrom,
+        leftSearchTo,
+        scoreAt,
+        {
+          direction: 'backward',
+          minScore: Math.max(16, minScoreX * 0.62)
+        }
+      )
+      || findStrongDirectionalLine(leftSearchTo, leftSearchFrom, scoreAt)
+    );
+  })();
+  const rightCandidate = (() => {
+    if ((outerRight - innerRight) <= Math.max(minInsetX, nearBoundaryGapX)) {
+      return null;
+    }
+    const rightSearchFrom = clamp(Math.round(innerRight + nearBoundaryGapX), 0, Math.max(0, info.width - 1));
+    const rightSearchTo = clamp(Math.round(outerRight - 1), rightSearchFrom, Math.max(0, info.width - 1));
+    const scoreAt = (x) => scoreVerticalLineAt(gray, info.width, info.height, x, spanY0, spanY1);
+    return (
+      findNearestDirectionalPeak(
+        rightSearchFrom,
+        rightSearchTo,
+        scoreAt,
+        {
+          direction: 'forward',
+          minScore: Math.max(16, minScoreX * 0.62)
+        }
+      )
+      || findStrongDirectionalLine(rightSearchFrom, rightSearchTo, scoreAt)
+    );
+  })();
+
+  const nextOuter = {
+    left: leftCandidate && leftCandidate.score >= minScoreX ? leftCandidate.index : outerLeft,
+    right: rightCandidate && rightCandidate.score >= minScoreX ? rightCandidate.index : outerRight,
+    top: topCandidate && topCandidate.score >= minScoreY ? topCandidate.index : outerTop,
+    bottom: bottomCandidate && bottomCandidate.score >= minScoreY ? bottomCandidate.index : outerBottom
+  };
+  const changed = (
+    nextOuter.left !== outerLeft
+    || nextOuter.right !== outerRight
+    || nextOuter.top !== outerTop
+    || nextOuter.bottom !== outerBottom
+  );
+  if (!changed) {
+    return inferredOuterFrame || null;
+  }
+  const fallbackNextQuad = normalizeCornerQuad([
+    [nextOuter.left, nextOuter.top],
+    [nextOuter.right, nextOuter.top],
+    [nextOuter.right, nextOuter.bottom],
+    [nextOuter.left, nextOuter.bottom]
+  ]);
+  const fittedNextOuter = fitTiltedOuterFrameQuadFromBounds(
+    gray,
+    info.width,
+    info.height,
+    nextOuter,
+    { left: innerLeft, right: innerRight, top: innerTop, bottom: innerBottom },
+    { cellWidth, cellHeight }
+  );
+  const nextQuad = fittedNextOuter?.quad || fallbackNextQuad;
+  if (!nextQuad) {
+    return inferredOuterFrame || null;
+  }
+  const nextTopGap = Math.max(0, innerTop - nextOuter.top);
+  const nextBottomGap = Math.max(0, nextOuter.bottom - innerBottom);
+  const nextLeftGap = Math.max(0, innerLeft - nextOuter.left);
+  const nextRightGap = Math.max(0, nextOuter.right - innerRight);
+  const nextGaps = [nextTopGap, nextBottomGap, nextLeftGap, nextRightGap].filter((value) => Number.isFinite(value) && value > 0);
+  const nextHorizontalGaps = [nextTopGap, nextBottomGap].filter((value) => Number.isFinite(value) && value > 0);
+  const nextVerticalGaps = [nextLeftGap, nextRightGap].filter((value) => Number.isFinite(value) && value > 0);
+  const nextNormalizedMarginRatios = {
+    top: nextTopGap / Math.max(cellHeight, 1),
+    bottom: nextBottomGap / Math.max(cellHeight, 1),
+    left: nextLeftGap / Math.max(cellWidth, 1),
+    right: nextRightGap / Math.max(cellWidth, 1)
+  };
+  const nextMeanHorizontalMarginRatio = average([nextNormalizedMarginRatios.top, nextNormalizedMarginRatios.bottom].filter(Number.isFinite));
+  const nextMeanVerticalMarginRatio = average([nextNormalizedMarginRatios.left, nextNormalizedMarginRatios.right].filter(Number.isFinite));
+  const nextAxisMarginDominanceRatio = (
+    Number.isFinite(nextMeanHorizontalMarginRatio)
+    && Number.isFinite(nextMeanVerticalMarginRatio)
+    && Math.min(nextMeanHorizontalMarginRatio, nextMeanVerticalMarginRatio) > 1e-6
+  )
+    ? Math.max(nextMeanHorizontalMarginRatio, nextMeanVerticalMarginRatio) / Math.max(1e-6, Math.min(nextMeanHorizontalMarginRatio, nextMeanVerticalMarginRatio))
+    : Number.POSITIVE_INFINITY;
+  return {
+    ...inferredOuterFrame,
+    outerQuad: nextQuad,
+    refinedOuterFrame: nextOuter,
+    diagnostics: {
+      ...(inferredOuterFrame?.diagnostics || {}),
+      gaps: {
+        top: nextTopGap,
+        bottom: nextBottomGap,
+        left: nextLeftGap,
+        right: nextRightGap
+      },
+      gapRatio: nextGaps.length ? Number((Math.max(...nextGaps) / Math.max(1, Math.min(...nextGaps))).toFixed(4)) : null,
+      horizontalGapRatio: nextHorizontalGaps.length === 2
+        ? Number((Math.max(...nextHorizontalGaps) / Math.max(1, Math.min(...nextHorizontalGaps))).toFixed(4))
+        : null,
+      verticalGapRatio: nextVerticalGaps.length === 2
+        ? Number((Math.max(...nextVerticalGaps) / Math.max(1, Math.min(...nextVerticalGaps))).toFixed(4))
+        : null,
+      normalizedMarginRatios: {
+        top: Number(nextNormalizedMarginRatios.top.toFixed(4)),
+        bottom: Number(nextNormalizedMarginRatios.bottom.toFixed(4)),
+        left: Number(nextNormalizedMarginRatios.left.toFixed(4)),
+        right: Number(nextNormalizedMarginRatios.right.toFixed(4))
+      },
+      minHorizontalMarginRatio: Number(Math.min(nextNormalizedMarginRatios.top, nextNormalizedMarginRatios.bottom).toFixed(4)),
+      minVerticalMarginRatio: Number(Math.min(nextNormalizedMarginRatios.left, nextNormalizedMarginRatios.right).toFixed(4)),
+      axisMarginDominanceRatio: Number.isFinite(nextAxisMarginDominanceRatio)
+        ? Number(nextAxisMarginDominanceRatio.toFixed(4))
+        : null,
+      innerBounds: {
+        left: innerLeft,
+        right: innerRight,
+        top: innerTop,
+        bottom: innerBottom
+      },
+      outerBounds: {
+        left: nextOuter.left,
+        right: nextOuter.right,
+        top: nextOuter.top,
+        bottom: nextOuter.bottom
+      },
+      tiltedQuadFittedAfterTighten: Boolean(fittedNextOuter?.quad),
+      tiltedQuadFitDiagnosticsAfterTighten: fittedNextOuter?.diagnostics || null,
+      tightenedByFinalGuides: true,
+      tightenedFromOuterBounds: outer,
+      tightenedCandidates: {
+        top: topCandidate ? { index: topCandidate.index, score: Number(topCandidate.score.toFixed(3)) } : null,
+        bottom: bottomCandidate ? { index: bottomCandidate.index, score: Number(bottomCandidate.score.toFixed(3)) } : null,
+        left: leftCandidate ? { index: leftCandidate.index, score: Number(leftCandidate.score.toFixed(3)) } : null,
+        right: rightCandidate ? { index: rightCandidate.index, score: Number(rightCandidate.score.toFixed(3)) } : null
+      }
     }
   };
 }
@@ -2199,6 +8034,14 @@ async function removeObviousOuterFrameLines(imagePath, outputPath) {
     const removableDistances = ['top', 'bottom', 'left', 'right']
       .map((key) => Number(removableSides[key]?.distance))
       .filter(Number.isFinite);
+    const horizontalGapPair = [
+      Number(removableSides.top?.distance),
+      Number(removableSides.bottom?.distance)
+    ].filter(Number.isFinite);
+    const verticalGapPair = [
+      Number(removableSides.left?.distance),
+      Number(removableSides.right?.distance)
+    ].filter(Number.isFinite);
     const marginConsistency = removableDistances.length === 4
       ? {
           minGap: Math.min(...removableDistances),
@@ -2206,11 +8049,44 @@ async function removeObviousOuterFrameLines(imagePath, outputPath) {
           ratio: Math.max(...removableDistances) / Math.max(1, Math.min(...removableDistances))
         }
       : null;
+    const pairConsistency = (
+      horizontalGapPair.length === 2
+      && verticalGapPair.length === 2
+    )
+      ? {
+          horizontal: {
+            minGap: Math.min(...horizontalGapPair),
+            maxGap: Math.max(...horizontalGapPair),
+            ratio: Math.max(...horizontalGapPair) / Math.max(1, Math.min(...horizontalGapPair)),
+            delta: Math.abs(horizontalGapPair[0] - horizontalGapPair[1])
+          },
+          vertical: {
+            minGap: Math.min(...verticalGapPair),
+            maxGap: Math.max(...verticalGapPair),
+            ratio: Math.max(...verticalGapPair) / Math.max(1, Math.min(...verticalGapPair)),
+            delta: Math.abs(verticalGapPair[0] - verticalGapPair[1])
+          }
+        }
+      : null;
+    const innerFrameDetected = Boolean(
+      nearInnerTop
+      && nearInnerBottom
+      && nearInnerLeft
+      && nearInnerRight
+      && nearInnerBottom.index > nearInnerTop.index
+      && nearInnerRight.index > nearInnerLeft.index
+    );
     const similarOuterInnerMargin = Boolean(
-      marginConsistency
+      innerFrameDetected
+      && marginConsistency
       && marginConsistency.minGap > 0
-      && marginConsistency.ratio <= 1.35
-      && (marginConsistency.maxGap - marginConsistency.minGap) <= Math.max(12, Math.round(Math.min(estimatedCellGapX, estimatedCellGapY) * 0.18))
+      && marginConsistency.ratio <= 1.28
+      && (marginConsistency.maxGap - marginConsistency.minGap) <= Math.max(12, Math.round(Math.min(estimatedCellGapX, estimatedCellGapY) * 0.15))
+      && pairConsistency
+      && pairConsistency.horizontal.ratio <= 1.18
+      && pairConsistency.vertical.ratio <= 1.18
+      && pairConsistency.horizontal.delta <= Math.max(10, Math.round(estimatedCellGapY * 0.12))
+      && pairConsistency.vertical.delta <= Math.max(10, Math.round(estimatedCellGapX * 0.12))
     );
     const topHeaderGapEligible = (
       !removableSides.top.removable
@@ -2282,11 +8158,13 @@ async function removeObviousOuterFrameLines(imagePath, outputPath) {
         relaxedImmediateInnerFrame: {
           applied: false,
           topHeaderGapEligible,
+          innerFrameDetected,
           hasImmediateInnerFrame,
           hasRelaxedImmediateInnerFrame,
           structuralFrameConfirmed,
           similarOuterInnerMargin,
-          marginConsistency
+          marginConsistency,
+          pairConsistency
         },
         removableSides,
         regularGrid: {
@@ -2377,6 +8255,7 @@ async function removeObviousOuterFrameLines(imagePath, outputPath) {
     let rectifiedMeta = null;
     let rectifiedCrop = null;
     let cropAspectRatio = null;
+    let innerEdgeProjection = null;
     const fallbackMargins = {
       top: Math.max(1, Math.round(Math.abs((nearInnerTop?.index ?? innerTop?.index ?? outerFrame.top) - outerFrame.top))),
       bottom: Math.max(1, Math.round(Math.abs(outerFrame.bottom - (nearInnerBottom?.index ?? innerBottom?.index ?? outerFrame.bottom)))),
@@ -2427,6 +8306,13 @@ async function removeObviousOuterFrameLines(imagePath, outputPath) {
       cropAspectRatio = rectifiedCrop?.cropBox?.width && rectifiedCrop?.cropBox?.height
         ? rectifiedCrop.cropBox.width / rectifiedCrop.cropBox.height
         : null;
+      innerEdgeProjection = rectifiedCrop?.cropBox
+        ? projectRectifiedCropBoxToSourceQuad(
+          outerQuad,
+          rectifiedMeta || rectifiedInfo,
+          rectifiedCrop.cropBox
+        )
+        : null;
       await sharp(rectifiedOuterPath)
         .extract({
           left: rectifiedCrop.cropBox.left,
@@ -2456,13 +8342,13 @@ async function removeObviousOuterFrameLines(imagePath, outputPath) {
           height: candidate.bboxHeight
         },
         fillRatio: Number(candidate.fillRatio.toFixed(4)),
-        refinedOuterFrame: {
+        refinedOuterFrame: innerEdgeProjection?.bounds || {
           top: outerFrame.top,
           bottom: outerFrame.bottom,
           left: outerFrame.left,
           right: outerFrame.right
         },
-        outerQuad,
+        outerQuad: innerEdgeProjection?.quad || outerQuad,
         rectifiedOuterFrame: rectifiedMeta || null,
         croppedInnerFrame: rectifiedCrop?.cropBox || null,
         cropAspectRatio: Number.isFinite(cropAspectRatio) ? Number(cropAspectRatio.toFixed(4)) : null,
@@ -2470,6 +8356,23 @@ async function removeObviousOuterFrameLines(imagePath, outputPath) {
         structureScore: Number((candidate.structureScore || 0).toFixed(4)),
         candidateRankSummary,
         separation: separationCheck,
+        detectedOuterBorder: {
+          refinedOuterFrame: {
+            top: outerFrame.top,
+            bottom: outerFrame.bottom,
+            left: outerFrame.left,
+            right: outerFrame.right
+          },
+          outerQuad
+        },
+        innerEdgeAdjusted: Boolean(innerEdgeProjection?.quad),
+        innerEdgeAdjustedFromRectifiedCrop: innerEdgeProjection
+          ? {
+              method: rectifiedCrop?.method || null,
+              cropBox: rectifiedCrop?.cropBox || null,
+              rectifiedTrims: innerEdgeProjection.rectifiedTrims || null
+            }
+          : null,
         immediateInnerFrame: {
           top: rectifiedCrop?.immediateInnerFrame?.top ?? nearInnerTop?.index ?? null,
           bottom: rectifiedCrop?.immediateInnerFrame?.bottom ?? nearInnerBottom?.index ?? null,
@@ -2875,7 +8778,17 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
   const yPeaks = Array.isArray(guides.yPeaks) ? guides.yPeaks.map(Number).filter(Number.isFinite) : [];
   const cellWidth = Math.max(24, Math.round(getMedianGap(xPeaks, info.width * 0.12)));
   const cellHeight = Math.max(24, Math.round(getMedianGap(yPeaks, info.height * 0.08)));
-  const rawGuideHints = inferGridOuterBoundHints(options.rawGuides || null, cellWidth, cellHeight, info.width, info.height);
+  const rawGuideHints = inferGridOuterBoundHints(
+    options.rawGuides || null,
+    cellWidth,
+    cellHeight,
+    info.width,
+    info.height,
+    {
+      gridCols: Array.isArray(guides?.xPeaks) ? Math.max(1, guides.xPeaks.length - 1) : 0,
+      gridRows: Array.isArray(guides?.yPeaks) ? Math.max(1, guides.yPeaks.length - 1) : 0
+    }
+  );
   const hintedGuides = {
     left: clamp(Math.round(Number(rawGuideHints?.left ?? guides.left ?? average([quad[0][0], quad[3][0]]))), 0, Math.max(0, info.width - 1)),
     right: 0,
@@ -2902,47 +8815,237 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
   const bottomSearchDownY = Math.max(10, Math.round(cellHeight * 0.42));
   const verticalSpan = Math.max(18, Math.round(cellHeight * 1.1));
   const horizontalSpan = Math.max(18, Math.round(cellWidth * 1.1));
+  const globalGuidePattern = guides?.globalPattern || rawGuideHints?.diagnostics?.globalPattern || null;
+  const overallGuidePattern = globalGuidePattern?.mode || rawGuideHints?.diagnostics?.overallPattern || 'mixed';
+  const patternProfile = globalGuidePattern?.patternProfile || null;
+  const profileSettings = patternProfile?.settings || null;
+  const topGuideConfirmation = options.topGuideConfirmation || null;
+  const confirmedTopGuideY = Number(topGuideConfirmation?.refinedTop);
+  const leftBottomJointSupport = rawGuideHints?.diagnostics?.leftBottomJointSupport || null;
+  const leftIntervalPriorityEvidence = buildInnerGridIntervalEvidence({
+    firstGap: rawGuideHints?.diagnostics?.leftFirstGap,
+    secondGap: rawGuideHints?.diagnostics?.leftSecondGap,
+    medianGap: rawGuideHints?.medianXGap || cellWidth,
+    stableRun: rawGuideHints?.diagnostics?.leftStableInnerRun,
+    globalStableCount: rawGuideHints?.diagnostics?.xGlobalStableGapCount
+  });
+  const bottomIntervalPriorityEvidence = buildInnerGridIntervalEvidence({
+    firstGap: rawGuideHints?.diagnostics?.bottomLastGap,
+    secondGap: rawGuideHints?.diagnostics?.bottomPrevGap,
+    medianGap: rawGuideHints?.medianYGap || cellHeight,
+    stableRun: rawGuideHints?.diagnostics?.bottomStableInnerRun,
+    globalStableCount: rawGuideHints?.diagnostics?.yGlobalStableGapCount
+  });
+  const leftBottomPriorityByInterval = Boolean(
+    !options.outerFrameDetected
+    && (
+      (Number(leftIntervalPriorityEvidence?.pairConsistencyScore) || 0) >= 0.76
+      || (Number(leftIntervalPriorityEvidence?.supportScore) || 0) >= 0.72
+      || (Number(bottomIntervalPriorityEvidence?.pairConsistencyScore) || 0) >= 0.82
+      || (Number(bottomIntervalPriorityEvidence?.supportScore) || 0) >= 0.78
+    )
+  );
+  const leftBottomPriorityByOuterFrame = Boolean(
+    options.outerFrameDetected
+    && (
+      (
+        leftBottomJointSupport?.eligibilityMode === 'soft-high-score'
+        && (Number(leftBottomJointSupport?.leftGapScore) || 0) >= 0.72
+        && (Number(leftBottomJointSupport?.bottomGapScore) || 0) >= 0.55
+        && (Number(leftBottomJointSupport?.continuityScore) || 0) >= 0.88
+      )
+      || (
+        (Number(leftBottomJointSupport?.score) || 0) >= 0.84
+        && (Number(leftBottomJointSupport?.leftGapScore) || 0) >= 0.82
+        && (Number(leftBottomJointSupport?.bottomGapScore) || 0) >= 0.62
+        && (Number(leftBottomJointSupport?.continuityScore) || 0) >= 0.9
+      )
+    )
+  );
+  const leftBottomPriorityMode = (
+    options.forceLeftBottomPriority
+    || Boolean(profileSettings?.preferLeftBottomTraversal)
+    || leftBottomPriorityByInterval
+    || leftBottomPriorityByOuterFrame
+    || (
+      !options.outerFrameDetected
+      && (
+      overallGuidePattern === 'uniform-cells-with-inner-dashed'
+      || overallGuidePattern === 'uniform-boundary-grid'
+      || overallGuidePattern === 'mixed'
+      )
+    )
+  );
+  const cornerSpecMap = {
+    leftTop: { name: 'leftTop', index: 0, xDir: 1, yDir: 1 },
+    rightTop: { name: 'rightTop', index: 1, xDir: -1, yDir: 1 },
+    rightBottom: { name: 'rightBottom', index: 2, xDir: -1, yDir: -1 },
+    leftBottom: { name: 'leftBottom', index: 3, xDir: 1, yDir: -1 }
+  };
+  const cornerSpecs = leftBottomPriorityMode
+    ? [
+        cornerSpecMap.leftBottom,
+        cornerSpecMap.leftTop,
+        cornerSpecMap.rightBottom,
+        cornerSpecMap.rightTop
+      ]
+    : [
+        cornerSpecMap.leftTop,
+        cornerSpecMap.rightTop,
+        cornerSpecMap.rightBottom,
+        cornerSpecMap.leftBottom
+      ];
 
-  const cornerSpecs = [
-    { name: 'leftTop', index: 0, xDir: 1, yDir: 1 },
-    { name: 'rightTop', index: 1, xDir: -1, yDir: 1 },
-    { name: 'rightBottom', index: 2, xDir: -1, yDir: -1 },
-    { name: 'leftBottom', index: 3, xDir: 1, yDir: -1 }
-  ];
-
-  const refinedCorners = [...quad];
+  let refinedCorners = [...quad];
   const diagnostics = {};
+  const resolvedCornerByName = {};
+  const innerFrameOutwardClampX = Math.max(8, Math.round(cellWidth * 0.03));
+  const innerFrameInwardClampX = Math.max(24, Math.round(cellWidth * 0.16));
+  const preferTightTopWindow = Boolean(
+    leftBottomPriorityMode
+    && !options.outerFrameDetected
+    && (
+      patternProfile?.family === 'inner-dashed-box-grid'
+      || patternProfile?.family === 'diagonal-mi-grid'
+      || overallGuidePattern === 'uniform-boundary-grid'
+      || overallGuidePattern === 'uniform-cells-with-inner-dashed'
+    )
+  );
+  const innerFrameTopClampUp = preferTightTopWindow ? 4 : Math.max(6, Math.round(cellHeight * 0.035));
+  const innerFrameTopClampDown = preferTightTopWindow ? 4 : Math.max(10, Math.round(cellHeight * 0.06));
+  const innerFrameBottomClampUp = Math.max(10, Math.round(cellHeight * 0.08));
+  const innerFrameBottomClampDown = Math.max(18, Math.round(cellHeight * 0.1));
+  const resolveCornerExpected = (spec) => {
+    const baseExpected = quad[spec.index] || [0, 0];
+    let expectedX = Number(baseExpected[0]);
+    let expectedY = Number(baseExpected[1]);
+    let source = 'input-quad';
+    if (!leftBottomPriorityMode) {
+      return { expectedX, expectedY, source };
+    }
+    if (spec.name === 'leftBottom') {
+      expectedX = Number.isFinite(guideLeft) ? guideLeft : expectedX;
+      expectedY = Number.isFinite(guideBottom) ? guideBottom : expectedY;
+      source = 'left-bottom-guides';
+    } else if (spec.name === 'leftTop') {
+      expectedX = Number.isFinite(resolvedCornerByName.leftBottom?.[0])
+        ? Number(resolvedCornerByName.leftBottom[0])
+        : (Number.isFinite(guideLeft) ? guideLeft : expectedX);
+      expectedY = Number.isFinite(confirmedTopGuideY)
+        ? confirmedTopGuideY
+        : (Number.isFinite(guideTop) ? guideTop : expectedY);
+      source = Number.isFinite(resolvedCornerByName.leftBottom?.[0])
+        ? 'left-bottom-propagated-left-side'
+        : 'left-guide-top-guide';
+    } else if (spec.name === 'rightBottom') {
+      const preferGuideAnchoredRightBottom = (
+        leftBottomPriorityMode
+        && !options.outerFrameDetected
+        && Number.isFinite(guideRight)
+      );
+      expectedX = preferGuideAnchoredRightBottom
+        ? guideRight
+        : (Number.isFinite(guideRight) ? guideRight : expectedX);
+      expectedY = Number.isFinite(resolvedCornerByName.leftBottom?.[1])
+        ? Number(resolvedCornerByName.leftBottom[1])
+        : (Number.isFinite(guideBottom) ? guideBottom : expectedY);
+      source = preferGuideAnchoredRightBottom
+        ? 'right-guide-bottom-guide-preferred'
+        : (
+          Number.isFinite(resolvedCornerByName.leftBottom?.[1])
+            ? 'left-bottom-propagated-bottom-side'
+            : 'right-guide-bottom-guide'
+        );
+    } else if (spec.name === 'rightTop') {
+      const preferGuideAnchoredRightTop = (
+        preferTightTopWindow
+        && !options.outerFrameDetected
+        && Number.isFinite(guideRight)
+      );
+      expectedX = preferGuideAnchoredRightTop
+        ? guideRight
+        : (
+          Number.isFinite(resolvedCornerByName.rightBottom?.[0])
+            ? Number(resolvedCornerByName.rightBottom[0])
+            : (Number.isFinite(guideRight) ? guideRight : expectedX)
+        );
+      expectedY = Number.isFinite(resolvedCornerByName.leftTop?.[1])
+        ? Number(resolvedCornerByName.leftTop[1])
+        : (
+          Number.isFinite(confirmedTopGuideY)
+            ? confirmedTopGuideY
+            : (Number.isFinite(guideTop) ? guideTop : expectedY)
+        );
+      source = preferGuideAnchoredRightTop
+        ? 'right-guide-top-guide-preferred'
+        : (
+          (
+            Number.isFinite(resolvedCornerByName.rightBottom?.[0])
+            || Number.isFinite(resolvedCornerByName.leftTop?.[1])
+          )
+            ? 'left-bottom-propagated-rectangle'
+            : 'right-guide-top-guide'
+        );
+    }
+    return { expectedX, expectedY, source };
+  };
 
   for (const spec of cornerSpecs) {
     const expected = quad[spec.index];
-    const expectedX = Number(expected[0]);
-    const expectedY = Number(expected[1]);
+    const resolvedExpected = resolveCornerExpected(spec);
+    const expectedX = resolvedExpected.expectedX;
+    const expectedY = resolvedExpected.expectedY;
     const isBottomCorner = spec.yDir < 0;
+    const isTopCorner = spec.yDir > 0;
+    const leftBottomSearchBoost = leftBottomPriorityMode && spec.name === 'leftBottom' ? 1.4 : 1;
+    const topWindowX = preferTightTopWindow && isTopCorner
+      ? Math.max(18, Math.round(searchX * 0.55))
+      : searchX;
+    const topWindowUp = preferTightTopWindow && isTopCorner
+      ? Math.max(16, Math.round(topSearchUpY * 0.4))
+      : topSearchUpY;
+    const topWindowDown = preferTightTopWindow && isTopCorner
+      ? Math.max(8, Math.round(topSearchDownY * 0.55))
+      : topSearchDownY;
+    const rightTopOutwardSearch = (
+      spec.name === 'rightTop'
+      && preferTightTopWindow
+      && !options.outerFrameDetected
+      && Number.isFinite(guideRight)
+    ) ? Math.max(12, Math.round(cellWidth * 0.12)) : 0;
     const xSearchStart = clamp(
       isBottomCorner
-        ? (expectedX - bottomSearchOutwardX)
-        : (spec.xDir > 0 ? expectedX : (expectedX - searchX)),
+        ? (expectedX - bottomSearchOutwardX * leftBottomSearchBoost)
+        : (
+          spec.xDir > 0
+            ? expectedX
+            : (expectedX - topWindowX)
+        ),
       0,
       Math.max(0, info.width - 1)
     );
     const xSearchEnd = clamp(
       isBottomCorner
-        ? (expectedX + bottomSearchOutwardX)
-        : (spec.xDir > 0 ? (expectedX + searchX) : expectedX),
+        ? (expectedX + bottomSearchOutwardX * leftBottomSearchBoost)
+        : (
+          spec.xDir > 0
+            ? (expectedX + topWindowX)
+            : (expectedX + rightTopOutwardSearch)
+        ),
       0,
       Math.max(0, info.width - 1)
     );
     const ySearchStart = clamp(
       isBottomCorner
-        ? (expectedY - bottomSearchUpY)
-        : (spec.yDir > 0 ? (expectedY - topSearchUpY) : (expectedY - searchY)),
+        ? (expectedY - bottomSearchUpY * leftBottomSearchBoost)
+        : (spec.yDir > 0 ? (expectedY - topWindowUp) : (expectedY - searchY)),
       0,
       Math.max(0, info.height - 1)
     );
     const ySearchEnd = clamp(
       isBottomCorner
-        ? (expectedY + bottomSearchDownY)
-        : (spec.yDir > 0 ? (expectedY + topSearchDownY) : expectedY),
+        ? (expectedY + bottomSearchDownY * leftBottomSearchBoost)
+        : (spec.yDir > 0 ? (expectedY + topWindowDown) : expectedY),
       0,
       Math.max(0, info.height - 1)
     );
@@ -3084,6 +9187,12 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
       const anchorSpanX = Math.max(12, Math.round(cellWidth * 0.12));
       const anchorSpanY = Math.max(12, Math.round(cellHeight * 0.12));
       const anchorHorizontalSpan = Math.max(22, Math.round(cellWidth * 0.46));
+      const keepRightBottomNearGuide = (
+        spec.name === 'rightBottom'
+        && leftBottomPriorityMode
+        && !options.outerFrameDetected
+        && Number.isFinite(guideRight)
+      );
       const bottomAnchor = pickBestLocalCorner({
         xStart: refinedPoint[0] - anchorSpanX,
         xEnd: refinedPoint[0] + anchorSpanX,
@@ -3143,9 +9252,19 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
         && Number.isFinite(bottomAnchor.score)
         && bottomAnchor.score >= Math.max(cornerScoreEstimate(xScore, yScore), 82)
       ) {
-        refinedPoint = [bottomAnchor.x, bottomAnchor.y];
+        let anchoredPoint = [bottomAnchor.x, bottomAnchor.y];
+        if (keepRightBottomNearGuide) {
+          const outwardTolerance = Math.max(8, Math.round(cellWidth * 0.035));
+          const inwardTolerance = Math.max(8, Math.round(cellWidth * 0.03));
+          anchoredPoint = [
+            clamp(anchoredPoint[0], guideRight - inwardTolerance, guideRight + outwardTolerance),
+            anchoredPoint[1]
+          ];
+        }
+        refinedPoint = anchoredPoint;
         xScore = Math.max(xScore, bottomAnchor.score * 0.72);
         yScore = Math.max(yScore, bottomAnchor.score * 0.72);
+        bottomCornerAnchor.afterClamp = [...refinedPoint];
         bottomCornerAnchor.applied = true;
       } else if (bottomCornerAnchor) {
         bottomCornerAnchor.applied = false;
@@ -3243,6 +9362,67 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
       }
     }
 
+    if (leftBottomPriorityMode) {
+      if ((spec.name === 'leftBottom' || spec.name === 'leftTop') && Number.isFinite(guideLeft)) {
+        refinedPoint = [
+          clamp(refinedPoint[0], guideLeft - innerFrameOutwardClampX, guideLeft + innerFrameInwardClampX),
+          refinedPoint[1]
+        ];
+      }
+      if ((spec.name === 'rightBottom' || spec.name === 'rightTop') && Number.isFinite(guideRight)) {
+        refinedPoint = [
+          clamp(refinedPoint[0], guideRight - innerFrameInwardClampX, guideRight + innerFrameOutwardClampX),
+          refinedPoint[1]
+        ];
+      }
+      if (isTopCorner && Number.isFinite(guideTop) && preferTightTopWindow) {
+        const topClampBaseY = Number.isFinite(confirmedTopGuideY) ? confirmedTopGuideY : guideTop;
+        refinedPoint = [
+          refinedPoint[0],
+          clamp(refinedPoint[1], topClampBaseY - innerFrameTopClampUp, topClampBaseY + innerFrameTopClampDown)
+        ];
+      }
+      if (isBottomCorner && Number.isFinite(guideBottom)) {
+        refinedPoint = [
+          refinedPoint[0],
+          clamp(refinedPoint[1], guideBottom - innerFrameBottomClampUp, guideBottom + innerFrameBottomClampDown)
+        ];
+      }
+    }
+
+    let topGuideAdjusted = null;
+    const coarseTopGuideY = Number(coarseGuideBounds?.top);
+    if (
+      isTopCorner
+      && preferTightTopWindow
+      && Number.isFinite(confirmedTopGuideY)
+      && Number.isFinite(coarseTopGuideY)
+      && Math.abs(coarseTopGuideY - confirmedTopGuideY) <= Math.max(12, Math.round(cellHeight * 0.18))
+      && !options.outerFrameDetected
+    ) {
+      const topGuideSnapTolerance = Math.max(8, Math.round(cellHeight * 0.045));
+      const beforeY = refinedPoint[1];
+      const deltaToConfirmedTop = Math.abs(beforeY - confirmedTopGuideY);
+      if (deltaToConfirmedTop <= topGuideSnapTolerance) {
+        refinedPoint = [refinedPoint[0], confirmedTopGuideY];
+        topGuideAdjusted = {
+          beforeY,
+          afterY: confirmedTopGuideY,
+          delta: Number(deltaToConfirmedTop.toFixed(3)),
+          tolerance: topGuideSnapTolerance,
+          applied: beforeY !== confirmedTopGuideY
+        };
+      } else {
+        topGuideAdjusted = {
+          beforeY,
+          afterY: beforeY,
+          delta: Number(deltaToConfirmedTop.toFixed(3)),
+          tolerance: topGuideSnapTolerance,
+          applied: false
+        };
+      }
+    }
+
     const cornerScore = (xScore + yScore) / 2;
 
     refinedCorners[spec.index] = refinedPoint;
@@ -3251,6 +9431,8 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
       refined: refinedPoint,
       cornerScore: Number((cornerScore || 0).toFixed(3)),
       mode: 'local-axis-line-search',
+      expectedSource: resolvedExpected.source,
+      traversalMode: leftBottomPriorityMode ? 'left-bottom-first' : 'default-sequential',
       searchWindow: {
         x: [xSearchStart, xSearchEnd],
         y: [ySearchStart, ySearchEnd]
@@ -3265,12 +9447,28 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
         usedLineIntersection: Boolean(verticalLine && horizontalLine && intersectionInsideLocalWindow),
         rejectedIntersectionOutsideWindow: Boolean(verticalLine && horizontalLine && !intersectionInsideLocalWindow)
       },
+      topGuideAdjusted,
       bottomCornerAnchor,
       bottomCornerConfirmation
     };
+    resolvedCornerByName[spec.name] = refinedPoint;
   }
 
-  const normalizedRefined = normalizeCornerQuad(refinedCorners);
+  refinedCorners = applyVerticalSideConsistency(refinedCorners, diagnostics, {
+    enabled: leftBottomPriorityMode && !options.outerFrameDetected,
+    guideLeft,
+    guideRight,
+    cellWidth
+  });
+  refinedCorners = applyVerticalSideTiltConsistency(refinedCorners, diagnostics, {
+    enabled: leftBottomPriorityMode && !options.outerFrameDetected,
+    coarseVerticalEndpoints: coarseGuideBounds?.diagnostics?.verticalEndpoints || null,
+    guideLeft,
+    guideRight,
+    cellWidth
+  });
+
+  let normalizedRefined = normalizeCornerQuad(refinedCorners);
   if (!normalizedRefined) {
     return { corners: quad, applied: false, diagnostics };
   }
@@ -3468,6 +9666,11 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
   const coarseVerticalEndpointTopY = coarseVerticalEndpointTopCandidates.length
     ? average(coarseVerticalEndpointTopCandidates)
     : null;
+  const localTopBandY = average(
+    [normalizedRefined?.[0]?.[1], normalizedRefined?.[1]?.[1]]
+      .map(Number)
+      .filter(Number.isFinite)
+  );
   const topContinuityWeak = (
     (edgeLineQuality.top.continuity?.longestRunRatio ?? 0) < 0.58
     || (edgeLineQuality.top.continuity?.maxGapRatio ?? 1) > 0.12
@@ -3479,6 +9682,24 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
     && topContinuityWeak
   ) {
     preferredTopBandY = coarseVerticalEndpointTopY;
+  }
+  const topBandTooDeepVsLocal = (
+    Number.isFinite(preferredTopBandY)
+    && Number.isFinite(localTopBandY)
+    && preferredTopBandY > localTopBandY + Math.max(22, cellHeight * 0.3)
+  );
+  if (topBandTooDeepVsLocal && topContinuityWeak) {
+    const topBandFallbackCandidates = [
+      localTopBandY,
+      coarseVerticalEndpointTopY,
+      coarseTopY
+    ].filter((value) => Number.isFinite(value) && value <= preferredTopBandY);
+    const fallbackTopBandY = topBandFallbackCandidates.length
+      ? Math.min(...topBandFallbackCandidates)
+      : localTopBandY;
+    if (Number.isFinite(fallbackTopBandY)) {
+      preferredTopBandY = fallbackTopBandY;
+    }
   }
   const topAnchorTolerance = Math.max(18, Math.round(cellHeight * 0.16));
   if (
@@ -3646,6 +9867,19 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
   const preferredTopRightAnchor = topBandShouldYieldToSideAnchors
     ? (effectiveRightTopAnchor || safeProjectedTopRightAnchor || topRightAnchor)
     : (safeProjectedTopRightAnchor || topRightAnchor || effectiveRightTopAnchor);
+  normalizedRefined = applyHorizontalTiltConsistency(normalizedRefined, diagnostics, {
+    enabled: true,
+    leftBottomPriorityMode,
+    outerFrameDetected: Boolean(options.outerFrameDetected),
+    preferredTopLeftAnchor,
+    preferredTopRightAnchor,
+    preferredBottomLeftAnchor: safeProjectedBottomLeftAnchor || bottomLeftAnchor || adjustedLeftBottomAnchor,
+    preferredBottomRightAnchor: safeProjectedBottomRightAnchor || bottomRightAnchor || adjustedRightBottomAnchor,
+    guideLeft,
+    guideRight,
+    cellWidth,
+    cellHeight
+  });
   const dominantTopLine = buildLineFromEndAnchors(
     preferredTopLeftAnchor,
     preferredTopRightAnchor,
@@ -3690,6 +9924,14 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
     projectedBottomLeftAnchor: safeProjectedBottomLeftAnchor,
     projectedBottomRightAnchor: safeProjectedBottomRightAnchor
   });
+  preferredTopBandY = resolveWeakTopBandPreference({
+    preferredTopBandY,
+    localTopBandY: Number(finalGuard?.localTopBandY),
+    coarseTopY,
+    coarseVerticalEndpointTopY,
+    topContinuityWeak,
+    cellHeight
+  });
   const dominantLineReady = (
     edgeQuad
     && edgeLineQuality.top.supportRatio >= 0.5
@@ -3720,18 +9962,45 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
     diagnostics.rightBottom,
     diagnostics.leftBottom
   ].map((detail) => clamp01(((Number(detail?.cornerScore) || 0) - 44) / 42));
+  const consistencyAdjustment = computeConsistencyAdjustmentDiagnostics(diagnostics);
+  const consistencyAdjustmentSignals = consistencyAdjustment.signals;
+  const consistencyAdjustmentScore = consistencyAdjustment.score;
   const edgeConfidence = average([
     edgeLineQuality.top.confidence,
     edgeLineQuality.bottom.confidence,
     edgeLineQuality.left.confidence,
     edgeLineQuality.right.confidence
   ].filter((value) => Number.isFinite(value)));
+  const localInnerGridSupportPreview = evaluateInnerGridSupportFromRawHints(
+    normalizedRefined,
+    rawGuideHints,
+    {
+      cellWidth,
+      cellHeight
+    }
+  );
+  const dominantInnerGridSupportPreview = edgeQuad
+    ? evaluateInnerGridSupportFromRawHints(
+      edgeQuad,
+      rawGuideHints,
+      {
+        cellWidth,
+        cellHeight
+      }
+    )
+    : null;
+  const suppressDominantDirectBypass = (
+    !options.outerFrameDetected
+    && overallGuidePattern === 'uniform-cells-with-inner-dashed'
+  );
   let finalRefined = normalizedRefined;
   let outputSource = 'local-corner-fallback';
+  let dominantBoundaryRole = 'inner-frame';
   let quadSelectionDiagnostics = null;
-  if (dominantLineReady) {
+  if (dominantLineReady && !suppressDominantDirectBypass) {
     finalRefined = stabilizeQuadGeometry(edgeQuad, { blend: 0.32 }) || edgeQuad;
     outputSource = 'dominant-edge-lines';
+    dominantBoundaryRole = options.outerFrameDetected ? 'outer-frame' : 'inner-frame';
   } else if (edgeQuad) {
     const cornerNames = ['leftTop', 'rightTop', 'rightBottom', 'leftBottom'];
     const perCornerConfidence = rawPerCornerConfidence.map((confidence, index) => {
@@ -3790,6 +10059,7 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
     );
     const localStabilizedQuad = stabilizeQuadGeometry(normalizedRefined, { blend: 0.24 }) || normalizedRefined;
     const edgeStabilizedQuad = stabilizeQuadGeometry(edgeQuad, { blend: 0.32 }) || edgeQuad;
+    const wholeCornerConsistencyQuad = fitQuadToWholeCornerConsistency(localStabilizedQuad, { blend: 0.78 }) || localStabilizedQuad;
     const uncertaintyRetainedQuad = blendQuadByCornerStability(
       normalizedRefined,
       edgeStabilizedQuad,
@@ -3797,6 +10067,10 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
       cornerWeights,
       { maxShift: Math.max(28, Math.round(cellHeight * 0.32)), minBlend: 0.03, maxBlend: 0.82 }
     ) || mergedQuad;
+    const supportAlignedQuad = buildSupportAlignedGuideQuad(rawGuideHints, info.width, info.height, {
+      referenceQuad: normalizedRefined,
+      cornerDiagnostics: diagnostics
+    });
     const selectiveCornerReplacement = buildSelectiveCornerReplacementQuad(
       normalizedRefined,
       edgeStabilizedQuad,
@@ -3809,184 +10083,76 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
       }
     );
     const selectiveReplacementQuad = selectiveCornerReplacement?.quad || uncertaintyRetainedQuad;
-    const candidateEntries = [
+    const selectiveWholeCornerConsistencyQuad = fitQuadToWholeCornerConsistency(
+      selectiveReplacementQuad || uncertaintyRetainedQuad || localStabilizedQuad,
+      { blend: 0.82 }
+    ) || selectiveReplacementQuad || uncertaintyRetainedQuad || localStabilizedQuad;
+    const topAnchorBandAlignedQuad = buildTopAnchorBandAlignedQuad(
+      selectiveWholeCornerConsistencyQuad,
       {
-        name: 'local-corner-fallback',
-        quad: normalizedRefined,
-        supportScore: localCornerConfidence,
-        distancePenaltyScale: Math.max(20, cellHeight * 0.18)
-      },
-      {
-        name: 'local-corner-stabilized',
-        quad: localStabilizedQuad,
-        supportScore: localCornerConfidence * 0.98,
-        distancePenaltyScale: Math.max(20, cellHeight * 0.18)
-      },
-      {
-        name: 'dominant-edge-lines',
-        quad: edgeQuad,
-        supportScore: edgeConfidence,
-        distancePenaltyScale: Math.max(18, cellHeight * 0.16)
-      },
-      {
-        name: 'dominant-edge-stabilized',
-        quad: edgeStabilizedQuad,
-        supportScore: edgeConfidence * 0.99,
-        distancePenaltyScale: Math.max(18, cellHeight * 0.16)
-      },
-      {
-        name: 'uncertain-corner-geometry',
-        quad: uncertaintyRetainedQuad,
-        supportScore: average([
-          localCornerConfidence * 0.96,
-          edgeConfidence * 0.88
-        ].filter((value) => Number.isFinite(value))),
-        distancePenaltyScale: Math.max(18, cellHeight * 0.15)
-      },
-      {
-        name: 'selective-corner-replacement',
-        quad: selectiveReplacementQuad,
-        supportScore: average([
-          localCornerConfidence * 0.97,
-          edgeConfidence * 0.9
-        ].filter((value) => Number.isFinite(value))),
-        distancePenaltyScale: Math.max(18, cellHeight * 0.14)
-      },
-      {
-        name: 'blended-geometry',
-        quad: mergedQuad,
-        supportScore: average([localCornerConfidence, edgeConfidence].filter((value) => Number.isFinite(value))),
-        distancePenaltyScale: Math.max(18, cellHeight * 0.17)
+        preferredTopLeftAnchor,
+        preferredTopRightAnchor,
+        preferredTopBandY,
+        cellHeight,
+        topContinuity: edgeLineQuality.top.continuity || null
       }
-    ].filter((entry) => normalizeCornerQuad(entry.quad));
-
-    const scoredCandidates = candidateEntries.map((entry) => {
-      const normalizedCandidate = normalizeCornerQuad(entry.quad);
-      const rectangularity = evaluateRectangularQuadQuality(normalizedCandidate, { guides });
-      const edgeInkQuality = evaluateCandidateQuadInkQuality(
-        normalizedCandidate,
-        edgeLineInputs,
-        gray,
-        info.width,
-        info.height
-      );
-      const meanShift = average(
-        normalizedCandidate.map((point, index) => Math.hypot(
-          point[0] - normalizedRefined[index][0],
-          point[1] - normalizedRefined[index][1]
-        ))
-      );
-      const maxShift = Math.max(
-        ...normalizedCandidate.map((point, index) => Math.hypot(
-          point[0] - normalizedRefined[index][0],
-          point[1] - normalizedRefined[index][1]
-        ))
-      );
-      const weightedCornerShift = average(
-        normalizedCandidate.map((point, index) => {
-          const shift = Math.hypot(
-            point[0] - normalizedRefined[index][0],
-            point[1] - normalizedRefined[index][1]
-          );
-          const confidence = perCornerConfidence[index];
-          return shift * (0.35 + confidence * 0.65);
-        })
-      );
-      const distancePenalty = clamp01(meanShift / Math.max(1, entry.distancePenaltyScale));
-      const cornerRetentionScore = clamp01(
-        1 - weightedCornerShift / Math.max(8, cellHeight * 0.22)
-      );
-      const rectangleScore = rectangularity?.score ?? 0;
-      const guideScore = rectangularity?.guideSpanScore;
-      const topBandAlignmentScore = Number.isFinite(preferredTopBandY)
-        ? clamp01(
-            1 - (
-              average([normalizedCandidate[0][1], normalizedCandidate[1][1]].map((value) => Math.abs(value - preferredTopBandY)))
-              / Math.max(16, cellHeight * 0.22)
-            )
-          )
-        : 1;
-      const bottomBandAlignmentScore = Number.isFinite(preferredBottomBandY)
-        ? clamp01(
-            1 - (
-              average([normalizedCandidate[2][1], normalizedCandidate[3][1]].map((value) => Math.abs(value - preferredBottomBandY)))
-              / Math.max(18, cellHeight * 0.24)
-            )
-          )
-        : 1;
-      const bandAlignmentScore = average([topBandAlignmentScore, bottomBandAlignmentScore]);
-      const edgeInkScore = edgeInkQuality?.overallConfidence ?? 0;
-      const edgeDarknessScore = edgeInkQuality?.overallDarkness ?? 0;
-      const structuralMinEdgeScore = edgeInkQuality?.structuralMinConfidence ?? 0;
-      const missingTopAllowedPenalty = (
-        edgeInkQuality?.weakestEdge?.name === 'top'
-        && (edgeInkQuality?.weakestEdge?.confidence ?? 0) < 0.28
-      ) ? 1 : 0;
-      const structuralPenalty = missingTopAllowedPenalty
-        ? 1
-        : clamp01((structuralMinEdgeScore - 0.18) / 0.24);
-      const totalScore = clamp01(
-        edgeInkScore * 0.32
-        + edgeDarknessScore * 0.2
-        + rectangleScore * 0.22
-        + bandAlignmentScore * 0.08
-        + (Number.isFinite(entry.supportScore) ? entry.supportScore : 0) * 0.08
-        + (Number.isFinite(guideScore) ? guideScore : rectangleScore) * 0.04
-        + cornerRetentionScore * 0.04
-        + (1 - distancePenalty) * 0.02
-      ) * structuralPenalty;
-      return {
-        ...entry,
-        quad: normalizedCandidate,
-        edgeInkQuality,
-        meanShift,
-        maxShift,
-        weightedCornerShift,
-        cornerRetentionScore,
-        bandAlignmentScore,
-        topBandAlignmentScore,
-        bottomBandAlignmentScore,
-        distancePenalty,
-        rectangularity,
-        totalScore
-      };
+    ) || null;
+    const candidateEntries = buildQuadCandidateEntries({
+      normalizedRefined,
+      localCornerConfidence,
+      consistencyAdjustmentScore,
+      edgeQuad,
+      edgeConfidence,
+      localStabilizedQuad,
+      edgeStabilizedQuad,
+      wholeCornerConsistencyQuad,
+      selectiveWholeCornerConsistencyQuad,
+      topAnchorBandAlignedQuad,
+      uncertaintyRetainedQuad,
+      supportAlignedQuad,
+      selectiveReplacementQuad,
+      mergedQuad,
+      cellHeight
     });
-    scoredCandidates.sort((a, b) => b.totalScore - a.totalScore);
-    let bestCandidate = scoredCandidates[0] || null;
-    const localFallbackCandidate = scoredCandidates.find((entry) => entry.name === 'local-corner-fallback') || null;
-    const rectanglePriorityCandidate = scoredCandidates
-      .filter((entry) => entry.name !== 'local-corner-fallback' && entry.name !== 'local-corner-stabilized')
-      .sort((a, b) => {
-        const rectangleDelta = (b.rectangularity?.score || 0) - (a.rectangularity?.score || 0);
-        if (Math.abs(rectangleDelta) > 1e-6) {
-          return rectangleDelta;
-        }
-        return (b.supportScore || 0) - (a.supportScore || 0);
-      })[0] || null;
-    let overrideReason = null;
-    if (
-      bestCandidate?.name === 'local-corner-fallback'
-      && localFallbackCandidate
-      && rectanglePriorityCandidate
-      && (rectanglePriorityCandidate.rectangularity?.score || 0) >= (localFallbackCandidate.rectangularity?.score || 0) + 0.015
-      && (rectanglePriorityCandidate.rectangularity?.rotatedRectangleScore || 0) >= (localFallbackCandidate.rectangularity?.rotatedRectangleScore || 0) + 0.18
-      && (rectanglePriorityCandidate.supportScore || 0) >= Math.max(0.55, (localFallbackCandidate.supportScore || 0) - 0.28)
-      && (rectanglePriorityCandidate.cornerRetentionScore || 0) >= 0.18
-      && rectanglePriorityCandidate.maxShift <= Math.max(64, cellHeight * 0.42)
-    ) {
-      bestCandidate = rectanglePriorityCandidate;
-      overrideReason = 'prefer-rotated-rectangle-fit-when-it-clearly-outweighs-local-corner-drift';
-    }
+
+    const scoredCandidates = scoreQuadCandidates(candidateEntries, {
+      guides,
+      rawGuideHints,
+      cellWidth,
+      cellHeight,
+      edgeLineInputs,
+      gray,
+      imageWidth: info.width,
+      imageHeight: info.height,
+      normalizedRefined,
+      perCornerConfidence,
+      preferredTopBandY,
+      preferredBottomBandY
+    });
+    const {
+      bestCandidate,
+      overrideReason
+    } = selectBestQuadCandidate(scoredCandidates, {
+      cellHeight,
+      patternProfile,
+      outerFrameDetected: options.outerFrameDetected
+    });
     if (bestCandidate?.quad) {
       finalRefined = bestCandidate.quad;
       outputSource = bestCandidate.name;
+      dominantBoundaryRole = bestCandidate.name.startsWith('dominant-edge')
+        ? (options.outerFrameDetected ? 'outer-frame' : 'inner-frame')
+        : 'inner-frame';
     } else {
       finalRefined = mergedQuad;
+      dominantBoundaryRole = 'inner-frame';
     }
     quadSelectionDiagnostics = {
       localCornerConfidence: Number((localCornerConfidence || 0).toFixed(3)),
+      consistencyAdjustmentScore: Number((consistencyAdjustmentScore || 0).toFixed(3)),
       edgeConfidence: Number((edgeConfidence || 0).toFixed(3)),
       winner: outputSource,
+      winnerSemanticRole: dominantBoundaryRole,
       overrideReason,
       selectiveCornerReplacement: selectiveCornerReplacement?.replacements || null,
       candidates: scoredCandidates.map((entry) => ({
@@ -3994,6 +10160,9 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
         totalScore: Number((entry.totalScore || 0).toFixed(4)),
         supportScore: Number((entry.supportScore || 0).toFixed(4)),
         rectangleScore: Number((entry.rectangularity?.score || 0).toFixed(4)),
+        innerGridSupportScore: Number((entry.innerGridSupport?.supportScore || 0).toFixed(4)),
+        innerGridSupportEligible: Boolean(entry.innerGridSupport?.eligible),
+        innerGridSupportEligibleCount: Number(entry.innerGridSupport?.eligibleCount || 0),
         edgeInkScore: Number((entry.edgeInkQuality?.overallConfidence || 0).toFixed(4)),
         edgeDarknessScore: Number((entry.edgeInkQuality?.overallDarkness || 0).toFixed(4)),
         weakestEdge: entry.edgeInkQuality?.weakestEdge || null,
@@ -4019,9 +10188,20 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
         oppositeWidthRatio: Number((entry.rectangularity?.oppositeWidthRatio || 0).toFixed(4)),
         oppositeHeightRatio: Number((entry.rectangularity?.oppositeHeightRatio || 0).toFixed(4)),
         diagonalRatio: Number((entry.rectangularity?.diagonalRatio || 0).toFixed(4)),
-        midpointGap: Number((entry.rectangularity?.midpointGap || 0).toFixed(3))
+        midpointGap: Number((entry.rectangularity?.midpointGap || 0).toFixed(3)),
+        innerGridSupport: entry.innerGridSupport?.sides || null
       }))
     };
+  }
+
+  const collapsedTopSpanProtection = protectCollapsedTopSpan(
+    finalRefined,
+    diagnostics,
+    guides,
+    { cellWidth }
+  );
+  if (collapsedTopSpanProtection?.applied && collapsedTopSpanProtection?.corners) {
+    finalRefined = collapsedTopSpanProtection.corners;
   }
 
   const applied = finalRefined.some((point, index) => (
@@ -4034,6 +10214,16 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
     diagnostics: {
       method: 'per-corner local line search',
       outputSource,
+      outputFrameRole: 'inner-frame',
+      dominantBoundaryRole,
+      globalPattern: globalGuidePattern,
+      patternProfile,
+      cornerTraversalMode: leftBottomPriorityMode ? 'left-bottom-first' : 'default-sequential',
+      leftBottomPriorityByOuterFrame,
+      leftBottomPriorityByInterval,
+      leftBottomIntervalPriorityEvidence: leftIntervalPriorityEvidence,
+      bottomIntervalPriorityEvidence,
+      cornerTraversalOrder: cornerSpecs.map((spec) => spec.name),
       rawGuideHints: rawGuideHints
         ? {
             left: rawGuideHints.left,
@@ -4073,6 +10263,22 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
         rightPoints: edgeLineInputs.right.length,
         applied: Boolean(edgeQuad),
         dominantLineReady: Boolean(dominantLineReady),
+        dominantDirectBypassSuppressed: Boolean(suppressDominantDirectBypass),
+        dominantDirectBypassReason: suppressDominantDirectBypass
+          ? 'uniform-cells-with-inner-dashed-without-outer-frame-must-pass-inner-grid-candidate-check'
+          : null,
+        overallGuidePattern,
+        globalPattern: globalGuidePattern,
+        cornerTraversalMode: leftBottomPriorityMode ? 'left-bottom-first' : 'default-sequential',
+        leftBottomJointSupport,
+        dominantBoundaryRole,
+        consistencyAdjustmentScore: Number((consistencyAdjustmentScore || 0).toFixed(3)),
+        consistencyAdjustmentSignals: consistencyAdjustment.perCorner,
+        innerGridSupportPreview: {
+          local: localInnerGridSupportPreview,
+          dominant: dominantInnerGridSupportPreview
+        },
+        quadSelection: quadSelectionDiagnostics,
         uniformSpanEstimate: uniformSpanEstimate
           ? {
               topWidth: Number(uniformSpanEstimate.topWidth.toFixed(3)),
@@ -4179,9 +10385,10 @@ async function refineGridCornerAnchorsByImage(imagePath, corners, guides, option
                 }
               : null
           }
-        },
-        quadSelection: quadSelectionDiagnostics
+        }
       },
+      quadSelectionDiagnostics,
+      collapsedTopSpanProtection: collapsedTopSpanProtection?.diagnostics || null,
       corners: diagnostics
     }
   };
@@ -4290,6 +10497,29 @@ function expandGuideMaskInfo(width, height, guideMaskInfo, options = {}) {
     return null;
   }
 
+  const expandedBounds = expandGuideBounds(guideMaskInfo, width, height, options);
+  if (!expandedBounds) {
+    return null;
+  }
+
+  return buildGuideMask(
+    width,
+    height,
+    {
+      ...expandedBounds,
+      xPeaks: guideMaskInfo.xPeaks,
+      yPeaks: guideMaskInfo.yPeaks
+    },
+    Math.max(1, guideMaskInfo.yPeaks.length - 1),
+    Math.max(1, guideMaskInfo.xPeaks.length - 1)
+  );
+}
+
+function expandGuideBounds(guideMaskInfo, width, height, options = {}) {
+  if (!guideMaskInfo) {
+    return null;
+  }
+
   const {
     topPadRatio = 0,
     bottomPadRatio = 0,
@@ -4302,20 +10532,12 @@ function expandGuideMaskInfo(width, height, guideMaskInfo, options = {}) {
   const padLeft = Math.max(0, Math.round(guideMaskInfo.avgCellW * leftPadRatio));
   const padRight = Math.max(0, Math.round(guideMaskInfo.avgCellW * rightPadRatio));
 
-  return buildGuideMask(
-    width,
-    height,
-    {
-      left: clamp(guideMaskInfo.left - padLeft, 0, width),
-      right: clamp(guideMaskInfo.right + padRight, 0, width),
-      top: clamp(guideMaskInfo.top - padTop, 0, height),
-      bottom: clamp(guideMaskInfo.bottom + padBottom, 0, height),
-      xPeaks: guideMaskInfo.xPeaks,
-      yPeaks: guideMaskInfo.yPeaks
-    },
-    Math.max(1, guideMaskInfo.yPeaks.length - 1),
-    Math.max(1, guideMaskInfo.xPeaks.length - 1)
-  );
+  return {
+    left: clamp(guideMaskInfo.left - padLeft, 0, width),
+    right: clamp(guideMaskInfo.right + padRight, 0, width),
+    top: clamp(guideMaskInfo.top - padTop, 0, height),
+    bottom: clamp(guideMaskInfo.bottom + padBottom, 0, height)
+  };
 }
 
 function buildRefinedGuideRemovedRgb(rgbData, blurredRgbData, info, guideMaskInfo) {
@@ -4357,9 +10579,130 @@ function buildRefinedGuideRemovedRgb(rgbData, blurredRgbData, info, guideMaskInf
 }
 
 function estimateNeutralPaperColor(rgbData, info, options = {}) {
+  if (!rgbData || !info || !info.width || !info.height || !info.channels) {
+    return {
+      ...DEFAULT_NEUTRAL_PAPER_COLOR,
+      sampleCount: 0
+    };
+  }
+
+  const width = Math.max(1, Number(info.width) || 0);
+  const height = Math.max(1, Number(info.height) || 0);
+  const channels = Math.max(3, Number(info.channels) || 3);
+  const excludeMask = options.excludeMask || null;
+  const x0 = clamp(
+    Math.floor(Number.isFinite(options.x0) ? Number(options.x0) : 0),
+    0,
+    Math.max(0, width - 1)
+  );
+  const y0 = clamp(
+    Math.floor(Number.isFinite(options.y0) ? Number(options.y0) : 0),
+    0,
+    Math.max(0, height - 1)
+  );
+  const x1 = clamp(
+    Math.ceil(Number.isFinite(options.x1) ? Number(options.x1) : width),
+    x0 + 1,
+    width
+  );
+  const y1 = clamp(
+    Math.ceil(Number.isFinite(options.y1) ? Number(options.y1) : height),
+    y0 + 1,
+    height
+  );
+  const minGray = Number.isFinite(options.minGray) ? Number(options.minGray) : 168;
+  const maxGray = Number.isFinite(options.maxGray) ? Number(options.maxGray) : 245;
+  const maxColorSpan = Number.isFinite(options.maxColorSpan) ? Number(options.maxColorSpan) : 34;
+  const stride = Math.max(1, Math.round(Math.min(width, height) / 420));
+  const centerX = (x0 + x1 - 1) / 2;
+  const centerY = (y0 + y1 - 1) / 2;
+  const centerScaleX = Math.max(1, (x1 - x0) / 2);
+  const centerScaleY = Math.max(1, (y1 - y0) / 2);
+  const candidates = [];
+  const relaxedCandidates = [];
+
+  for (let y = y0; y < y1; y += stride) {
+    for (let x = x0; x < x1; x += stride) {
+      const index = y * width + x;
+      if (excludeMask && excludeMask[index]) {
+        continue;
+      }
+      const offset = index * channels;
+      const r = rgbData[offset];
+      const g = rgbData[offset + 1];
+      const b = rgbData[offset + 2];
+      const gray = (0.299 * r) + (0.587 * g) + (0.114 * b);
+      const maxChannel = Math.max(r, g, b);
+      const minChannel = Math.min(r, g, b);
+      const colorSpan = maxChannel - minChannel;
+      if (gray < 145 || gray > 250) {
+        continue;
+      }
+      const normalizedDx = Math.abs(x - centerX) / centerScaleX;
+      const normalizedDy = Math.abs(y - centerY) / centerScaleY;
+      const centerPenalty = ((normalizedDx * normalizedDx) + (normalizedDy * normalizedDy)) * 7;
+      const candidate = {
+        r,
+        g,
+        b,
+        gray,
+        colorSpan,
+        score: gray - (colorSpan * 1.9) - centerPenalty
+      };
+      if (gray >= minGray && gray <= maxGray && colorSpan <= maxColorSpan) {
+        candidates.push(candidate);
+      } else if (gray >= 152 && gray <= 248 && colorSpan <= maxColorSpan + 18) {
+        relaxedCandidates.push(candidate);
+      }
+    }
+  }
+
+  let selected = candidates;
+  let relaxed = false;
+  if (selected.length < 24) {
+    selected = candidates.concat(relaxedCandidates);
+    relaxed = true;
+  }
+  if (selected.length < 12) {
+    return {
+      ...DEFAULT_NEUTRAL_PAPER_COLOR,
+      sampleCount: 0
+    };
+  }
+
+  selected.sort((left, right) => {
+    if (right.score !== left.score) {
+      return right.score - left.score;
+    }
+    if (right.gray !== left.gray) {
+      return right.gray - left.gray;
+    }
+    return left.colorSpan - right.colorSpan;
+  });
+  const sampleCount = Math.min(
+    320,
+    Math.max(
+      relaxed ? 24 : 20,
+      Math.round(selected.length * (relaxed ? 0.18 : 0.14))
+    ),
+    selected.length
+  );
+  const shortlisted = selected.slice(0, sampleCount).sort((left, right) => left.gray - right.gray);
+  const trimCount = shortlisted.length >= 8 ? Math.max(1, Math.floor(shortlisted.length * 0.12)) : 0;
+  const trimmed = trimCount > 0
+    ? shortlisted.slice(trimCount, shortlisted.length - trimCount)
+    : shortlisted;
+  const usable = trimmed.length ? trimmed : shortlisted;
+  const r = clamp(Math.round(median(usable.map((item) => item.r))), 176, 232);
+  const g = clamp(Math.round(median(usable.map((item) => item.g))), 176, 232);
+  const b = clamp(Math.round(median(usable.map((item) => item.b))), 176, 232);
+
   return {
-    ...DEFAULT_NEUTRAL_PAPER_COLOR,
-    sampleCount: 0
+    r,
+    g,
+    b,
+    gray: clamp(Math.round((r * 0.299) + (g * 0.587) + (b * 0.114)), 176, 232),
+    sampleCount: usable.length
   };
 }
 
@@ -4736,34 +11079,187 @@ function buildSegmentationReady(gray, blurredGray, width, height, guideMaskInfo 
   return output;
 }
 
-function buildReadablePreprocess(gray, blurredGray, width, height, guideMaskInfo = null) {
+function buildReadablePreprocess(gray, blurredGray, width, height, guideMaskInfo = null, options = {}) {
   const normalized = new Float32Array(gray.length);
   for (let i = 0; i < gray.length; i++) {
     normalized[i] = clamp((gray[i] * 255) / Math.max(blurredGray[i], 1), 0, 255);
   }
 
-  const verticallyFlattened = flattenVerticalBackground(normalized, width, height, guideMaskInfo);
-  const flattened = flattenCellBackground(verticallyFlattened, width, height, guideMaskInfo);
+  const pageFlattened = flattenVerticalBackground(normalized, width, height, null);
+  const focusBounds = guideMaskInfo
+    ? expandGuideBounds(
+      guideMaskInfo,
+      width,
+      height,
+      {
+        topPadRatio: Number.isFinite(options.topPadRatio) ? Number(options.topPadRatio) : 0.12,
+        bottomPadRatio: Number.isFinite(options.bottomPadRatio) ? Number(options.bottomPadRatio) : 0.12,
+        leftPadRatio: Number.isFinite(options.leftPadRatio) ? Number(options.leftPadRatio) : 0.1,
+        rightPadRatio: Number.isFinite(options.rightPadRatio) ? Number(options.rightPadRatio) : 0.1
+      }
+    )
+    : null;
+  const focusVerticalFlattened = focusBounds
+    ? flattenVerticalBackground(normalized, width, height, focusBounds)
+    : pageFlattened;
+  const focusFlattened = guideMaskInfo
+    ? flattenCellBackground(focusVerticalFlattened, width, height, guideMaskInfo)
+    : focusVerticalFlattened;
   const output = Buffer.alloc(gray.length);
+  const focusBand = guideMaskInfo
+    ? Math.max(12, Math.round(Math.min(guideMaskInfo.avgCellW, guideMaskInfo.avgCellH) * 0.14))
+    : 0;
 
   for (let i = 0; i < gray.length; i++) {
     const x = i % width;
     const y = Math.floor(i / width);
-    if (
-      guideMaskInfo &&
-      (x < guideMaskInfo.left || x >= guideMaskInfo.right || y < guideMaskInfo.top || y >= guideMaskInfo.bottom)
-    ) {
-      output[i] = 255;
-      continue;
+    let focusWeight = 0;
+    if (focusBounds) {
+      const dx = x < focusBounds.left
+        ? focusBounds.left - x
+        : (x >= focusBounds.right ? x - focusBounds.right + 1 : 0);
+      const dy = y < focusBounds.top
+        ? focusBounds.top - y
+        : (y >= focusBounds.bottom ? y - focusBounds.bottom + 1 : 0);
+      const rectDistance = Math.max(dx, dy);
+      if (rectDistance <= 0) {
+        focusWeight = 1;
+      } else if (rectDistance < focusBand) {
+        focusWeight = 1 - (rectDistance / focusBand);
+      }
     }
 
-    const darkness = clamp(255 - flattened[i], 0, 255);
-    const preservedDarkness = Math.max(0, darkness - 8);
-    const enhanced = 255 - clamp(preservedDarkness * 1.55, 0, 255);
+    const baseValue = pageFlattened[i];
+    const focusValue = focusFlattened[i];
+    const blendedValue = focusWeight > 0
+      ? ((baseValue * (1 - (focusWeight * 0.74))) + (focusValue * (focusWeight * 0.74)))
+      : baseValue;
+    const isFocusRegion = focusWeight >= 0.35;
+    const darkness = clamp(255 - blendedValue, 0, isFocusRegion ? 160 : 150);
+    const liftedDarkness = Math.max(0, darkness - (isFocusRegion ? 34 : 28));
+    let enhanced = 255 - clamp(liftedDarkness * (isFocusRegion ? 2.25 : 1.95), 0, 255);
+    if (enhanced >= (isFocusRegion ? 228 : 234)) {
+      enhanced = 255;
+    } else if (enhanced >= (isFocusRegion ? 216 : 224)) {
+      enhanced = Math.min(255, enhanced + (isFocusRegion ? 8 : 6));
+    }
     output[i] = clamp(Math.round(enhanced), 0, 255);
   }
 
   return output;
+}
+
+function buildFallbackReadablePreprocess(baseGray, guideGray, blurredGuideGray, options = {}) {
+  const blendWeight = Number.isFinite(options.blendWeight) ? Number(options.blendWeight) : 0.5;
+  const normalizedGuideWeight = Number.isFinite(options.normalizedGuideWeight)
+    ? Number(options.normalizedGuideWeight)
+    : 0.12;
+  const guideLift = Number.isFinite(options.guideLift) ? Number(options.guideLift) : 8;
+  const guideCap = Number.isFinite(options.guideCap) ? Number(options.guideCap) : 238;
+  const output = Buffer.alloc(baseGray.length);
+
+  for (let i = 0; i < baseGray.length; i++) {
+    const baseValue = clamp(baseGray[i], 0, 255);
+    const normalizedGuide = clamp((guideGray[i] * 255) / Math.max(blurredGuideGray[i], 1), 0, 255);
+    const mildGuide = clamp(
+      Math.round((normalizedGuide * normalizedGuideWeight) + (guideGray[i] * (1 - normalizedGuideWeight)) + guideLift),
+      0,
+      guideCap
+    );
+    let effectiveBlendWeight = blendWeight;
+    if (baseValue <= 42) {
+      effectiveBlendWeight = 0.12;
+    } else if (baseValue <= 84) {
+      effectiveBlendWeight = 0.26;
+    }
+    output[i] = clamp(
+      Math.round((baseValue * (1 - effectiveBlendWeight)) + (mildGuide * effectiveBlendWeight)),
+      0,
+      255
+    );
+  }
+
+  return output;
+}
+
+async function applyFallbackReadablePreprocess(options = {}) {
+  const {
+    outputPath = null,
+    segmentationOutputPath = null,
+    guideSourcePath = null,
+    blurSigma = 18
+  } = options;
+
+  if (!outputPath || !guideSourcePath || !fs.existsSync(outputPath) || !fs.existsSync(guideSourcePath)) {
+    return {
+      applied: false,
+      reason: 'missing-output-or-guide-source'
+    };
+  }
+
+  const baseImage = await sharp(outputPath)
+    .removeAlpha()
+    .greyscale()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const guideImage = await sharp(guideSourcePath)
+    .removeAlpha()
+    .greyscale()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  if (baseImage.info.width !== guideImage.info.width || baseImage.info.height !== guideImage.info.height) {
+    return {
+      applied: false,
+      reason: 'dimension-mismatch',
+      outputSize: {
+        width: baseImage.info.width,
+        height: baseImage.info.height
+      },
+      guideSize: {
+        width: guideImage.info.width,
+        height: guideImage.info.height
+      }
+    };
+  }
+
+  const blurredGuide = await sharp(guideSourcePath)
+    .removeAlpha()
+    .greyscale()
+    .blur(Math.max(1, blurSigma))
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const refined = buildFallbackReadablePreprocess(
+    baseImage.data,
+    guideImage.data,
+    blurredGuide.data
+  );
+
+  await sharp(refined, {
+    raw: {
+      width: baseImage.info.width,
+      height: baseImage.info.height,
+      channels: 1
+    }
+  }).png().toFile(outputPath);
+
+  if (segmentationOutputPath && segmentationOutputPath !== outputPath) {
+    await sharp(refined, {
+      raw: {
+        width: baseImage.info.width,
+        height: baseImage.info.height,
+        channels: 1
+      }
+    }).png().toFile(segmentationOutputPath);
+  }
+
+  return {
+    applied: true,
+    method: 'fallback-readable-preprocess-blend',
+    guideSourcePath,
+    outputPath,
+    segmentationOutputPath: segmentationOutputPath || outputPath
+  };
 }
 
 async function refineOutputsWithDetectedGrid(warpedImagePath, options = {}) {
@@ -4812,7 +11308,6 @@ async function refineOutputsWithDetectedGrid(warpedImagePath, options = {}) {
   }
   const avgShortSide = Math.max(1, Math.min(guideRemovalMaskInfo.avgCellW, guideRemovalMaskInfo.avgCellH));
   const guideBlurSigma = Math.max(6, avgShortSide * 0.08);
-  const sourceGray = computeGray(rgbData, info.channels);
   let neutralGuideRemovedRgb = null;
   if (guideRemovedInputPath) {
     const guideRemovedInput = await loadRgbImage(guideRemovedInputPath);
@@ -4822,8 +11317,8 @@ async function refineOutputsWithDetectedGrid(warpedImagePath, options = {}) {
     neutralGuideRemovedRgb = buildNeutralGuideRemovedRgb(rgbData, blurredRgbData, info, guideRemovalMaskInfo);
   }
   const refinedRgb = Buffer.from(neutralGuideRemovedRgb);
-  const gray = computeGray(rgbData, info.channels);
-  const blurredGray = await blurGray(gray, info.width, info.height, Math.max(1, blurSigma));
+  const refinedGray = computeGray(refinedRgb, info.channels);
+  const refinedBlurredGray = await blurGray(refinedGray, info.width, info.height, Math.max(1, blurSigma));
 
   if (guideRemovedOutputPath) {
     if (guideRemovedInputPath && guideRemovedInputPath !== guideRemovedOutputPath) {
@@ -4854,21 +11349,20 @@ async function refineOutputsWithDetectedGrid(warpedImagePath, options = {}) {
 
   if (outputPath) {
     if (!preservePreprocessOutputPath) {
-      if (preprocessInputPath && preprocessInputPath !== outputPath) {
-        await fs.promises.copyFile(preprocessInputPath, outputPath);
-      } else {
-        const neutralGray = Buffer.alloc(sourceGray.length);
-        for (let i = 0; i < sourceGray.length; i++) {
-          neutralGray[i] = clamp(Math.round(sourceGray[i]), 0, 255);
+      const readablePreprocess = buildReadablePreprocess(
+        refinedGray,
+        refinedBlurredGray,
+        info.width,
+        info.height,
+        segmentationGuideMaskInfoBase
+      );
+      await sharp(readablePreprocess, {
+        raw: {
+          width: info.width,
+          height: info.height,
+          channels: 1
         }
-        await sharp(neutralGray, {
-          raw: {
-            width: info.width,
-            height: info.height,
-            channels: 1
-          }
-        }).png().toFile(outputPath);
-      }
+      }).png().toFile(outputPath);
     } else if (!fs.existsSync(outputPath)) {
       await fs.promises.copyFile(preprocessInputPath, outputPath);
     }
@@ -4877,8 +11371,8 @@ async function refineOutputsWithDetectedGrid(warpedImagePath, options = {}) {
   const gridDetectionInputPath = outputPath || baseImagePath;
   let gridDetectionRgbData = rgbData;
   let gridDetectionInfo = info;
-  let gridDetectionGray = sourceGray;
-  let gridDetectionBlurredGray = blurredGray;
+  let gridDetectionGray = refinedGray;
+  let gridDetectionBlurredGray = refinedBlurredGray;
 
   if (outputPath) {
     const sequentialInput = await loadRgbImage(outputPath);
@@ -4959,6 +11453,18 @@ async function renderDetectedGridAnnotation(imagePath, outputPath, gridRectifica
   const selectiveCornerReplacement = Array.isArray(options.selectiveCornerReplacement)
     ? options.selectiveCornerReplacement
     : [];
+  const extraQuads = Array.isArray(options.extraQuads)
+    ? options.extraQuads.filter((item) => normalizeCornerQuad(item?.corners))
+    : [];
+  const extraHorizontalLines = Array.isArray(options.extraHorizontalLines)
+    ? options.extraHorizontalLines.filter((item) => Number.isFinite(Number(item?.y)))
+    : [];
+  const extraPointMarkers = Array.isArray(options.extraPointMarkers)
+    ? options.extraPointMarkers.filter((item) => Number.isFinite(Number(item?.x)) && Number.isFinite(Number(item?.y)))
+    : [];
+  const extraRectangles = Array.isArray(options.extraRectangles)
+    ? options.extraRectangles.filter((item) => item?.box && Number.isFinite(Number(item.box?.left)) && Number.isFinite(Number(item.box?.top)))
+    : [];
   const hasExactGuideCounts =
     Array.isArray(guides.xPeaks) &&
     Array.isArray(guides.yPeaks) &&
@@ -4966,7 +11472,7 @@ async function renderDetectedGridAnnotation(imagePath, outputPath, gridRectifica
     (!gridRows || guides.yPeaks.length === gridRows + 1);
   const normalizedGuides = hasExactGuideCounts
     ? guides
-    : (gridBoundaryNormalizePlugin.execute({ gridRectification, gridRows, gridCols }) || guides);
+    : (normalizeGridBoundaryGuides({ gridRectification, gridRows, gridCols }) || guides);
   const xPeaks = Array.isArray(normalizedGuides.xPeaks) ? normalizedGuides.xPeaks : [];
   const yPeaks = Array.isArray(normalizedGuides.yPeaks) ? normalizedGuides.yPeaks : [];
   const hasReliableVerticalBoundaries = gridCols > 0 && xPeaks.length === gridCols + 1;
@@ -4980,6 +11486,21 @@ async function renderDetectedGridAnnotation(imagePath, outputPath, gridRectifica
       );
     }
   }
+  const extraHorizontalOverlays = extraHorizontalLines.map((item) => {
+    const lineY = clamp(Math.round(Number(item.y)), 0, Math.max(0, height - 1));
+    const stroke = String(item.stroke || '#0f766e');
+    const dasharray = item.dasharray ? ` stroke-dasharray="${item.dasharray}"` : '';
+    return `<line x1="0" y1="${lineY}" x2="${width}" y2="${lineY}" stroke="${stroke}" stroke-width="3"${dasharray} stroke-opacity="0.92"/>`;
+  }).join('\n');
+  const extraHorizontalLabels = extraHorizontalLines.map((item, index) => {
+    const lineY = clamp(Math.round(Number(item.y)), 18, Math.max(18, height - 18));
+    const label = String(item.label || `H${index}`);
+    const stroke = String(item.stroke || '#0f766e');
+    return `
+      <rect x="${Math.max(16, width - 260)}" y="${Math.max(8, lineY - 18)}" width="232" height="22" rx="6" ry="6" fill="rgba(255,255,255,0.9)" stroke="${stroke}" stroke-width="2"/>
+      <text x="${Math.max(24, width - 252)}" y="${Math.max(23, lineY - 3)}" font-size="14" fill="#111827">${label}</text>
+    `;
+  }).join('\n');
   if (showGuides && hasReliableHorizontalBoundaries) {
     for (const y of yPeaks) {
       const lineY = clamp(Math.round(y), 0, Math.max(0, height - 1));
@@ -5026,6 +11547,62 @@ async function renderDetectedGridAnnotation(imagePath, outputPath, gridRectifica
       <text x="${x + 46}" y="${y - 17}" font-size="15" fill="${statusFill}">${statusLabel}</text>
     `;
   }).join('\n');
+  const extraQuadPolygons = extraQuads.map((item) => {
+    const quad = normalizeCornerQuad(item.corners);
+    if (!quad) {
+      return '';
+    }
+    const stroke = String(item.stroke || '#7c3aed');
+    const fill = String(item.fill || 'none');
+    const dasharray = item.dasharray ? ` stroke-dasharray="${item.dasharray}"` : '';
+    return `<polygon points="${quad.map((point) => `${point[0]},${point[1]}`).join(' ')}" fill="${fill}" stroke="${stroke}" stroke-width="6"${dasharray}/>`;
+  }).join('\n');
+  const extraQuadPoints = extraQuads.map((item, quadIndex) => {
+    const quad = normalizeCornerQuad(item.corners);
+    if (!quad) {
+      return '';
+    }
+    const stroke = String(item.stroke || '#7c3aed');
+    const fill = String(item.pointFill || stroke);
+    const prefix = String(item.pointPrefix || `Q${quadIndex}`);
+    return quad.map((point, pointIndex) => {
+      const x = clamp(Math.round(point[0]), 0, Math.max(0, width - 1));
+      const y = clamp(Math.round(point[1]), 0, Math.max(0, height - 1));
+      return `
+        <circle cx="${x}" cy="${y}" r="8" fill="${fill}" stroke="${stroke}" stroke-width="3"/>
+        <rect x="${x + 10}" y="${y + 10}" width="62" height="22" rx="7" ry="7" fill="rgba(255,255,255,0.92)" stroke="${stroke}" stroke-width="2"/>
+        <text x="${x + 18}" y="${y + 26}" font-size="14" fill="#111827">${prefix}${pointIndex}</text>
+      `;
+    }).join('\n');
+  }).join('\n');
+  const extraMarkerPoints = extraPointMarkers.map((item, markerIndex) => {
+    const x = clamp(Math.round(Number(item.x)), 0, Math.max(0, width - 1));
+    const y = clamp(Math.round(Number(item.y)), 0, Math.max(0, height - 1));
+    const stroke = String(item.stroke || '#0369a1');
+    const fill = String(item.fill || '#38bdf8');
+    const label = String(item.label || `M${markerIndex}`);
+    const labelWidth = Math.max(58, Math.min(220, 18 + label.length * 8));
+    return `
+      <circle cx="${x}" cy="${y}" r="8" fill="${fill}" stroke="${stroke}" stroke-width="3"/>
+      <rect x="${x + 10}" y="${Math.max(8, y - 32)}" width="${labelWidth}" height="22" rx="7" ry="7" fill="rgba(255,255,255,0.92)" stroke="${stroke}" stroke-width="2"/>
+      <text x="${x + 18}" y="${Math.max(23, y - 16)}" font-size="14" fill="#111827">${label}</text>
+    `;
+  }).join('\n');
+  const extraRects = extraRectangles.map((item, rectIndex) => {
+    const left = clamp(Math.round(Number(item.box.left)), 0, Math.max(0, width - 1));
+    const top = clamp(Math.round(Number(item.box.top)), 0, Math.max(0, height - 1));
+    const right = clamp(Math.round(Number(item.box.right ?? (item.box.left + item.box.width))), left + 1, Math.max(1, width));
+    const bottom = clamp(Math.round(Number(item.box.bottom ?? (item.box.top + item.box.height))), top + 1, Math.max(1, height));
+    const stroke = String(item.stroke || '#0369a1');
+    const dasharray = item.dasharray ? ` stroke-dasharray="${item.dasharray}"` : '';
+    const label = String(item.label || `W${rectIndex}`);
+    const labelWidth = Math.max(70, Math.min(240, 20 + label.length * 8));
+    return `
+      <rect x="${left}" y="${top}" width="${Math.max(1, right - left)}" height="${Math.max(1, bottom - top)}" fill="none" stroke="${stroke}" stroke-width="3"${dasharray}/>
+      <rect x="${left}" y="${Math.max(8, top - 24)}" width="${labelWidth}" height="20" rx="6" ry="6" fill="rgba(255,255,255,0.92)" stroke="${stroke}" stroke-width="2"/>
+      <text x="${left + 8}" y="${Math.max(22, top - 10)}" font-size="13" fill="#111827">${label}</text>
+    `;
+  }).join('\n');
 
   const polygon = corners.length === 4
     ? `<polygon points="${corners.map((point) => `${point[0]},${point[1]}`).join(' ')}" fill="none" stroke="#16a34a" stroke-width="6"/>`
@@ -5033,7 +11610,9 @@ async function renderDetectedGridAnnotation(imagePath, outputPath, gridRectifica
   const guidesRect = showGuides && normalizedGuides.left !== undefined && normalizedGuides.right !== undefined && normalizedGuides.top !== undefined && normalizedGuides.bottom !== undefined
     ? `<rect x="${normalizedGuides.left}" y="${normalizedGuides.top}" width="${Math.max(1, normalizedGuides.right - normalizedGuides.left)}" height="${Math.max(1, normalizedGuides.bottom - normalizedGuides.top)}" fill="none" stroke="#22c55e" stroke-width="4" stroke-dasharray="12 10"/>`
     : '';
-  const infoLines = [annotationSubtitle, annotationDetail].filter(Boolean);
+  const infoLines = [annotationSubtitle, annotationDetail]
+    .filter(Boolean)
+    .flatMap((line) => String(line).split('\n').map((item) => item.trim()).filter(Boolean));
   const infoPanelHeight = 64 + infoLines.length * 24;
   const infoPanelWidth = Math.min(720, Math.max(420, width - 28));
   const infoText = infoLines.map((line, index) => (
@@ -5042,10 +11621,16 @@ async function renderDetectedGridAnnotation(imagePath, outputPath, gridRectifica
 
   const svg = `
     <svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
+      ${extraQuadPolygons}
       ${polygon}
       ${guidesRect}
       ${peakLines.join('\n')}
+      ${extraHorizontalOverlays}
       ${replacementTrails}
+      ${extraQuadPoints}
+      ${extraMarkerPoints}
+      ${extraRects}
+      ${extraHorizontalLabels}
       ${cornerPoints}
       <rect x="14" y="14" width="${infoPanelWidth}" height="${infoPanelHeight}" rx="10" ry="10" fill="rgba(229,231,235,0.92)"/>
       <text x="30" y="46" font-size="24" fill="#111827">${annotationTitle}</text>
@@ -5788,6 +12373,8 @@ function evaluateOuterFrameInnerSeparation({
     ]))
   );
   const gapValues = Object.values(sides).map((metrics) => metrics.gap).filter(Number.isFinite);
+  const horizontalGapPair = [topGap.gap, bottomGap.gap].filter(Number.isFinite);
+  const verticalGapPair = [leftGap.gap, rightGap.gap].filter(Number.isFinite);
   const gapConsistency = gapValues.length === 4
     ? {
         minGap: Math.min(...gapValues),
@@ -5795,18 +12382,53 @@ function evaluateOuterFrameInnerSeparation({
         ratio: Math.max(...gapValues) / Math.max(1, Math.min(...gapValues))
       }
     : null;
+  const pairConsistency = (
+    horizontalGapPair.length === 2
+    && verticalGapPair.length === 2
+  )
+    ? {
+        horizontal: {
+          minGap: Math.min(...horizontalGapPair),
+          maxGap: Math.max(...horizontalGapPair),
+          ratio: Math.max(...horizontalGapPair) / Math.max(1, Math.min(...horizontalGapPair)),
+          delta: Math.abs(horizontalGapPair[0] - horizontalGapPair[1])
+        },
+        vertical: {
+          minGap: Math.min(...verticalGapPair),
+          maxGap: Math.max(...verticalGapPair),
+          ratio: Math.max(...verticalGapPair) / Math.max(1, Math.min(...verticalGapPair)),
+          delta: Math.abs(verticalGapPair[0] - verticalGapPair[1])
+        }
+      }
+    : null;
+  const innerFrameDetected = (
+    Number.isFinite(immediateInnerFrame.top)
+    && Number.isFinite(immediateInnerFrame.bottom)
+    && Number.isFinite(immediateInnerFrame.left)
+    && Number.isFinite(immediateInnerFrame.right)
+    && immediateInnerFrame.bottom > immediateInnerFrame.top
+    && immediateInnerFrame.right > immediateInnerFrame.left
+  );
   const similarOuterInnerMargin = Boolean(
-    gapConsistency
+    innerFrameDetected
+    && gapConsistency
     && gapConsistency.minGap > 0
-    && gapConsistency.ratio <= 1.35
-    && (gapConsistency.maxGap - gapConsistency.minGap) <= Math.max(12, Math.round(gapConsistency.minGap * 0.5))
+    && gapConsistency.ratio <= 1.28
+    && (gapConsistency.maxGap - gapConsistency.minGap) <= Math.max(12, Math.round(gapConsistency.minGap * 0.35))
+    && pairConsistency
+    && pairConsistency.horizontal.ratio <= 1.18
+    && pairConsistency.vertical.ratio <= 1.18
+    && pairConsistency.horizontal.delta <= Math.max(10, Math.round(gapConsistency.minGap * 0.22))
+    && pairConsistency.vertical.delta <= Math.max(10, Math.round(gapConsistency.minGap * 0.22))
   );
   const eligible = Object.values(sideFlags).every(Boolean) && similarOuterInnerMargin;
   return {
     eligible,
     reason: eligible
       ? 'ok'
-      : (!Object.values(sideFlags).every(Boolean) ? 'inner-content-too-close-to-outer-frame' : 'outer-inner-gap-not-similar'),
+      : (!innerFrameDetected
+        ? 'inner-frame-not-found'
+        : (!Object.values(sideFlags).every(Boolean) ? 'inner-content-too-close-to-outer-frame' : 'outer-inner-gap-not-similar')),
     metrics: {
       top: {
         gap: topGap.gap,
@@ -5838,7 +12460,24 @@ function evaluateOuterFrameInnerSeparation({
       },
       sideFlags,
       requiredSideGaps: resolvedRequiredSideGaps,
+      innerFrameDetected,
       similarOuterInnerMargin,
+      pairConsistency: pairConsistency
+        ? {
+            horizontal: {
+              minGap: pairConsistency.horizontal.minGap,
+              maxGap: pairConsistency.horizontal.maxGap,
+              ratio: Number(pairConsistency.horizontal.ratio.toFixed(4)),
+              delta: pairConsistency.horizontal.delta
+            },
+            vertical: {
+              minGap: pairConsistency.vertical.minGap,
+              maxGap: pairConsistency.vertical.maxGap,
+              ratio: Number(pairConsistency.vertical.ratio.toFixed(4)),
+              delta: pairConsistency.vertical.delta
+            }
+          }
+        : null,
       gapConsistency: gapConsistency
         ? {
             minGap: gapConsistency.minGap,
@@ -6469,6 +13108,368 @@ function mergeCornerQuadsWithConfidence(baseQuad, refinedQuad, cornerWeights, op
   return normalizeCornerQuad(merged) || base;
 }
 
+function liftAsymmetricTopCornerTowardEndpoint(baseQuad, verticalEndpoints, options = {}) {
+  const base = normalizeCornerQuad(baseQuad);
+  if (!base) {
+    return {
+      quad: null,
+      diagnostics: {
+        applied: false,
+        reason: 'missing-base-quad'
+      }
+    };
+  }
+  const cellWidth = Math.max(1, Math.round(Number(options.cellWidth) || 0));
+  const cellHeight = Math.max(1, Math.round(Number(options.cellHeight) || 0));
+  const minLift = Math.max(12, Math.round(cellHeight * 0.04));
+  const peerSlack = Math.max(10, Math.round(cellHeight * 0.03));
+  const maxLift = Math.max(10, Math.round(cellHeight * 0.04));
+  const maxXShift = Math.max(3, Math.round(cellWidth * 0.012));
+  const liftBlend = 0.18;
+  const topCandidates = [
+    { index: 0, name: 'leftTop', endpoint: verticalEndpoints?.leftTop },
+    { index: 1, name: 'rightTop', endpoint: verticalEndpoints?.rightTop }
+  ].map((candidate) => {
+    const current = base[candidate.index];
+    const endpoint = Array.isArray(candidate.endpoint)
+      ? [Number(candidate.endpoint[0]), Number(candidate.endpoint[1])]
+      : null;
+    const lift = endpoint ? (Number(current[1]) - Number(endpoint[1])) : null;
+    return {
+      ...candidate,
+      current,
+      endpoint,
+      lift: Number.isFinite(lift) ? lift : null
+    };
+  });
+  const positiveCandidates = topCandidates.filter((candidate) => Number.isFinite(candidate.lift) && candidate.lift >= minLift);
+  if (positiveCandidates.length !== 1) {
+    return {
+      quad: base,
+      diagnostics: {
+        applied: false,
+        reason: positiveCandidates.length > 1 ? 'multi-corner-lift-suppressed' : 'lift-too-small',
+        minLift,
+        peerSlack,
+        maxLift,
+        candidates: topCandidates.map((candidate) => ({
+          name: candidate.name,
+          currentY: Number(candidate.current[1].toFixed(3)),
+          endpointY: candidate.endpoint ? Number(candidate.endpoint[1].toFixed(3)) : null,
+          lift: Number.isFinite(candidate.lift) ? Number(candidate.lift.toFixed(3)) : null
+        }))
+      }
+    };
+  }
+  const target = positiveCandidates[0];
+  const peer = topCandidates.find((candidate) => candidate.index !== target.index) || null;
+  if (peer && Number.isFinite(peer.lift) && peer.lift >= (target.lift - peerSlack)) {
+    return {
+      quad: base,
+      diagnostics: {
+        applied: false,
+        reason: 'peer-needs-similar-lift',
+        minLift,
+        peerSlack,
+        maxLift,
+        target: target.name,
+        targetLift: Number(target.lift.toFixed(3)),
+        peerLift: Number(peer.lift.toFixed(3))
+      }
+    };
+  }
+  const appliedLift = Math.min(maxLift, target.lift * liftBlend);
+  const dx = Number(target.endpoint[0]) - Number(target.current[0]);
+  const appliedDx = clamp(dx * 0.12, -maxXShift, maxXShift);
+  const adjusted = base.map(([x, y]) => [x, y]);
+  adjusted[target.index] = [
+    target.current[0] + appliedDx,
+    target.current[1] - appliedLift
+  ];
+  return {
+    quad: normalizeCornerQuad(adjusted) || base,
+    diagnostics: {
+      applied: true,
+      reason: 'single-top-corner-lifted-toward-endpoint',
+      minLift,
+      peerSlack,
+      maxLift,
+      liftBlend,
+      corner: target.name,
+      current: target.current.map((value) => Number(value.toFixed(3))),
+      endpoint: target.endpoint.map((value) => Number(value.toFixed(3))),
+      peerLift: Number.isFinite(peer?.lift) ? Number(peer.lift.toFixed(3)) : null,
+      appliedDx: Number(appliedDx.toFixed(3)),
+      appliedLift: Number(appliedLift.toFixed(3))
+    }
+  };
+}
+
+function refineAsymmetricTopCornerByLocalTopSupport(gray, width, height, baseQuad, options = {}) {
+  const base = normalizeCornerQuad(baseQuad);
+  if (!gray || !base || width <= 0 || height <= 0) {
+    return {
+      quad: base || null,
+      diagnostics: {
+        applied: false,
+        reason: 'missing-base-inputs'
+      }
+    };
+  }
+  const outerBounds = options.outerBounds || getQuadBounds(base);
+  const innerBounds = options.innerBounds || null;
+  const verticalEndpoints = options.verticalEndpoints || null;
+  const leftLine = options.leftLine || buildLineFromEndAnchors(base[0], base[3], null);
+  const rightLine = options.rightLine || buildLineFromEndAnchors(base[1], base[2], null);
+  if (!outerBounds || !innerBounds || !leftLine || !rightLine) {
+    return {
+      quad: base,
+      diagnostics: {
+        applied: false,
+        reason: 'missing-boundary-context'
+      }
+    };
+  }
+  const cellWidth = Math.max(1, Math.round(Number(options.cellWidth) || 0));
+  const cellHeight = Math.max(1, Math.round(Number(options.cellHeight) || 0));
+  const minLift = Math.max(12, Math.round(cellHeight * 0.04));
+  const peerSlack = Math.max(10, Math.round(cellHeight * 0.03));
+  const minImprovement = Math.max(6, Math.round(cellHeight * 0.02));
+  const defaultMaxAdditionalLift = Math.max(10, Math.round(cellHeight * 0.038));
+  const defaultSupportBlend = 0.6;
+  const endpointSafety = Math.max(20, Math.round(cellHeight * 0.07));
+  const localSpanWidth = Math.max(
+    Math.round((Number(outerBounds.right) - Number(outerBounds.left) + 1) * 0.3),
+    Math.round(cellWidth * 2.2),
+    220
+  );
+  const maxSearchY = clamp(Math.round(Number(innerBounds.top) - 2), 0, Math.max(0, height - 1));
+  const topCandidates = [
+    { index: 0, name: 'leftTop', endpoint: verticalEndpoints?.leftTop, line: leftLine },
+    { index: 1, name: 'rightTop', endpoint: verticalEndpoints?.rightTop, line: rightLine }
+  ].map((candidate) => {
+    const current = base[candidate.index];
+    const endpoint = Array.isArray(candidate.endpoint)
+      ? [Number(candidate.endpoint[0]), Number(candidate.endpoint[1])]
+      : null;
+    const lift = endpoint ? (Number(current[1]) - Number(endpoint[1])) : null;
+    return {
+      ...candidate,
+      current,
+      endpoint,
+      lift: Number.isFinite(lift) ? lift : null
+    };
+  });
+  const positiveCandidates = topCandidates.filter((candidate) => Number.isFinite(candidate.lift) && candidate.lift >= minLift);
+  if (positiveCandidates.length !== 1) {
+    return {
+      quad: base,
+      diagnostics: {
+        applied: false,
+        reason: positiveCandidates.length > 1 ? 'multi-corner-local-support-suppressed' : 'lift-too-small',
+        minLift,
+        peerSlack,
+        candidates: topCandidates.map((candidate) => ({
+          name: candidate.name,
+          currentY: Number(candidate.current[1].toFixed(3)),
+          endpointY: candidate.endpoint ? Number(candidate.endpoint[1].toFixed(3)) : null,
+          lift: Number.isFinite(candidate.lift) ? Number(candidate.lift.toFixed(3)) : null
+        }))
+      }
+    };
+  }
+  const target = positiveCandidates[0];
+  const peer = topCandidates.find((candidate) => candidate.index !== target.index) || null;
+  const maxAdditionalLift = target.index === 0
+    ? Math.max(defaultMaxAdditionalLift, Math.round(cellHeight * 0.05))
+    : defaultMaxAdditionalLift;
+  const supportBlend = target.index === 0 ? 0.78 : defaultSupportBlend;
+  if (peer && Number.isFinite(peer.lift) && peer.lift >= (target.lift - peerSlack)) {
+    return {
+      quad: base,
+      diagnostics: {
+        applied: false,
+        reason: 'peer-needs-similar-lift',
+        minLift,
+        peerSlack,
+        target: target.name,
+        targetLift: Number(target.lift.toFixed(3)),
+        peerLift: Number(peer.lift.toFixed(3))
+      }
+    };
+  }
+
+  const expectedY = clamp(
+    Math.round(average([
+      Number(target.current[1]),
+      Number(target.endpoint[1]) + endpointSafety
+    ])),
+    0,
+    maxSearchY
+  );
+  const searchUp = Math.max(24, Math.round(cellHeight * 0.14));
+  const searchDown = Math.max(8, Math.round(cellHeight * 0.04));
+  const localXStart = target.index === 0
+    ? clamp(Math.round(Number(outerBounds.left)), 0, Math.max(0, width - 1))
+    : clamp(Math.round(Number(outerBounds.right) - localSpanWidth), 0, Math.max(0, width - 1));
+  const localXEnd = target.index === 0
+    ? clamp(Math.round(Number(outerBounds.left) + localSpanWidth), localXStart + 1, Math.max(1, width - 1))
+    : clamp(Math.round(Number(outerBounds.right)), localXStart + 1, Math.max(1, width - 1));
+  const localYStart = clamp(
+    Math.round(Math.min(expectedY, Number(target.current[1]) - 4) - searchUp),
+    0,
+    maxSearchY
+  );
+  const localYEnd = clamp(
+    Math.round(Math.max(expectedY, Number(target.current[1]) - 6) + searchDown),
+    localYStart,
+    maxSearchY
+  );
+  if (localYEnd - localYStart < 8) {
+    return {
+      quad: base,
+      diagnostics: {
+        applied: false,
+        reason: 'local-window-too-small',
+        localWindow: {
+          x: [localXStart, localXEnd],
+          y: [localYStart, localYEnd]
+        }
+      }
+    };
+  }
+
+  const localTopPoints = collectGlobalHorizontalBoundaryPoints(gray, width, height, {
+    expectedY,
+    xStart: localXStart,
+    xEnd: localXEnd,
+    yStart: localYStart,
+    yEnd: localYEnd,
+    inwardDir: 1,
+    step: 6,
+    outwardBias: 0.22
+  });
+  const localTopLine = fitLineRobust(localTopPoints, 4);
+  if (!localTopLine) {
+    return {
+      quad: base,
+      diagnostics: {
+        applied: false,
+        reason: 'local-top-line-fit-failed',
+        localWindow: {
+          x: [localXStart, localXEnd],
+          y: [localYStart, localYEnd]
+        },
+        localPointCount: localTopPoints.length
+      }
+    };
+  }
+  const localExtremeTopPoints = extractExtremeSupportPoints(
+    localTopLine,
+    localTopPoints,
+    (point) => scoreOuterHorizontalBoundaryAt(gray, width, height, point[1], point[0] - 10, point[0] + 10, 1),
+    'top',
+    { ratio: 0.24 }
+  );
+  const pointHalves = splitSupportPointsByAxis(localExtremeTopPoints, 0);
+  const supportPoints = target.index === 0
+    ? (pointHalves.first.length ? pointHalves.first : localExtremeTopPoints)
+    : (pointHalves.second.length ? pointHalves.second : localExtremeTopPoints);
+  if (!supportPoints.length) {
+    return {
+      quad: base,
+      diagnostics: {
+        applied: false,
+        reason: 'no-local-support-points',
+        localWindow: {
+          x: [localXStart, localXEnd],
+          y: [localYStart, localYEnd]
+        },
+        localPointCount: localTopPoints.length,
+        localExtremePointCount: localExtremeTopPoints.length
+      }
+    };
+  }
+  const supportAnchor = [
+    average(supportPoints.map((point) => point[0])),
+    average(supportPoints.map((point) => point[1]))
+  ];
+  const supportTargetY = clamp(
+    Number(supportAnchor[1]),
+    Number(target.endpoint[1]) + endpointSafety,
+    Number(target.current[1]) - minImprovement
+  );
+  const supportLift = Number(target.current[1]) - supportTargetY;
+  if (!Number.isFinite(supportLift) || supportLift < minImprovement) {
+    return {
+      quad: base,
+      diagnostics: {
+        applied: false,
+        reason: 'local-support-improvement-too-small',
+        supportAnchor: supportAnchor.map((value) => Number(value.toFixed(3))),
+        supportLift: Number.isFinite(supportLift) ? Number(supportLift.toFixed(3)) : null
+      }
+    };
+  }
+  const appliedLift = Math.min(maxAdditionalLift, supportLift * supportBlend);
+  const targetY = Number(target.current[1]) - appliedLift;
+  const solvedX = solveLineXAtY(target.line, targetY);
+  const candidatePoint = [
+    Number.isFinite(solvedX) ? solvedX : Number(target.current[0]),
+    targetY
+  ];
+  const adjusted = base.map((point) => [...point]);
+  adjusted[target.index] = candidatePoint;
+  const candidateQuad = normalizeCornerQuad(adjusted) || base;
+  const baseQuality = evaluateRectangularQuadQuality(base, { guides: options.guides || innerBounds });
+  const candidateQuality = evaluateRectangularQuadQuality(candidateQuad, { guides: options.guides || innerBounds });
+  const baseScore = Number(baseQuality?.rotatedRectangleScore || 0);
+  const candidateScore = Number(candidateQuality?.rotatedRectangleScore || 0);
+  const minCandidateScore = target.index === 0 ? 0.77 : 0.78;
+  const allowedRegression = target.index === 0 ? 0.065 : 0.06;
+  if (candidateScore < Math.max(minCandidateScore, baseScore - allowedRegression)) {
+    return {
+      quad: base,
+      diagnostics: {
+        applied: false,
+        reason: 'rectangularity-regressed-too-much',
+        baseScore: Number(baseScore.toFixed(4)),
+        candidateScore: Number(candidateScore.toFixed(4)),
+        supportAnchor: supportAnchor.map((value) => Number(value.toFixed(3))),
+        candidatePoint: candidatePoint.map((value) => Number(value.toFixed(3)))
+      }
+    };
+  }
+  return {
+    quad: candidateQuad,
+    diagnostics: {
+      applied: true,
+      reason: 'single-top-corner-refined-by-local-support',
+      corner: target.name,
+      minLift,
+      minImprovement,
+      endpointSafety,
+      maxAdditionalLift,
+      supportBlend,
+      current: target.current.map((value) => Number(value.toFixed(3))),
+      endpoint: target.endpoint.map((value) => Number(value.toFixed(3))),
+      supportAnchor: supportAnchor.map((value) => Number(value.toFixed(3))),
+      localWindow: {
+        x: [localXStart, localXEnd],
+        y: [localYStart, localYEnd]
+      },
+      localPointCount: localTopPoints.length,
+      localExtremePointCount: localExtremeTopPoints.length,
+      supportPointCount: supportPoints.length,
+      supportLift: Number(supportLift.toFixed(3)),
+      appliedLift: Number(appliedLift.toFixed(3)),
+      candidatePoint: candidatePoint.map((value) => Number(value.toFixed(3))),
+      baseRectangularity: Number(baseScore.toFixed(4)),
+      candidateRectangularity: Number(candidateScore.toFixed(4))
+    }
+  };
+}
+
 function blendQuadByCornerStability(baseQuad, targetQuad, cornerConfidences, cornerTargetSupports, options = {}) {
   const base = normalizeCornerQuad(baseQuad);
   const target = normalizeCornerQuad(targetQuad);
@@ -6882,6 +13883,259 @@ function normalizeVector(vector, fallback = [1, 0]) {
     return [...fallback];
   }
   return [x / length, y / length];
+}
+
+function evaluateInnerGridSupportFromRawHints(quad, rawGuideHints, options = {}) {
+  const normalized = normalizeCornerQuad(quad);
+  if (!normalized || !rawGuideHints) {
+    return null;
+  }
+  const diagnostics = rawGuideHints.diagnostics || {};
+  const medianXGap = Number(rawGuideHints.medianXGap) || Number(options.cellWidth) || 0;
+  const medianYGap = Number(rawGuideHints.medianYGap) || Number(options.cellHeight) || 0;
+  const candidateBounds = buildQuadAverageBounds(normalized);
+  if (!candidateBounds) {
+    return null;
+  }
+
+  const majorXGap = Number(diagnostics.majorXGap) || 0;
+  const majorYGap = Number(diagnostics.majorYGap) || 0;
+  const strictTopLeftIntervalPattern = shouldApplyStrictTopLeftIntervalGateFromDiagnostics(diagnostics);
+  const leftIntervalEvidence = buildInnerGridIntervalEvidence({
+    firstGap: diagnostics.leftFirstGap,
+    secondGap: diagnostics.leftSecondGap,
+    medianGap: medianXGap,
+    stableRun: diagnostics.leftStableInnerRun,
+    globalStableCount: diagnostics.xGlobalStableGapCount
+  });
+  const rightIntervalEvidence = buildInnerGridIntervalEvidence({
+    firstGap: diagnostics.rightLastGap,
+    secondGap: diagnostics.rightPrevGap,
+    medianGap: medianXGap,
+    stableRun: diagnostics.rightStableInnerRun,
+    globalStableCount: diagnostics.xGlobalStableGapCount
+  });
+  const topIntervalEvidence = buildInnerGridIntervalEvidence({
+    firstGap: diagnostics.topFirstGap,
+    secondGap: diagnostics.topSecondGap,
+    medianGap: medianYGap,
+    stableRun: diagnostics.topStableInnerRun,
+    globalStableCount: diagnostics.yGlobalStableGapCount
+  });
+  const bottomIntervalEvidence = buildInnerGridIntervalEvidence({
+    firstGap: diagnostics.bottomLastGap,
+    secondGap: diagnostics.bottomPrevGap,
+    medianGap: medianYGap,
+    stableRun: diagnostics.bottomStableInnerRun,
+    globalStableCount: diagnostics.yGlobalStableGapCount
+  });
+  const sides = {
+    left: evaluateInnerGridSideSupport({
+      side: 'left',
+      gap: Number(diagnostics.firstInnerX) - candidateBounds.left,
+      medianGap: medianXGap,
+      boundaryGap: majorXGap,
+      stableRun: diagnostics.leftStableInnerRun,
+      globalStableCount: diagnostics.xGlobalStableGapCount,
+      intervalEvidence: leftIntervalEvidence
+    }),
+    right: evaluateInnerGridSideSupport({
+      side: 'right',
+      gap: candidateBounds.right - Number(diagnostics.lastInnerX),
+      medianGap: medianXGap,
+      boundaryGap: majorXGap,
+      stableRun: diagnostics.rightStableInnerRun,
+      globalStableCount: diagnostics.xGlobalStableGapCount,
+      intervalEvidence: rightIntervalEvidence
+    }),
+    top: evaluateInnerGridSideSupport({
+      side: 'top',
+      gap: Number(diagnostics.firstInnerY) - candidateBounds.top,
+      medianGap: medianYGap,
+      boundaryGap: majorYGap,
+      stableRun: diagnostics.topStableInnerRun,
+      globalStableCount: diagnostics.yGlobalStableGapCount,
+      requireInferStableRun: 2,
+      intervalEvidence: topIntervalEvidence
+    }),
+    bottom: evaluateInnerGridSideSupport({
+      side: 'bottom',
+      gap: candidateBounds.bottom - Number(diagnostics.lastInnerY),
+      medianGap: medianYGap,
+      boundaryGap: majorYGap,
+      stableRun: diagnostics.bottomStableInnerRun,
+      globalStableCount: diagnostics.yGlobalStableGapCount,
+      intervalEvidence: bottomIntervalEvidence
+    })
+  };
+
+  const entries = Object.values(sides);
+  if (strictTopLeftIntervalPattern) {
+    for (const sideName of ['left', 'top']) {
+      const side = sides[sideName];
+      const intervalSupported = Boolean(side?.intervalEvidence?.supported);
+      const pairConsistencyStrong = (Number(side?.intervalEvidence?.pairConsistencyScore) || 0) >= 0.82;
+      const boundaryStrong = side?.mode === 'aligned-with-major-boundary-guide' && (Number(side?.score) || 0) >= 0.84;
+      const strongDirectSupport = (Number(side?.score) || 0) >= 0.84;
+      if (
+        side?.eligible
+        && !intervalSupported
+        && !pairConsistencyStrong
+        && !boundaryStrong
+        && !strongDirectSupport
+      ) {
+        side.eligible = false;
+        side.mode = `${side.mode || 'unsupported'}-rejected-by-top-left-interval-gate`;
+      }
+    }
+  }
+  const eligibleCount = entries.filter((entry) => entry.eligible).length;
+  const leftBottomJointSupport = diagnostics.leftBottomJointSupport || null;
+  const supportScore = average(entries.map((entry) => entry.score));
+  const anchoredScore = leftBottomJointSupport
+    ? average([supportScore, Number(leftBottomJointSupport.score) || 0])
+    : supportScore;
+  return {
+    eligible: eligibleCount === 4 && (!leftBottomJointSupport || Boolean(leftBottomJointSupport.eligible)),
+    supportScore: anchoredScore,
+    eligibleCount,
+    sides,
+    leftBottomJointSupport,
+    intervalSupport: {
+      left: leftIntervalEvidence,
+      right: rightIntervalEvidence,
+      top: topIntervalEvidence,
+      bottom: bottomIntervalEvidence
+    }
+  };
+}
+
+function buildSupportAlignedGuideQuad(rawGuideHints, width, height, options = {}) {
+  if (!rawGuideHints) {
+    return null;
+  }
+  const diagnostics = rawGuideHints.diagnostics || {};
+  const overallPattern = diagnostics.overallPattern || 'mixed';
+  const medianXGap = Number(rawGuideHints.medianXGap) || 0;
+  const medianYGap = Number(rawGuideHints.medianYGap) || 0;
+  if (!Number.isFinite(medianXGap) || !Number.isFinite(medianYGap) || medianXGap <= 0 || medianYGap <= 0) {
+    return null;
+  }
+  const firstInnerX = Number(diagnostics.firstInnerX);
+  const lastInnerX = Number(diagnostics.lastInnerX);
+  const firstInnerY = Number(diagnostics.firstInnerY);
+  const lastInnerY = Number(diagnostics.lastInnerY);
+  if (![firstInnerX, lastInnerX, firstInnerY, lastInnerY].every(Number.isFinite)) {
+    return null;
+  }
+  const inferredLeft = clamp(Math.round(firstInnerX - medianXGap), 0, Math.max(0, width - 1));
+  const inferredRight = clamp(Math.round(lastInnerX + medianXGap), inferredLeft + 1, Math.max(1, width - 1));
+  const inferredTop = clamp(Math.round(firstInnerY - medianYGap), 0, Math.max(0, height - 1));
+  const inferredBottom = clamp(Math.round(lastInnerY + medianYGap), inferredTop + 1, Math.max(1, height - 1));
+  const inferredWidth = inferredRight - inferredLeft;
+  const inferredHeight = inferredBottom - inferredTop;
+  if (!(inferredWidth > 1) || !(inferredHeight > 1)) {
+    return null;
+  }
+  const leftBottomJointSupport = diagnostics.leftBottomJointSupport || null;
+  if (
+    leftBottomJointSupport
+    && (
+      !leftBottomJointSupport.eligible
+      || (Number(leftBottomJointSupport.score) || 0) < 0.72
+    )
+  ) {
+    return null;
+  }
+
+  const referenceQuad = normalizeCornerQuad(options.referenceQuad || null);
+  const leftBottomDetail = options.cornerDiagnostics?.leftBottom || null;
+  const rightBottomDetail = options.cornerDiagnostics?.rightBottom || null;
+  const leftBottomAnchor = Array.isArray(leftBottomDetail?.refined)
+    ? leftBottomDetail.refined.map(Number)
+    : (referenceQuad ? referenceQuad[3] : null);
+  const rightBottomAnchor = Array.isArray(rightBottomDetail?.refined)
+    ? rightBottomDetail.refined.map(Number)
+    : (referenceQuad ? referenceQuad[2] : null);
+
+  let horizontalUnit = [1, 0];
+  let verticalUnit = [0, -1];
+  if (referenceQuad) {
+    const bottomVector = [
+      referenceQuad[2][0] - referenceQuad[3][0],
+      referenceQuad[2][1] - referenceQuad[3][1]
+    ];
+    const leftVector = [
+      referenceQuad[0][0] - referenceQuad[3][0],
+      referenceQuad[0][1] - referenceQuad[3][1]
+    ];
+    const normalizedHorizontal = normalizeVector(bottomVector);
+    const normalizedVertical = normalizeVector(leftVector);
+    if (normalizedHorizontal) {
+      horizontalUnit = normalizedHorizontal;
+    }
+    if (normalizedVertical) {
+      verticalUnit = normalizedVertical;
+    }
+  }
+
+  const anchorToleranceX = Math.max(10, Math.round(medianXGap * 0.12));
+  const anchorToleranceY = Math.max(10, Math.round(medianYGap * 0.12));
+  const anchoredLeftBottom = leftBottomAnchor
+    ? [
+        clamp(leftBottomAnchor[0], inferredLeft - anchorToleranceX, inferredLeft + anchorToleranceX),
+        clamp(leftBottomAnchor[1], inferredBottom - anchorToleranceY, inferredBottom + anchorToleranceY)
+      ]
+    : [inferredLeft, inferredBottom];
+
+  let anchoredRightBottom = rightBottomAnchor
+    ? [
+        clamp(rightBottomAnchor[0], inferredRight - anchorToleranceX, inferredRight + anchorToleranceX),
+        clamp(rightBottomAnchor[1], inferredBottom - anchorToleranceY, inferredBottom + anchorToleranceY)
+      ]
+    : null;
+
+  if (anchoredRightBottom) {
+    const anchoredBottomVector = [
+      anchoredRightBottom[0] - anchoredLeftBottom[0],
+      anchoredRightBottom[1] - anchoredLeftBottom[1]
+    ];
+    const anchoredHorizontal = normalizeVector(anchoredBottomVector);
+    if (
+      anchoredHorizontal
+      && Math.hypot(anchoredBottomVector[0], anchoredBottomVector[1]) >= Math.max(12, inferredWidth * 0.4)
+    ) {
+      horizontalUnit = anchoredHorizontal;
+    }
+  }
+
+  const lb = anchoredLeftBottom;
+  const rb = anchoredRightBottom || [
+    lb[0] + horizontalUnit[0] * inferredWidth,
+    lb[1] + horizontalUnit[1] * inferredWidth
+  ];
+  let lt = [
+    lb[0] + verticalUnit[0] * inferredHeight,
+    lb[1] + verticalUnit[1] * inferredHeight
+  ];
+  let rt = [
+    rb[0] + verticalUnit[0] * inferredHeight,
+    rb[1] + verticalUnit[1] * inferredHeight
+  ];
+  if (overallPattern === 'uniform-cells-with-inner-dashed' || overallPattern === 'uniform-boundary-grid') {
+    const inferredTopLeft = [inferredLeft, inferredTop];
+    const inferredTopRight = [inferredRight, inferredTop];
+    lt = [
+      average([lt[0], inferredTopLeft[0]]),
+      average([lt[1], inferredTopLeft[1]])
+    ];
+    rt = [
+      average([rt[0], inferredTopRight[0]]),
+      average([rt[1], inferredTopRight[1]])
+    ];
+  }
+
+  return normalizeCornerQuad([lt, rt, rb, lb]);
 }
 
 function buildQuadOrientationFrame(quad) {
@@ -7441,6 +14695,60 @@ function stabilizeQuadGeometry(corners, options = {}) {
   return normalizeCornerQuad(corrected) || quad;
 }
 
+function fitQuadToWholeCornerConsistency(corners, options = {}) {
+  const quad = normalizeCornerQuad(corners);
+  if (!quad) {
+    return null;
+  }
+  const blend = Number.isFinite(options.blend) ? options.blend : 0.72;
+  const [lt, rt, rb, lb] = quad.map(([x, y]) => [Number(x), Number(y)]);
+  const centroid = [
+    average(quad.map((point) => point[0])),
+    average(quad.map((point) => point[1]))
+  ];
+  const topVector = [rt[0] - lt[0], rt[1] - lt[1]];
+  const bottomVector = [rb[0] - lb[0], rb[1] - lb[1]];
+  const horizontalDirection = normalizeVector([
+    topVector[0] / Math.max(Math.hypot(...topVector), 1e-6) + bottomVector[0] / Math.max(Math.hypot(...bottomVector), 1e-6),
+    topVector[1] / Math.max(Math.hypot(...topVector), 1e-6) + bottomVector[1] / Math.max(Math.hypot(...bottomVector), 1e-6)
+  ], [1, 0]);
+  const rotationAngle = Math.atan2(horizontalDirection[1], horizontalDirection[0]);
+  const cosTheta = Math.cos(-rotationAngle);
+  const sinTheta = Math.sin(-rotationAngle);
+  const rotate = ([x, y]) => {
+    const dx = x - centroid[0];
+    const dy = y - centroid[1];
+    return [
+      dx * cosTheta - dy * sinTheta,
+      dx * sinTheta + dy * cosTheta
+    ];
+  };
+  const unrotate = ([x, y]) => {
+    const cosBack = Math.cos(rotationAngle);
+    const sinBack = Math.sin(rotationAngle);
+    return [
+      centroid[0] + x * cosBack - y * sinBack,
+      centroid[1] + x * sinBack + y * cosBack
+    ];
+  };
+  const rotated = quad.map(rotate);
+  const leftX = average([rotated[0][0], rotated[3][0]]);
+  const rightX = average([rotated[1][0], rotated[2][0]]);
+  const topY = average([rotated[0][1], rotated[1][1]]);
+  const bottomY = average([rotated[2][1], rotated[3][1]]);
+  const fitted = [
+    [leftX, topY],
+    [rightX, topY],
+    [rightX, bottomY],
+    [leftX, bottomY]
+  ].map(unrotate);
+  const blended = quad.map((point, index) => ([
+    point[0] * (1 - blend) + fitted[index][0] * blend,
+    point[1] * (1 - blend) + fitted[index][1] * blend
+  ]));
+  return normalizeCornerQuad(blended) || quad;
+}
+
 function evaluateRectangularQuadQuality(corners, options = {}) {
   const quad = normalizeCornerQuad(corners);
   if (!quad) {
@@ -7938,6 +15246,602 @@ async function runPaperQuadRectify(inputPath, corners, outputPath, metaPath = nu
   return JSON.parse((stdout || '').trim() || '{}');
 }
 
+async function exportInferredOuterFrameRectified(imagePath, outputPath, inferredOuterFrame, gridBoundaryDetection, metaPath = null) {
+  const outerQuad = normalizeCornerQuad(
+    inferredOuterFrame?.outerQuad
+    || (
+      inferredOuterFrame?.refinedOuterFrame
+        ? [
+            [inferredOuterFrame.refinedOuterFrame.left, inferredOuterFrame.refinedOuterFrame.top],
+            [inferredOuterFrame.refinedOuterFrame.right, inferredOuterFrame.refinedOuterFrame.top],
+            [inferredOuterFrame.refinedOuterFrame.right, inferredOuterFrame.refinedOuterFrame.bottom],
+            [inferredOuterFrame.refinedOuterFrame.left, inferredOuterFrame.refinedOuterFrame.bottom]
+          ]
+        : null
+    )
+  );
+  if (!imagePath || !outputPath || !outerQuad) {
+    return {
+      applied: false,
+      reason: 'missing-inferred-outer-quad'
+    };
+  }
+
+  const refinedOuterFrame = inferredOuterFrame?.refinedOuterFrame || getQuadBounds(outerQuad);
+  const innerReferenceQuad = normalizeCornerQuad(
+    gridBoundaryDetection?.cornerAnchors?.corners
+    || gridBoundaryDetection?.corners
+    || buildCornerPointsFromGuides(gridBoundaryDetection?.guides || null)
+  );
+  const innerReferenceBounds = (
+    gridBoundaryDetection?.guides
+      ? {
+          left: Math.round(Number(gridBoundaryDetection.guides.left || 0)),
+          right: Math.round(Number(gridBoundaryDetection.guides.right || 0)),
+          top: Math.round(Number(gridBoundaryDetection.guides.top || 0)),
+          bottom: Math.round(Number(gridBoundaryDetection.guides.bottom || 0))
+        }
+      : getQuadBounds(innerReferenceQuad)
+  );
+  let sourceMargins = (
+    refinedOuterFrame
+    && innerReferenceBounds
+    && innerReferenceBounds.right > innerReferenceBounds.left
+    && innerReferenceBounds.bottom > innerReferenceBounds.top
+  )
+    ? {
+        top: Math.max(0, Math.round(innerReferenceBounds.top - refinedOuterFrame.top)),
+        bottom: Math.max(0, Math.round(refinedOuterFrame.bottom - innerReferenceBounds.bottom)),
+        left: Math.max(0, Math.round(innerReferenceBounds.left - refinedOuterFrame.left)),
+        right: Math.max(0, Math.round(refinedOuterFrame.right - innerReferenceBounds.right))
+      }
+    : null;
+
+  await fs.promises.mkdir(path.dirname(outputPath), { recursive: true });
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'inferred-outer-frame-'));
+  const rawOutputPath = path.join(tempDir, 'outer_frame_rectified_raw.png');
+  const rawMetaPath = path.join(tempDir, 'outer_frame_rectified_raw.json');
+  let rectifiedMeta = null;
+  let croppedOutput = null;
+  try {
+    rectifiedMeta = await runPaperQuadRectify(imagePath, outerQuad, rawOutputPath, rawMetaPath);
+    const { data: rectifiedRgbData, info: rectifiedInfo } = await loadRgbImage(rawOutputPath);
+    const projectedInnerReference = innerReferenceQuad
+      ? projectSourceQuadToRectifiedPlane(outerQuad, rectifiedMeta, innerReferenceQuad)
+      : null;
+    if (projectedInnerReference?.bounds) {
+      sourceMargins = {
+        top: Math.max(0, Math.round(projectedInnerReference.bounds.top)),
+        bottom: Math.max(0, Math.round((rectifiedInfo.height - 1) - projectedInnerReference.bounds.bottom)),
+        left: Math.max(0, Math.round(projectedInnerReference.bounds.left)),
+        right: Math.max(0, Math.round((rectifiedInfo.width - 1) - projectedInnerReference.bounds.right))
+      };
+    }
+    let rectifiedCrop = analyzeRectifiedOuterFrameCrop(rectifiedRgbData, rectifiedInfo);
+    if (!rectifiedCrop?.cropBox && innerReferenceBounds) {
+      const fallbackMargins = {
+        top: Math.max(0, Math.round((innerReferenceBounds.top || refinedOuterFrame.top) - refinedOuterFrame.top)),
+        bottom: Math.max(0, Math.round(refinedOuterFrame.bottom - (innerReferenceBounds.bottom || refinedOuterFrame.bottom))),
+        left: Math.max(0, Math.round((innerReferenceBounds.left || refinedOuterFrame.left) - refinedOuterFrame.left)),
+        right: Math.max(0, Math.round(refinedOuterFrame.right - (innerReferenceBounds.right || refinedOuterFrame.right)))
+      };
+      const directionalTrimCount = Object.values(fallbackMargins).filter((value) => value >= 1).length;
+      if (directionalTrimCount >= 1) {
+      const rawWidth = rectifiedInfo.width || 0;
+      const rawHeight = rectifiedInfo.height || 0;
+      const fallbackLeft = clamp(fallbackMargins.left, 0, Math.max(0, rawWidth - 2));
+      const fallbackTop = clamp(fallbackMargins.top, 0, Math.max(0, rawHeight - 2));
+      const fallbackRight = clamp(rawWidth - 1 - fallbackMargins.right, fallbackLeft + 1, Math.max(1, rawWidth - 1));
+      const fallbackBottom = clamp(rawHeight - 1 - fallbackMargins.bottom, fallbackTop + 1, Math.max(1, rawHeight - 1));
+      rectifiedCrop = {
+        cropBox: {
+          left: fallbackLeft,
+          top: fallbackTop,
+          right: fallbackRight,
+          bottom: fallbackBottom,
+          width: fallbackRight - fallbackLeft + 1,
+          height: fallbackBottom - fallbackTop + 1
+        },
+        immediateInnerFrame: {
+          top: fallbackTop,
+          bottom: fallbackBottom,
+          left: fallbackLeft,
+          right: fallbackRight
+        },
+        removableSides: {
+          top: { removable: true, distance: fallbackMargins.top },
+          bottom: { removable: true, distance: fallbackMargins.bottom },
+          left: { removable: true, distance: fallbackMargins.left },
+          right: { removable: true, distance: fallbackMargins.right }
+        },
+        method: 'inferred-outer-frame-margin-fallback'
+      };
+      }
+    }
+
+    const trimWouldCollapseOuterMargin = Boolean(
+      rectifiedCrop?.cropBox
+      && sourceMargins
+      && (
+        rectifiedCrop.cropBox.left >= Math.max(8, sourceMargins.left - 2)
+        || rectifiedCrop.cropBox.top >= Math.max(8, sourceMargins.top - 2)
+        || ((rectifiedInfo.width - 1 - rectifiedCrop.cropBox.right) >= Math.max(8, sourceMargins.right - 2))
+        || ((rectifiedInfo.height - 1 - rectifiedCrop.cropBox.bottom) >= Math.max(8, sourceMargins.bottom - 2))
+      )
+    );
+    if (trimWouldCollapseOuterMargin) {
+      rectifiedCrop = null;
+    }
+
+    if (rectifiedCrop?.cropBox) {
+      const cropBox = rectifiedCrop.cropBox;
+      await sharp(rawOutputPath)
+        .extract({
+          left: cropBox.left,
+          top: cropBox.top,
+          width: cropBox.width,
+          height: cropBox.height
+        })
+        .png()
+        .toFile(outputPath);
+      croppedOutput = {
+        width: cropBox.width,
+        height: cropBox.height,
+        cropBox,
+        method: rectifiedCrop.method || 'rectified-outer-frame-inner-crop',
+        immediateInnerFrame: rectifiedCrop.immediateInnerFrame || null,
+        removableSides: rectifiedCrop.removableSides || null
+      };
+    } else {
+      await sharp(rawOutputPath).png().toFile(outputPath);
+      croppedOutput = {
+        width: rectifiedInfo.width || 0,
+        height: rectifiedInfo.height || 0,
+        cropBox: {
+          left: 0,
+          top: 0,
+          right: Math.max(0, (rectifiedInfo.width || 1) - 1),
+          bottom: Math.max(0, (rectifiedInfo.height || 1) - 1),
+          width: rectifiedInfo.width || 0,
+          height: rectifiedInfo.height || 0
+        },
+        method: 'rectified-outer-frame-raw'
+      };
+    }
+  } finally {
+    await fs.promises.rm(tempDir, { recursive: true, force: true });
+  }
+
+  const exportResult = {
+    applied: true,
+    reason: 'inferred-outer-frame-rectify',
+    source: 'inferred_outer_frame',
+    outputMode: croppedOutput?.cropBox ? 'outer-frame-rectify-then-crop' : 'outer-frame-rectify-raw',
+    outputPath,
+    outerQuad,
+    refinedOuterFrame,
+    innerReference: {
+      bounds: innerReferenceBounds || null,
+      corners: innerReferenceQuad || null
+    },
+    sourceMargins: sourceMargins || null,
+    rectifiedOuterFrame: rectifiedMeta || null,
+    croppedOutput: croppedOutput || null,
+    inferredDiagnostics: inferredOuterFrame?.diagnostics || null
+  };
+
+  if (metaPath) {
+    await fs.promises.mkdir(path.dirname(metaPath), { recursive: true });
+    await fs.promises.writeFile(metaPath, `${JSON.stringify(exportResult, null, 2)}\n`, 'utf8');
+  }
+
+  return exportResult;
+}
+
+function confirmInferredOuterFrameAsRealExtraction(
+  inferredOuterFrame,
+  inferredOuterFrameRectified = null,
+  gridBoundaryDetection = null
+) {
+  if (!inferredOuterFrame?.applied || !inferredOuterFrameRectified?.applied) {
+    return null;
+  }
+  const diagnostics = inferredOuterFrame?.diagnostics || {};
+  const method = String(diagnostics?.method || '');
+  const pattern = String(diagnostics?.outerFramePattern || '');
+  if (method !== 'pattern-driven-outer-frame-inference' || pattern !== 'full-margin-outer-frame') {
+    return null;
+  }
+  const strongSideCount = Number(diagnostics?.strongSideCount) || 0;
+  const moderateSideCount = Number(diagnostics?.moderateSideCount) || 0;
+  const sideGapCount = Number(diagnostics?.sideGapCount) || 0;
+  const cropMethod = String(inferredOuterFrameRectified?.croppedOutput?.method || '');
+  const boundaryConfirmed = Boolean(
+    diagnostics?.boundaryFitAdjusted
+    || diagnostics?.tiltedQuadFittedAfterTighten
+    || diagnostics?.tiltedQuadFitted
+  );
+  const outerQuad = normalizeCornerQuad(
+    inferredOuterFrame?.outerQuad
+    || diagnostics?.detectedOuterBorder?.outerQuad
+    || null
+  );
+  const refinedOuterFrame = inferredOuterFrame?.refinedOuterFrame
+    || diagnostics?.outerBounds
+    || getQuadBounds(outerQuad);
+  const innerBounds = gridBoundaryDetection?.guides
+    ? {
+        left: Math.round(Number(gridBoundaryDetection.guides.left || 0)),
+        right: Math.round(Number(gridBoundaryDetection.guides.right || 0)),
+        top: Math.round(Number(gridBoundaryDetection.guides.top || 0)),
+        bottom: Math.round(Number(gridBoundaryDetection.guides.bottom || 0))
+      }
+    : (diagnostics?.innerBounds || null);
+  const wrapsInner = Boolean(
+    refinedOuterFrame
+    && innerBounds
+    && refinedOuterFrame.left <= innerBounds.left - 2
+    && refinedOuterFrame.right >= innerBounds.right + 2
+    && refinedOuterFrame.top <= innerBounds.top - 2
+    && refinedOuterFrame.bottom >= innerBounds.bottom + 2
+  );
+  const gapRatio = Number(diagnostics?.gapRatio);
+  const horizontalGapRatio = Number(diagnostics?.horizontalGapRatio);
+  const verticalGapRatio = Number(diagnostics?.verticalGapRatio);
+  const reliablePatternCandidate = Boolean(
+    strongSideCount >= 4
+    && moderateSideCount >= 4
+    && sideGapCount >= 4
+    && (!Number.isFinite(gapRatio) || gapRatio <= 8.5)
+    && (!Number.isFinite(horizontalGapRatio) || horizontalGapRatio <= 8.5)
+    && (!Number.isFinite(verticalGapRatio) || verticalGapRatio <= 3.5)
+  );
+  const stableRectifiedExport = cropMethod === 'rectified-outer-frame-raw';
+  if (!boundaryConfirmed || !outerQuad || !refinedOuterFrame || !wrapsInner || !reliablePatternCandidate || !stableRectifiedExport) {
+    return null;
+  }
+  const cropBox = inferredOuterFrameRectified?.croppedOutput?.cropBox || null;
+  const cropAspectRatio = cropBox?.width && cropBox?.height
+    ? Number((cropBox.width / cropBox.height).toFixed(4))
+    : null;
+  return {
+    applied: true,
+    reason: 'outer-frame-confirmed-from-pattern-boundary-fit',
+    component: {
+      refinedOuterFrame,
+      outerQuad,
+      rectifiedOuterFrame: inferredOuterFrameRectified?.rectifiedOuterFrame || null,
+      croppedInnerFrame: cropBox,
+      cropAspectRatio,
+      detectedOuterBorder: diagnostics?.detectedOuterBorder || {
+        refinedOuterFrame,
+        outerQuad
+      },
+      innerEdgeAdjusted: Boolean(diagnostics?.innerEdgeAdjusted),
+      innerEdgeAdjustedFromRectifiedCrop: diagnostics?.innerEdgeAdjustedFromRectifiedCrop || null,
+      immediateInnerFrame: innerBounds ? { ...innerBounds } : null,
+      separation: {
+        eligible: true,
+        reason: 'confirmed-from-pattern-boundary-fit',
+        metrics: {
+          outerFramePattern: pattern,
+          strongSideCount,
+          moderateSideCount,
+          sideGapCount,
+          gapRatio: Number.isFinite(gapRatio) ? Number(gapRatio.toFixed(4)) : null,
+          horizontalGapRatio: Number.isFinite(horizontalGapRatio) ? Number(horizontalGapRatio.toFixed(4)) : null,
+          verticalGapRatio: Number.isFinite(verticalGapRatio) ? Number(verticalGapRatio.toFixed(4)) : null,
+          cropMethod,
+          patternProfileFamily: diagnostics?.patternProfileFamily || null,
+          patternProfileMode: diagnostics?.patternProfileMode || null
+        }
+      },
+      promotedFromInferred: true,
+      promotedFromReason: inferredOuterFrame?.reason || null,
+      promotedFromDiagnostics: {
+        method,
+        boundaryFitAdjusted: Boolean(diagnostics?.boundaryFitAdjusted),
+        tiltedQuadFitted: Boolean(diagnostics?.tiltedQuadFitted),
+        tiltedQuadFittedAfterTighten: Boolean(diagnostics?.tiltedQuadFittedAfterTighten),
+        tightenedByFinalGuides: Boolean(diagnostics?.tightenedByFinalGuides),
+        inferredRectifiedOutputMode: inferredOuterFrameRectified?.outputMode || null
+      }
+    }
+  };
+}
+
+async function refineOuterFrameEstimateToInnerEdge(imagePath, frameEstimate) {
+  const outerQuad = normalizeCornerQuad(
+    frameEstimate?.outerQuad
+    || (
+      frameEstimate?.refinedOuterFrame
+        ? [
+            [frameEstimate.refinedOuterFrame.left, frameEstimate.refinedOuterFrame.top],
+            [frameEstimate.refinedOuterFrame.right, frameEstimate.refinedOuterFrame.top],
+            [frameEstimate.refinedOuterFrame.right, frameEstimate.refinedOuterFrame.bottom],
+            [frameEstimate.refinedOuterFrame.left, frameEstimate.refinedOuterFrame.bottom]
+          ]
+        : null
+    )
+  );
+  if (!imagePath || !outerQuad) {
+    return frameEstimate || null;
+  }
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'outer-frame-inner-edge-'));
+  const rectifiedPath = path.join(tempDir, 'outer_frame_raw.png');
+  const rectifiedMetaPath = path.join(tempDir, 'outer_frame_raw.json');
+  try {
+    const rectifiedMeta = await runPaperQuadRectify(imagePath, outerQuad, rectifiedPath, rectifiedMetaPath);
+    const { data: rectifiedRgbData, info: rectifiedInfo } = await loadRgbImage(rectifiedPath);
+    const rectifiedCrop = analyzeRectifiedOuterFrameCrop(rectifiedRgbData, rectifiedInfo);
+    if (!rectifiedCrop?.cropBox) {
+      return frameEstimate;
+    }
+    const innerEdgeProjection = projectRectifiedCropBoxToSourceQuad(
+      outerQuad,
+      rectifiedMeta || rectifiedInfo,
+      rectifiedCrop.cropBox
+    );
+    if (!innerEdgeProjection?.quad || !innerEdgeProjection?.bounds) {
+      return frameEstimate;
+    }
+    const trimValues = Object.values(innerEdgeProjection.rectifiedTrims || {}).filter((value) => Number.isFinite(value));
+    const meaningfulTrimCount = trimValues.filter((value) => value >= 2).length;
+    if (!meaningfulTrimCount) {
+      return frameEstimate;
+    }
+    const trimLeft = Number(innerEdgeProjection.rectifiedTrims?.left) || 0;
+    const trimTop = Number(innerEdgeProjection.rectifiedTrims?.top) || 0;
+    const trimRight = Number(innerEdgeProjection.rectifiedTrims?.right) || 0;
+    const trimBottom = Number(innerEdgeProjection.rectifiedTrims?.bottom) || 0;
+    const rectifiedWidth = Number(rectifiedInfo?.width) || 0;
+    const rectifiedHeight = Number(rectifiedInfo?.height) || 0;
+    const diagnostics = frameEstimate?.diagnostics || {};
+    const pattern = String(diagnostics?.outerFramePattern || '');
+    const method = String(diagnostics?.method || '');
+    const isStandardLikeOuterFrame = (
+      pattern === 'full-margin-outer-frame'
+      && method === 'pattern-driven-outer-frame-inference'
+    );
+    const maxTrimRatioX = isStandardLikeOuterFrame ? 0.06 : 0.12;
+    const maxTrimRatioY = isStandardLikeOuterFrame ? 0.06 : 0.12;
+    const maxTrimX = Math.max(
+      24,
+      Math.round(rectifiedWidth * maxTrimRatioX)
+    );
+    const maxTrimY = Math.max(
+      24,
+      Math.round(rectifiedHeight * maxTrimRatioY)
+    );
+    if (trimLeft > maxTrimX || trimRight > maxTrimX || trimTop > maxTrimY || trimBottom > maxTrimY) {
+      return frameEstimate;
+    }
+    const gapHints = diagnostics?.gaps || null;
+    if (gapHints && typeof gapHints === 'object') {
+      const pairs = [
+        ['left', trimLeft, rectifiedWidth],
+        ['right', trimRight, rectifiedWidth],
+        ['top', trimTop, rectifiedHeight],
+        ['bottom', trimBottom, rectifiedHeight]
+      ];
+      const violatesGapHint = pairs.some(([key, trimValue, span]) => {
+        const hintedGap = Number(gapHints[key]);
+        if (!Number.isFinite(hintedGap) || hintedGap <= 0) {
+          return false;
+        }
+        const allowedByHint = Math.max(
+          12,
+          Math.round(hintedGap * (isStandardLikeOuterFrame ? 3.0 : 4.0))
+        );
+        const allowedBySpan = Math.max(16, Math.round((Number(span) || 0) * (isStandardLikeOuterFrame ? 0.08 : 0.14)));
+        return trimValue > Math.min(allowedByHint, allowedBySpan);
+      });
+      if (violatesGapHint) {
+        return frameEstimate;
+      }
+    }
+    return {
+      ...frameEstimate,
+      outerQuad: innerEdgeProjection.quad,
+      refinedOuterFrame: innerEdgeProjection.bounds,
+      diagnostics: {
+        ...(frameEstimate?.diagnostics || {}),
+        innerEdgeAdjusted: true,
+        innerEdgeAdjustedFromRectifiedCrop: {
+          method: rectifiedCrop.method || null,
+          cropBox: rectifiedCrop.cropBox,
+          rectifiedTrims: innerEdgeProjection.rectifiedTrims
+        },
+        detectedOuterBorder: {
+          outerQuad,
+          refinedOuterFrame: frameEstimate?.refinedOuterFrame || getQuadBounds(outerQuad)
+        }
+      }
+    };
+  } finally {
+    await fs.promises.rm(tempDir, { recursive: true, force: true });
+  }
+}
+
+function detectDenseEdgeBand(values, options = {}) {
+  const series = Array.isArray(values)
+    ? values.map((value) => Number(value) || 0)
+    : [];
+  if (!series.length) {
+    return null;
+  }
+  const fromEnd = Boolean(options.fromEnd);
+  const length = series.length;
+  const searchDepth = clamp(
+    Math.round(options.searchDepth ?? Math.max(10, Math.min(length, length * 0.09))),
+    4,
+    length
+  );
+  const edgeValues = fromEnd
+    ? series.slice(length - searchDepth)
+    : series.slice(0, searchDepth);
+  const edgeMax = Math.max(...edgeValues);
+  const highThreshold = Math.max(
+    Number(options.minHighThreshold) || 0.16,
+    edgeMax * (Number(options.edgeKeepRatio) || 0.28)
+  );
+  if (!(edgeMax >= highThreshold)) {
+    return null;
+  }
+  const sustainThreshold = Math.max(
+    Number(options.minSustainThreshold) || 0.08,
+    highThreshold * (Number(options.sustainRatio) || 0.4)
+  );
+  const maxGap = Math.max(1, Math.round(Number(options.maxGap) || 2));
+  let started = false;
+  let gapRun = 0;
+  let lastDenseOffset = -1;
+  for (let offset = 0; offset < searchDepth; offset += 1) {
+    const index = fromEnd ? (length - 1 - offset) : offset;
+    const value = series[index];
+    if (value >= highThreshold) {
+      started = true;
+      gapRun = 0;
+      lastDenseOffset = offset;
+      continue;
+    }
+    if (started && value >= sustainThreshold) {
+      gapRun = 0;
+      lastDenseOffset = offset;
+      continue;
+    }
+    if (!started) {
+      if (offset >= maxGap) {
+        break;
+      }
+      continue;
+    }
+    gapRun += 1;
+    if (gapRun > maxGap) {
+      break;
+    }
+  }
+  if (lastDenseOffset < 0) {
+    return null;
+  }
+  const trim = lastDenseOffset + 1;
+  const lastDenseIndex = fromEnd
+    ? (length - 1 - lastDenseOffset)
+    : lastDenseOffset;
+  return {
+    trim,
+    edgeMax: Number(edgeMax.toFixed(4)),
+    highThreshold: Number(highThreshold.toFixed(4)),
+    sustainThreshold: Number(sustainThreshold.toFixed(4)),
+    lastDenseIndex
+  };
+}
+
+function detectRectifiedOuterFrameEdgeCrop(gray, width, height) {
+  if (!gray || width < 120 || height < 120) {
+    return null;
+  }
+  const spanX0 = clamp(Math.round(width * 0.18), 0, Math.max(0, width - 1));
+  const spanX1 = clamp(Math.round(width * 0.82), spanX0 + 1, Math.max(1, width));
+  const spanY0 = clamp(Math.round(height * 0.18), 0, Math.max(0, height - 1));
+  const spanY1 = clamp(Math.round(height * 0.82), spanY0 + 1, Math.max(1, height));
+  const rowDarkRatios = new Array(height).fill(0);
+  const colDarkRatios = new Array(width).fill(0);
+  const rowSpan = Math.max(1, spanX1 - spanX0);
+  const colSpan = Math.max(1, spanY1 - spanY0);
+  for (let y = 0; y < height; y += 1) {
+    let darkCount = 0;
+    for (let x = spanX0; x < spanX1; x += 1) {
+      if (gray[y * width + x] < 170) {
+        darkCount += 1;
+      }
+    }
+    rowDarkRatios[y] = darkCount / rowSpan;
+  }
+  for (let x = 0; x < width; x += 1) {
+    let darkCount = 0;
+    for (let y = spanY0; y < spanY1; y += 1) {
+      if (gray[y * width + x] < 170) {
+        darkCount += 1;
+      }
+    }
+    colDarkRatios[x] = darkCount / colSpan;
+  }
+
+  const topBand = detectDenseEdgeBand(rowDarkRatios, {
+    searchDepth: Math.max(12, Math.round(height * 0.08)),
+    minHighThreshold: 0.13,
+    minSustainThreshold: 0.06,
+    maxGap: 2
+  });
+  const bottomBand = detectDenseEdgeBand(rowDarkRatios, {
+    fromEnd: true,
+    searchDepth: Math.max(12, Math.round(height * 0.08)),
+    minHighThreshold: 0.13,
+    minSustainThreshold: 0.06,
+    maxGap: 2
+  });
+  const leftBand = detectDenseEdgeBand(colDarkRatios, {
+    searchDepth: Math.max(12, Math.round(width * 0.1)),
+    minHighThreshold: 0.18,
+    minSustainThreshold: 0.08,
+    maxGap: 2
+  });
+  const rightBand = detectDenseEdgeBand(colDarkRatios, {
+    fromEnd: true,
+    searchDepth: Math.max(12, Math.round(width * 0.1)),
+    minHighThreshold: 0.18,
+    minSustainThreshold: 0.08,
+    maxGap: 2
+  });
+
+  const cropLeft = topBand || bottomBand || leftBand || rightBand
+    ? clamp((leftBand?.trim || 0), 0, Math.max(0, width - 2))
+    : 0;
+  const cropTop = topBand || bottomBand || leftBand || rightBand
+    ? clamp((topBand?.trim || 0), 0, Math.max(0, height - 2))
+    : 0;
+  const cropRight = topBand || bottomBand || leftBand || rightBand
+    ? clamp(width - 1 - (rightBand?.trim || 0), cropLeft + 1, Math.max(1, width - 1))
+    : width - 1;
+  const cropBottom = topBand || bottomBand || leftBand || rightBand
+    ? clamp(height - 1 - (bottomBand?.trim || 0), cropTop + 1, Math.max(1, height - 1))
+    : height - 1;
+
+  const trimmed = {
+    top: topBand?.trim || 0,
+    bottom: bottomBand?.trim || 0,
+    left: leftBand?.trim || 0,
+    right: rightBand?.trim || 0
+  };
+  const activeSides = Object.values(trimmed).filter((value) => value >= 2).length;
+  if (
+    activeSides < 2
+    || cropRight - cropLeft < Math.round(width * 0.55)
+    || cropBottom - cropTop < Math.round(height * 0.55)
+  ) {
+    return null;
+  }
+
+  return {
+    cropBox: {
+      left: cropLeft,
+      top: cropTop,
+      right: cropRight,
+      bottom: cropBottom,
+      width: cropRight - cropLeft + 1,
+      height: cropBottom - cropTop + 1
+    },
+    denseEdgeBands: {
+      top: topBand || null,
+      bottom: bottomBand || null,
+      left: leftBand || null,
+      right: rightBand || null
+    },
+    method: 'rectified-edge-dense-band-crop'
+  };
+}
+
 function analyzeRectifiedOuterFrameCrop(rgbData, info) {
   const width = info.width || 0;
   const height = info.height || 0;
@@ -7945,6 +15849,7 @@ function analyzeRectifiedOuterFrameCrop(rgbData, info) {
     return null;
   }
   const gray = computeGray(rgbData, info.channels);
+  const edgeDenseCrop = detectRectifiedOuterFrameEdgeCrop(gray, width, height);
   const darkMask = new Uint8Array(width * height);
   for (let i = 0; i < gray.length; i += 1) {
     darkMask[i] = gray[i] < 156 ? 1 : 0;
@@ -8036,14 +15941,14 @@ function analyzeRectifiedOuterFrameCrop(rgbData, info) {
     right: buildRemovableSide(refinedRightLine, nearInnerRight, quarterGapX, innerFrameSearchSpanX)
   };
   if (!removableSides.top.removable || !removableSides.bottom.removable || !removableSides.left.removable || !removableSides.right.removable) {
-    return null;
+    return edgeDenseCrop || null;
   }
   const cropPad = 1;
   const cropLeft = clamp(nearInnerLeft.index - cropPad, 0, width - 1);
   const cropRight = clamp(nearInnerRight.index + cropPad, cropLeft + 1, width - 1);
   const cropTop = clamp(nearInnerTop.index - cropPad, 0, height - 1);
   const cropBottom = clamp(nearInnerBottom.index + cropPad, cropTop + 1, height - 1);
-  return {
+  const cropResult = {
     cropBox: {
       left: cropLeft,
       top: cropTop,
@@ -8064,7 +15969,31 @@ function analyzeRectifiedOuterFrameCrop(rgbData, info) {
       left: nearInnerLeft.index,
       right: nearInnerRight.index
     },
-    removableSides
+    removableSides,
+    method: 'rectified-outer-frame-inner-crop'
+  };
+  if (!edgeDenseCrop?.cropBox) {
+    return cropResult;
+  }
+  const mergedLeft = Math.max(cropResult.cropBox.left, edgeDenseCrop.cropBox.left);
+  const mergedTop = Math.max(cropResult.cropBox.top, edgeDenseCrop.cropBox.top);
+  const mergedRight = Math.min(cropResult.cropBox.right, edgeDenseCrop.cropBox.right);
+  const mergedBottom = Math.min(cropResult.cropBox.bottom, edgeDenseCrop.cropBox.bottom);
+  if (mergedRight <= mergedLeft || mergedBottom <= mergedTop) {
+    return cropResult;
+  }
+  return {
+    ...cropResult,
+    cropBox: {
+      left: mergedLeft,
+      top: mergedTop,
+      right: mergedRight,
+      bottom: mergedBottom,
+      width: mergedRight - mergedLeft + 1,
+      height: mergedBottom - mergedTop + 1
+    },
+    method: 'rectified-outer-frame-inner-crop+edge-dense-trim',
+    denseEdgeBands: edgeDenseCrop.denseEdgeBands || null
   };
 }
 
@@ -8897,6 +16826,8 @@ async function fallbackPreprocessPaperImage(inputPath, options = {}) {
     guideRemovedOutputPath = null,
     neutralGuideRemovedOutputPath = null,
     gridBackgroundMaskOutputPath = null,
+    outerFrameRectifiedOutputPath = null,
+    outerFrameRectifiedMetaPath = null,
     gridAnnotatedOutputPath = null,
     ignoreRedGrid = true,
     cropToPaper = true
@@ -9034,6 +16965,8 @@ async function runPerspectivePreprocess(inputPath, options = {}) {
     guideRemovedOutputPath = null,
     neutralGuideRemovedOutputPath = null,
     gridBackgroundMaskOutputPath = null,
+    outerFrameRectifiedOutputPath = null,
+    outerFrameRectifiedMetaPath = null,
     gridAnnotatedOutputPath = null,
     debugPath = null,
     cropToPaper = true,
@@ -9102,6 +17035,8 @@ async function runPerspectivePreprocess(inputPath, options = {}) {
       roughPaperCorners: meta.roughPaperCorners || null,
       refinedPaperCorners: meta.refinedPaperCorners || null,
       cornerSelection: meta.cornerSelection || null,
+      headerSuppressionDiagnostics: meta.headerSuppressionDiagnostics || null,
+      segmentationReadyDiagnostics: meta.segmentationReadyDiagnostics || null,
       warp: meta.warp || null,
       outputInfo: meta.outputInfo
     };
@@ -9213,6 +17148,8 @@ async function extractGridArtifactsFromWarpedImages(options = {}) {
     guideRemovedOutputPath = null,
     neutralGuideRemovedOutputPath = null,
     gridBackgroundMaskOutputPath = null,
+    outerFrameRectifiedOutputPath = null,
+    outerFrameRectifiedMetaPath = null,
     gridAnnotatedOutputPath = null,
     gridRectifiedOutputPath = null,
     gridRectifiedMetaPath = null,
@@ -9231,6 +17168,7 @@ async function extractGridArtifactsFromWarpedImages(options = {}) {
   const resolvedOutputPath = outputPath || preprocessInputPath || null;
   const resolvedSegmentationPath = segmentationOutputPath || null;
   const resolvedGuideRemovedPath = guideRemovedOutputPath || null;
+  const decoupleOuterFrameFromInnerFrame = processNo === '03';
 
   if (!preprocessInputPath || !warpedImagePath || !resolvedOutputPath || !gridRows || !gridCols) {
     throw new Error('extractGridArtifactsFromWarpedImages 缺少上一步产物，禁止使用默认回退逻辑');
@@ -9250,13 +17188,54 @@ async function extractGridArtifactsFromWarpedImages(options = {}) {
   }
 
   const orientedGrid = orientSquareGridCounts(gridRows, gridCols, await sharp(warpedImagePath).metadata(), 'square');
-  const effectiveGridRows = orientedGrid.gridRows;
-  const effectiveGridCols = orientedGrid.gridCols;
+  let effectiveGridRows = orientedGrid.gridRows;
+  let effectiveGridCols = orientedGrid.gridCols;
 
   let outerFrameCleanup = {
     applied: false,
     reason: disableOuterFrameCleanup ? 'disabled' : 'not-attempted'
   };
+  let outerFrameExtraction = {
+    applied: false,
+    reason: outerFrameRectifiedOutputPath ? 'not-attempted' : 'no-output-path'
+  };
+  if (processNo === '03' && outerFrameRectifiedOutputPath) {
+    try {
+      await fs.promises.mkdir(path.dirname(outerFrameRectifiedOutputPath), { recursive: true });
+      outerFrameExtraction = await removeObviousOuterFrameLines(preprocessInputPath, outerFrameRectifiedOutputPath) || outerFrameExtraction;
+      if (outerFrameExtraction?.applied && outerFrameRectifiedMetaPath) {
+        await fs.promises.mkdir(path.dirname(outerFrameRectifiedMetaPath), { recursive: true });
+        await fs.promises.writeFile(
+          outerFrameRectifiedMetaPath,
+          `${JSON.stringify(outerFrameExtraction, null, 2)}\n`,
+          'utf8'
+        );
+      } else {
+        if (!outerFrameExtraction?.applied) {
+          await fs.promises.rm(outerFrameRectifiedOutputPath, { force: true });
+        }
+        if (outerFrameRectifiedMetaPath) {
+          await fs.promises.rm(outerFrameRectifiedMetaPath, { force: true });
+        }
+      }
+    } catch (outerFrameExtractionError) {
+      outerFrameExtraction = {
+        applied: false,
+        reason: 'outer-frame-extraction-error',
+        error: outerFrameExtractionError.message
+      };
+      await fs.promises.rm(outerFrameRectifiedOutputPath, { force: true }).catch(() => {});
+      if (outerFrameRectifiedMetaPath) {
+        await fs.promises.rm(outerFrameRectifiedMetaPath, { force: true }).catch(() => {});
+      }
+    }
+  }
+  let lockedOuterFrameExtraction = (
+    decoupleOuterFrameFromInnerFrame
+    && outerFrameExtraction?.applied
+  )
+    ? cloneSerializable(outerFrameExtraction)
+    : null;
   if (processNo === '03' && resolvedOutputPath && !disableOuterFrameCleanup) {
     try {
       outerFrameCleanup = await removeObviousOuterFrameLines(preprocessInputPath, resolvedOutputPath);
@@ -9354,7 +17333,7 @@ async function extractGridArtifactsFromWarpedImages(options = {}) {
           gridRectification.guides || null,
           effectiveGridRows,
           effectiveGridCols
-        ) || gridBoundaryNormalizePlugin.execute({
+        ) || normalizeGridBoundaryGuides({
           gridRectification,
           gridRows: effectiveGridRows,
           gridCols: effectiveGridCols
@@ -9370,7 +17349,8 @@ async function extractGridArtifactsFromWarpedImages(options = {}) {
           corners: normalizedCorners,
           cornerAnchors: buildGridCornerAnchors(normalizedCorners, normalizedGuides),
           rawGuides: gridRectification.guides || null,
-          guides: normalizedGuides
+          guides: normalizedGuides,
+          globalPattern: normalizedGuides?.globalPattern || null
         };
       guideRemovalBoundaryDetection = {
         ...gridBoundaryDetection,
@@ -9412,6 +17392,69 @@ async function extractGridArtifactsFromWarpedImages(options = {}) {
     };
   }
 
+  let topLeadingRowRepair = null;
+  if (processNo === '03' && gridBoundaryDetection && !gridBoundaryDetection.error) {
+    const leadingRowRepairGuides = buildNormalizedGuideSet(
+      gridBoundaryDetection.guides || gridBoundaryDetection.rawGuides || null,
+      effectiveGridRows,
+      effectiveGridCols
+    ) || gridBoundaryDetection.guides || null;
+    const repairedTopRows = repairLeadingUniformRowLoss(
+      leadingRowRepairGuides,
+      gridBoundaryDetection.cornerAnchors?.corners || gridBoundaryDetection.corners || null,
+      await sharp(boundaryInputPath).metadata(),
+      effectiveGridRows,
+      effectiveGridCols
+    );
+    topLeadingRowRepair = repairedTopRows?.applied
+      ? {
+          applied: true,
+          ...repairedTopRows.diagnostics
+        }
+      : {
+          applied: false,
+          reason: repairedTopRows?.reason || 'not-applicable',
+          ...(repairedTopRows?.diagnostics || {})
+        };
+    if (repairedTopRows?.applied && repairedTopRows.guides && repairedTopRows.corners) {
+      effectiveGridRows = Math.max(effectiveGridRows, Number(repairedTopRows.repairedGridRows) || effectiveGridRows);
+      const repairedGlobalPattern = detectGlobalGridPattern(
+        repairedTopRows.guides,
+        gridBoundaryDetection.rawGuides || null,
+        effectiveGridRows,
+        effectiveGridCols
+      );
+      gridBoundaryDetection = {
+        ...gridBoundaryDetection,
+        corners: repairedTopRows.corners,
+        cornerAnchors: buildGridCornerAnchors(repairedTopRows.corners, {
+          ...repairedTopRows.guides,
+          globalPattern: repairedGlobalPattern
+        }),
+        guides: {
+          ...repairedTopRows.guides,
+          globalPattern: repairedGlobalPattern
+        },
+        globalPattern: repairedGlobalPattern
+      };
+      if (guideRemovalBoundaryDetection && !guideRemovalBoundaryDetection.error) {
+        guideRemovalBoundaryDetection = {
+          ...guideRemovalBoundaryDetection,
+          corners: repairedTopRows.corners,
+          cornerAnchors: buildGridCornerAnchors(repairedTopRows.corners, {
+            ...repairedTopRows.guides,
+            globalPattern: repairedGlobalPattern
+          }),
+          guides: {
+            ...repairedTopRows.guides,
+            globalPattern: repairedGlobalPattern
+          },
+          globalPattern: repairedGlobalPattern
+        };
+      }
+    }
+  }
+
   let topGuideConfirmation = null;
   if (gridBoundaryDetection && !gridBoundaryDetection.error) {
     try {
@@ -9436,20 +17479,85 @@ async function extractGridArtifactsFromWarpedImages(options = {}) {
   }
 
   let cornerRefinement = null;
+  let inferredOuterFrame = null;
+  let lockedInferredOuterFrame = null;
+  const lockCurrentInferredOuterFrame = (lockedAt) => {
+    if (!decoupleOuterFrameFromInnerFrame || lockedInferredOuterFrame || !inferredOuterFrame?.applied) {
+      return;
+    }
+    lockedInferredOuterFrame = buildLockedInferredOuterFrameSnapshot(inferredOuterFrame, lockedAt);
+  };
+  if (
+    processNo === '03'
+    && gridBoundaryDetection
+    && !gridBoundaryDetection.error
+    && !outerFrameExtraction?.applied
+    && gridRectification
+    && !gridRectification.error
+  ) {
+    inferredOuterFrame = inferOuterFrameFromGridRectification(
+      gridRectification,
+      gridBoundaryDetection
+    );
+    lockCurrentInferredOuterFrame('grid-rectification-inference');
+  }
+  let detectedPatternProfile = null;
+  if (gridBoundaryDetection && !gridBoundaryDetection.error && gridBoundaryDetection.guides) {
+    try {
+      const resolvedOuterPattern = (
+        outerFrameExtraction?.component?.separation?.metrics?.outerFramePattern
+        || (inferredOuterFrame?.applied ? inferredOuterFrame?.diagnostics?.outerFramePattern : null)
+        || null
+      );
+      detectedPatternProfile = await analyzeGridPatternProfileByCells(
+        boundaryInputPath,
+        gridBoundaryDetection.guides,
+        {
+          outerFramePattern: resolvedOuterPattern,
+          colorImagePath: warpedImagePath
+        }
+      );
+      if (detectedPatternProfile) {
+        const profiledGuides = mergePatternProfileIntoGuides(
+          gridBoundaryDetection.guides,
+          detectedPatternProfile,
+          resolvedOuterPattern
+        );
+        gridBoundaryDetection = {
+          ...gridBoundaryDetection,
+          guides: profiledGuides,
+          globalPattern: profiledGuides?.globalPattern || gridBoundaryDetection.globalPattern || null
+        };
+      }
+    } catch (patternProfileError) {
+      detectedPatternProfile = {
+        error: patternProfileError.message
+      };
+    }
+  }
   if (gridBoundaryDetection && !gridBoundaryDetection.error) {
     try {
       const refinedCorners = await refineGridCornerAnchorsByImage(
         boundaryInputPath,
         gridBoundaryDetection.cornerAnchors?.corners || gridBoundaryDetection.corners || null,
         gridBoundaryDetection.guides || null,
-        { rawGuides: gridBoundaryDetection.rawGuides || null }
+        {
+          rawGuides: gridBoundaryDetection.rawGuides || null,
+      topGuideConfirmation: topGuideConfirmation || null,
+      topLeadingRowRepair: topLeadingRowRepair || null,
+      outerFrameDetected: Boolean(outerFrameExtraction?.applied || inferredOuterFrame?.applied)
+        }
       );
       const currentQuad = normalizeCornerQuad(
         gridBoundaryDetection.cornerAnchors?.corners || gridBoundaryDetection.corners || null
       );
+      let finalAppliedQuad = null;
       let refinedQuad = normalizeCornerQuad(refinedCorners?.corners || null);
       let topCornerRecovery = null;
       let standaloneTopExpansionGuard = null;
+      let topIntervalPreview = null;
+      let topRecoveryIntervalTrusted = false;
+      let topRecoveryNeedsIntervalGate = false;
       if (refinedQuad) {
         topCornerRecovery = await recoverTopCornersByInnerGuide(
           boundaryInputPath,
@@ -9460,16 +17568,43 @@ async function extractGridArtifactsFromWarpedImages(options = {}) {
           topCornerRecovery?.diagnostics?.corners?.leftTop?.applied
           || topCornerRecovery?.diagnostics?.corners?.rightTop?.applied
         );
+        topIntervalPreview = (
+          refinedCorners?.diagnostics?.edgeLineFit?.innerGridSupportPreview?.local?.sides?.top?.intervalEvidence
+          || refinedCorners?.diagnostics?.edgeLineFit?.innerGridSupportPreview?.dominant?.sides?.top?.intervalEvidence
+          || null
+        );
+        topRecoveryIntervalTrusted = Boolean(
+          (Number(topIntervalPreview?.pairConsistencyScore) || 0) >= 0.78
+          || (Number(topIntervalPreview?.supportScore) || 0) >= 0.68
+        );
+        topRecoveryNeedsIntervalGate = Boolean(
+          (
+            refinedCorners?.diagnostics?.cornerTraversalMode === 'left-bottom-first'
+            && refinedCorners?.diagnostics?.leftBottomPriorityByInterval
+          )
+          && (
+            refinedCorners?.diagnostics?.patternProfile?.family === 'inner-dashed-box-grid'
+            || refinedCorners?.diagnostics?.globalPattern?.patternProfile?.family === 'inner-dashed-box-grid'
+          )
+        );
         const dominantTopWeak = (
           (refinedCorners?.diagnostics?.rawGuideHints?.reasons?.top === 'infer-missing-top-line')
           || ((refinedCorners?.diagnostics?.edgeLineFit?.quality?.top?.confidence ?? 1) < 0.8)
           || ((refinedCorners?.diagnostics?.edgeLineFit?.quality?.top?.continuity?.longestRunRatio ?? 1) < 0.5)
           || ((refinedCorners?.diagnostics?.edgeLineFit?.quality?.top?.continuity?.endpointCoverage ?? 1) < 0.75)
         );
+        const keepCurrentTopStrongerThanRecovered = (
+          refinedCorners?.diagnostics?.cornerTraversalMode === 'left-bottom-first'
+          && (refinedCorners?.diagnostics?.edgeLineFit?.quality?.top?.confidence ?? 0) >= 0.84
+          && (refinedCorners?.diagnostics?.edgeLineFit?.quality?.top?.continuity?.longestRunRatio ?? 0) >= 0.82
+          && (refinedCorners?.diagnostics?.edgeLineFit?.quality?.top?.continuity?.endpointCoverage ?? 0) >= 0.9
+        );
         if (
           topCornerRecovery?.corners
+          && (!topRecoveryNeedsIntervalGate || topRecoveryIntervalTrusted || !topRecoveryApplied)
+          && !keepCurrentTopStrongerThanRecovered
           && (
-            refinedCorners?.diagnostics?.outputSource !== 'dominant-edge-lines'
+            !['dominant-edge-lines', 'dominant-edge-stabilized'].includes(refinedCorners?.diagnostics?.outputSource)
             || (topRecoveryApplied && dominantTopWeak)
           )
         ) {
@@ -9506,23 +17641,47 @@ async function extractGridArtifactsFromWarpedImages(options = {}) {
         );
         if (mergedGuides) {
           const outputQuad = normalizeCornerQuad(refinedQuad);
+          const resolvedOuterPattern = (
+            outerFrameExtraction?.component?.separation?.metrics?.outerFramePattern
+            || (inferredOuterFrame?.applied ? inferredOuterFrame?.diagnostics?.outerFramePattern : null)
+            || null
+          );
+          const mergedGuidesWithProfile = detectedPatternProfile
+            ? mergePatternProfileIntoGuides(mergedGuides, detectedPatternProfile, resolvedOuterPattern)
+            : mergedGuides;
           gridBoundaryDetection = {
             ...gridBoundaryDetection,
             corners: outputQuad,
-            cornerAnchors: buildGridCornerAnchors(outputQuad, mergedGuides),
+            cornerAnchors: buildGridCornerAnchors(outputQuad, mergedGuidesWithProfile),
             guides: {
-              ...mergedGuides,
+              ...mergedGuidesWithProfile,
+              globalPattern: detectGlobalGridPattern(
+                mergedGuidesWithProfile,
+                gridBoundaryDetection.rawGuides || null,
+                effectiveGridRows,
+                effectiveGridCols
+              ),
               xSource: `${gridBoundaryDetection.guides?.xSource || '外边界固定 + 内部均分'} + 四角点校准`,
               ySource: `${gridBoundaryDetection.guides?.ySource || '外边界固定 + 内部均分'} + 四角点独立校准`
-            }
-          };
-          appliedToOutput = true;
+            },
+              globalPattern: detectGlobalGridPattern(
+                mergedGuidesWithProfile,
+                gridBoundaryDetection.rawGuides || null,
+                effectiveGridRows,
+                effectiveGridCols
+              )
+            };
+            finalAppliedQuad = outputQuad;
+            appliedToOutput = true;
+          }
         }
-      }
       cornerRefinement = refinedCorners?.diagnostics
         ? {
             ...refinedCorners.diagnostics,
             topCornerRecovery: topCornerRecovery?.diagnostics || null,
+            topRecoveryNeedsIntervalGate,
+            topRecoveryIntervalTrusted,
+            topRecoveryIntervalEvidence: topIntervalPreview,
             standaloneTopExpansionGuard,
             appliedToOutput,
             note: appliedToOutput
@@ -9530,6 +17689,362 @@ async function extractGridArtifactsFromWarpedImages(options = {}) {
               : '当前仅输出四角点独立检测诊断，未覆盖主流程 corners'
           }
         : null;
+      cornerRefinement = attachFinalAppliedCornerDiagnostics(cornerRefinement, finalAppliedQuad);
+
+      if (processNo === '03' && !outerFrameExtraction?.applied && !inferredOuterFrame?.applied) {
+        inferredOuterFrame = await inferOuterFrameFromPattern(
+          boundaryInputPath,
+          gridBoundaryDetection,
+          cornerRefinement || null,
+          {
+            processNo
+          }
+        );
+        if (inferredOuterFrame?.applied) {
+          lockCurrentInferredOuterFrame('pattern-driven-inference');
+          let rerunCornerRefinement = null;
+          try {
+            let rerunFinalAppliedQuad = null;
+            const rerunRefinedCorners = await refineGridCornerAnchorsByImage(
+              boundaryInputPath,
+              gridBoundaryDetection.cornerAnchors?.corners || gridBoundaryDetection.corners || null,
+              gridBoundaryDetection.guides || null,
+              {
+                rawGuides: gridBoundaryDetection.rawGuides || null,
+                topGuideConfirmation: topGuideConfirmation || null,
+                outerFrameDetected: true
+              }
+            );
+            const rerunQuad = normalizeCornerQuad(rerunRefinedCorners?.corners || null);
+            if (rerunQuad) {
+              const rerunGuides = buildGuidesFromCornerQuad(
+                rerunQuad,
+                gridBoundaryDetection.guides || null,
+                effectiveGridRows,
+                effectiveGridCols
+              );
+              if (rerunGuides) {
+                const rerunGuidesWithProfile = detectedPatternProfile
+                  ? mergePatternProfileIntoGuides(
+                    rerunGuides,
+                    detectedPatternProfile,
+                    (inferredOuterFrame?.applied ? inferredOuterFrame?.diagnostics?.outerFramePattern : null) || null
+                  )
+                  : rerunGuides;
+                gridBoundaryDetection = {
+                  ...gridBoundaryDetection,
+                  corners: rerunQuad,
+                  cornerAnchors: buildGridCornerAnchors(rerunQuad, rerunGuidesWithProfile),
+                  guides: {
+                    ...rerunGuidesWithProfile,
+                    globalPattern: detectGlobalGridPattern(
+                      rerunGuidesWithProfile,
+                      gridBoundaryDetection.rawGuides || null,
+                      effectiveGridRows,
+                      effectiveGridCols
+                    ),
+                    xSource: `${gridBoundaryDetection.guides?.xSource || '外边界固定 + 内部均分'} + 外框语义重跑`,
+                    ySource: `${gridBoundaryDetection.guides?.ySource || '外边界固定 + 内部均分'} + 外框语义重跑`
+                  },
+                  globalPattern: detectGlobalGridPattern(
+                    rerunGuidesWithProfile,
+                    gridBoundaryDetection.rawGuides || null,
+                    effectiveGridRows,
+                    effectiveGridCols
+                  )
+                };
+                rerunFinalAppliedQuad = rerunQuad;
+              }
+            }
+            rerunCornerRefinement = rerunRefinedCorners?.diagnostics
+              ? {
+                  ...rerunRefinedCorners.diagnostics,
+                  rerunTriggeredByOuterFrameInference: true,
+                  inferredOuterFrame: inferredOuterFrame.diagnostics || null,
+                  appliedToOutput: Boolean(rerunQuad),
+                  note: '检测到外框后，已按“内框必定存在、外框为附加语义”重新校准内框四角点'
+                }
+              : null;
+            rerunCornerRefinement = attachFinalAppliedCornerDiagnostics(rerunCornerRefinement, rerunFinalAppliedQuad);
+          } catch (rerunError) {
+            rerunCornerRefinement = {
+              method: 'per-corner local line search',
+              rerunTriggeredByOuterFrameInference: true,
+              appliedToOutput: false,
+              error: rerunError.message
+            };
+          }
+          if (rerunCornerRefinement) {
+            cornerRefinement = rerunCornerRefinement;
+          }
+          if (
+            !decoupleOuterFrameFromInnerFrame
+            && shouldRecalibrateInferredOuterFrameAfterCornerRerun(inferredOuterFrame)
+          ) {
+            try {
+              const recalibratedOuterFrame = await inferOuterFrameFromPattern(
+                boundaryInputPath,
+                gridBoundaryDetection,
+                cornerRefinement || null,
+                {
+                  processNo,
+                  triggeredByCornerRerun: true
+                }
+              );
+              if (recalibratedOuterFrame?.applied) {
+                inferredOuterFrame = {
+                  ...recalibratedOuterFrame,
+                  diagnostics: {
+                    ...(recalibratedOuterFrame.diagnostics || {}),
+                    recalibratedAfterInnerCornerRerun: true,
+                    previousInference: inferredOuterFrame?.diagnostics || null
+                  }
+                };
+              }
+            } catch (recalibrateOuterFrameError) {
+              inferredOuterFrame = {
+                ...inferredOuterFrame,
+                diagnostics: {
+                  ...(inferredOuterFrame?.diagnostics || {}),
+                  recalibratedAfterInnerCornerRerun: false,
+                  recalibrateOuterFrameError: recalibrateOuterFrameError.message
+                }
+              };
+            }
+          }
+        }
+      }
+
+      if (
+        processNo === '03'
+        && inferredOuterFrame?.applied
+        && gridBoundaryDetection?.guides
+      ) {
+        const guideAlignedSource = gridBoundaryDetection.guides || gridBoundaryDetection.rawGuides || null;
+        const guideAlignedTopCornerCandidate = normalizeCornerQuad(
+          ['leftTop', 'rightTop', 'rightBottom', 'leftBottom'].map((key) => {
+            const point = cornerRefinement?.corners?.[key]?.refined || null;
+            return Array.isArray(point) && Number.isFinite(Number(point[0])) && Number.isFinite(Number(point[1]))
+              ? [Number(point[0]), Number(point[1])]
+              : null;
+          })
+        );
+        const refinedOuterFrameForInnerRecovery = refineInferredOuterFrameTopByLocalCorners(
+          inferredOuterFrame,
+          guideAlignedTopCornerCandidate,
+          {
+            cellHeight: refinedCorners?.diagnostics?.cellHeight || 0
+          }
+        ) || inferredOuterFrame;
+        const innerRecoveryOuterFrame = decoupleOuterFrameFromInnerFrame
+          ? refinedOuterFrameForInnerRecovery
+          : (inferredOuterFrame = refinedOuterFrameForInnerRecovery);
+        const consistentTopCandidate = resolveConsistentTopCornerCandidate(
+          cornerRefinement?.corners || null,
+          {
+            cellHeight: refinedCorners?.diagnostics?.cellHeight || 0
+          }
+        );
+        const rectifiedCropRecoveredInner = await recoverInnerQuadFromRectifiedOuterCrop(
+          boundaryInputPath,
+          innerRecoveryOuterFrame,
+          {
+            cellWidth: refinedCorners?.diagnostics?.cellWidth || 0,
+            cellHeight: refinedCorners?.diagnostics?.cellHeight || 0
+          }
+        );
+        let guideAlignedInnerQuad = null;
+        if (
+          consistentTopCandidate
+          && guideAlignedSource
+          && innerRecoveryOuterFrame?.refinedOuterFrame
+        ) {
+          const outerLeft = Number(innerRecoveryOuterFrame.refinedOuterFrame.left);
+          const outerRight = Number(innerRecoveryOuterFrame.refinedOuterFrame.right);
+          const outerTop = Number(innerRecoveryOuterFrame.refinedOuterFrame.top);
+          const outerBottom = Number(innerRecoveryOuterFrame.refinedOuterFrame.bottom);
+          const left = clamp(
+            Math.round(Number(guideAlignedSource.left)),
+            Math.round(outerLeft),
+            Math.round(outerRight - 1)
+          );
+          const right = clamp(
+            Math.round(Number(guideAlignedSource.right)),
+            left + 1,
+            Math.round(outerRight)
+          );
+          const bottom = clamp(
+            Math.round(Number(guideAlignedSource.bottom)),
+            Math.round(outerTop + 1),
+            Math.round(outerBottom)
+          );
+          const topInset = Math.max(2, Math.round((refinedCorners?.diagnostics?.cellHeight || 0) * 0.02));
+          const top = clamp(
+            Math.round(consistentTopCandidate.top),
+            Math.round(outerTop + topInset),
+            bottom - 1
+          );
+          guideAlignedInnerQuad = normalizeCornerQuad([
+            [left, top],
+            [right, top],
+            [right, bottom],
+            [left, bottom]
+          ]);
+          if (String(innerRecoveryOuterFrame?.diagnostics?.method || '') === 'broad-raw-guide-window-outer-frame') {
+            guideAlignedInnerQuad = tightenInnerQuadWithinOuterFrame(
+              guideAlignedInnerQuad,
+              innerRecoveryOuterFrame.refinedOuterFrame || null,
+              {
+                cellWidth: refinedCorners?.diagnostics?.cellWidth || 0,
+                cellHeight: refinedCorners?.diagnostics?.cellHeight || 0,
+                insetRatioX: 0.04,
+                insetRatioY: 0.05
+              }
+            );
+          }
+        }
+        if (rectifiedCropRecoveredInner?.quad) {
+          const currentBounds = getQuadBounds(guideAlignedInnerQuad);
+          const recoveredBounds = rectifiedCropRecoveredInner.bounds || getQuadBounds(rectifiedCropRecoveredInner.quad);
+          const recoveredMoreInset = (
+            !currentBounds
+            || (
+              recoveredBounds
+              && recoveredBounds.left >= currentBounds.left + 12
+              && recoveredBounds.right <= currentBounds.right - 12
+              && recoveredBounds.top >= currentBounds.top + 12
+              && recoveredBounds.bottom <= currentBounds.bottom - 12
+            )
+          );
+          if (recoveredMoreInset) {
+            guideAlignedInnerQuad = rectifiedCropRecoveredInner.quad;
+          }
+        }
+        if (!guideAlignedInnerQuad) {
+          guideAlignedInnerQuad = buildInnerQuadConstrainedByOuterFrame(
+            gridBoundaryDetection.guides || null,
+            gridBoundaryDetection.rawGuides || null,
+            innerRecoveryOuterFrame?.refinedOuterFrame || null,
+            {
+              topCornerCandidate: guideAlignedTopCornerCandidate
+            }
+          );
+        }
+        if (guideAlignedInnerQuad) {
+          const guideAlignedGuides = buildGuidesFromCornerQuad(
+            guideAlignedInnerQuad,
+            gridBoundaryDetection.rawGuides || gridBoundaryDetection.guides || null,
+            effectiveGridRows,
+            effectiveGridCols
+          );
+          if (guideAlignedGuides) {
+            const guideAlignedGuidesWithProfile = detectedPatternProfile
+              ? mergePatternProfileIntoGuides(
+                guideAlignedGuides,
+                detectedPatternProfile,
+                (inferredOuterFrame?.applied ? inferredOuterFrame?.diagnostics?.outerFramePattern : null) || null
+              )
+              : guideAlignedGuides;
+            gridBoundaryDetection = {
+              ...gridBoundaryDetection,
+              corners: guideAlignedInnerQuad,
+              cornerAnchors: buildGridCornerAnchors(guideAlignedInnerQuad, guideAlignedGuidesWithProfile),
+              guides: {
+                ...guideAlignedGuidesWithProfile,
+                globalPattern: detectGlobalGridPattern(
+                  guideAlignedGuidesWithProfile,
+                  gridBoundaryDetection.rawGuides || null,
+                  effectiveGridRows,
+                  effectiveGridCols
+                ),
+                xSource: `${gridBoundaryDetection.guides?.xSource || '外边界固定 + 内部均分'} + 外框语义内框回收`,
+                ySource: `${gridBoundaryDetection.guides?.ySource || '外边界固定 + 内部均分'} + 外框语义内框回收`
+              },
+              globalPattern: detectGlobalGridPattern(
+                guideAlignedGuidesWithProfile,
+                gridBoundaryDetection.rawGuides || null,
+                effectiveGridRows,
+                effectiveGridCols
+              )
+            };
+            cornerRefinement = attachFinalAppliedCornerDiagnostics(cornerRefinement, guideAlignedInnerQuad, {
+              outputSource: 'guide-aligned-inner-frame-after-outer-frame-detection',
+              inferredOuterFrame: innerRecoveryOuterFrame?.diagnostics || null,
+              rectifiedOuterCropInnerRecovery: rectifiedCropRecoveredInner?.diagnostics || null,
+              note: '检测到外框后，内框四角点回收到 guides 语义，避免上下角点落在不同层级的框线上'
+            });
+          }
+        }
+      }
+
+      if (
+        processNo === '03'
+        && !decoupleOuterFrameFromInnerFrame
+        && shouldRecalibrateInferredOuterFrameAfterCornerRerun(inferredOuterFrame)
+        && gridBoundaryDetection?.guides
+      ) {
+        try {
+          const finalRecalibratedOuterFrame = await inferOuterFrameFromPattern(
+            boundaryInputPath,
+            gridBoundaryDetection,
+            cornerRefinement || null,
+            {
+              processNo,
+              triggeredByFinalInnerFrame: true
+            }
+          );
+          if (finalRecalibratedOuterFrame?.applied) {
+            inferredOuterFrame = {
+              ...finalRecalibratedOuterFrame,
+              diagnostics: {
+                ...(finalRecalibratedOuterFrame.diagnostics || {}),
+                recalibratedAfterFinalInnerFrame: true,
+                previousInference: inferredOuterFrame?.diagnostics || null
+              }
+            };
+          }
+        } catch (finalRecalibrateOuterFrameError) {
+          inferredOuterFrame = {
+            ...inferredOuterFrame,
+            diagnostics: {
+              ...(inferredOuterFrame?.diagnostics || {}),
+              recalibratedAfterFinalInnerFrame: false,
+              finalRecalibrateOuterFrameError: finalRecalibrateOuterFrameError.message
+            }
+          };
+        }
+      }
+
+      if (
+        processNo === '03'
+        && !decoupleOuterFrameFromInnerFrame
+        && shouldRecalibrateInferredOuterFrameAfterCornerRerun(inferredOuterFrame)
+        && gridBoundaryDetection?.guides
+      ) {
+        inferredOuterFrame = await tightenPatternInferredOuterFrameByFinalGuides(
+          boundaryInputPath,
+          inferredOuterFrame,
+          gridBoundaryDetection.guides
+        ) || inferredOuterFrame;
+        inferredOuterFrame = await refinePatternInferredOuterFrameQuadByBoundaryFits(
+          boundaryInputPath,
+          inferredOuterFrame,
+          gridBoundaryDetection.guides
+        ) || inferredOuterFrame;
+      }
+
+      if (
+        processNo === '03'
+        && !decoupleOuterFrameFromInnerFrame
+        && inferredOuterFrame?.applied
+        && preprocessInputPath
+        && shouldRefineInferredOuterFrameToInnerEdge(inferredOuterFrame)
+      ) {
+        inferredOuterFrame = await refineOuterFrameEstimateToInnerEdge(
+          preprocessInputPath,
+          inferredOuterFrame
+        ) || inferredOuterFrame;
+      }
     } catch (cornerRefineError) {
       cornerRefinement = {
         method: 'per-corner local line search',
@@ -9538,6 +18053,9 @@ async function extractGridArtifactsFromWarpedImages(options = {}) {
       };
     }
   }
+
+  const outwardOuterFrameExtraction = lockedOuterFrameExtraction || outerFrameExtraction;
+  const outwardInferredOuterFrame = lockedInferredOuterFrame || inferredOuterFrame;
 
   if (
     processNo === '03'
@@ -9569,13 +18087,126 @@ async function extractGridArtifactsFromWarpedImages(options = {}) {
   }
 
   if (gridBoundaryDetection && !gridBoundaryDetection.error && gridAnnotatedOutputPath) {
-    const annotationDetail = cornerRefinement
+    const patternDiagnostics = cornerRefinement?.rawGuideHints?.diagnostics || null;
+    const globalPatternDiagnostics = (
+      cornerRefinement?.globalPattern
+      || patternDiagnostics?.globalPattern
+      || gridBoundaryDetection?.guides?.globalPattern
+      || gridBoundaryDetection?.globalPattern
+      || null
+    );
+    const patternDetail = patternDiagnostics
+      ? [
+          `pattern=${describeGridPatternMode(patternDiagnostics.overallPattern)}`,
+          `x=${describeGridPatternMode(patternDiagnostics.xPattern)}`,
+          `y=${describeGridPatternMode(patternDiagnostics.yPattern)}`
+        ].join(' ; ')
+      : null;
+    const globalPatternDetail = globalPatternDiagnostics
+      ? [
+          `global-grid=${describeGridPatternMode(globalPatternDiagnostics.mode)}`,
+          globalPatternDiagnostics.specificMode ? `subdivision=${globalPatternDiagnostics.specificMode}` : null,
+          globalPatternDiagnostics.patternProfile?.family ? `profile=${globalPatternDiagnostics.patternProfile.family}` : null,
+          globalPatternDiagnostics.patternProfile?.profileMode ? `profile-mode=${globalPatternDiagnostics.patternProfile.profileMode}` : null,
+          globalPatternDiagnostics.x?.dominantDividerType ? `divider-x=${globalPatternDiagnostics.x.dominantDividerType}` : null,
+          globalPatternDiagnostics.y?.dominantDividerType ? `divider-y=${globalPatternDiagnostics.y.dominantDividerType}` : null
+        ].filter(Boolean).join(' ; ')
+      : null;
+    const normalizedGuideDiagnostics = gridBoundaryDetection?.guides || null;
+    const repairDetail = normalizedGuideDiagnostics
+      ? [
+          normalizedGuideDiagnostics.xSource ? `x-source=${normalizedGuideDiagnostics.xSource}` : null,
+          normalizedGuideDiagnostics.ySource ? `y-source=${normalizedGuideDiagnostics.ySource}` : null,
+          normalizedGuideDiagnostics.xPatternDiagnostics?.forcedUniformRepair ? 'x-repair=uniform-dominant' : null,
+          normalizedGuideDiagnostics.yPatternDiagnostics?.forcedUniformRepair ? 'y-repair=uniform-dominant' : null
+        ].filter(Boolean).join(' ; ')
+      : null;
+    const topGuideLine = Number(topGuideConfirmation?.refinedTop);
+    const topGuideAnchorLeft = topGuideConfirmation?.anchors?.leftTop || null;
+    const topGuideAnchorRight = topGuideConfirmation?.anchors?.rightTop || null;
+    const leftBottomAnchor = gridBoundaryDetection?.cornerAnchors?.namedCorners?.leftBottom || null;
+    const cornerSearchWindows = cornerRefinement?.corners || null;
+    const localConsistencyQuad = normalizeCornerQuad(['leftTop', 'rightTop', 'rightBottom', 'leftBottom'].map((key) => {
+      const point = cornerRefinement?.corners?.[key]?.refined || null;
+      return Array.isArray(point) && Number.isFinite(Number(point[0])) && Number.isFinite(Number(point[1]))
+        ? [Number(point[0]), Number(point[1])]
+        : null;
+    }));
+    const localCornerMarkers = ['leftTop', 'rightTop', 'rightBottom', 'leftBottom'].map((key) => {
+      const refinedPoint = cornerRefinement?.corners?.[key]?.refined || null;
+      if (!Array.isArray(refinedPoint) || !Number.isFinite(Number(refinedPoint[0])) || !Number.isFinite(Number(refinedPoint[1]))) {
+        return null;
+      }
+      const shortLabel = ({
+        leftTop: 'LT',
+        rightTop: 'RT',
+        rightBottom: 'RB',
+        leftBottom: 'LB'
+      })[key] || key;
+      return {
+        x: Number(refinedPoint[0]),
+        y: Number(refinedPoint[1]),
+        stroke: '#1d4ed8',
+        fill: '#93c5fd',
+        label: `${shortLabel}-local (${Math.round(Number(refinedPoint[0]))},${Math.round(Number(refinedPoint[1]))})`
+      };
+    }).filter(Boolean);
+    const finalCornerMarkers = ['leftTop', 'rightTop', 'rightBottom', 'leftBottom'].map((key) => {
+      const finalPoint = cornerRefinement?.finalAppliedCorners?.[key] || null;
+      if (!Array.isArray(finalPoint) || !Number.isFinite(Number(finalPoint[0])) || !Number.isFinite(Number(finalPoint[1]))) {
+        return null;
+      }
+      const shortLabel = ({
+        leftTop: 'LT',
+        rightTop: 'RT',
+        rightBottom: 'RB',
+        leftBottom: 'LB'
+      })[key] || key;
+      return {
+        x: Number(finalPoint[0]),
+        y: Number(finalPoint[1]),
+        stroke: '#047857',
+        fill: '#6ee7b7',
+        label: `${shortLabel}-final (${Math.round(Number(finalPoint[0]))},${Math.round(Number(finalPoint[1]))})`
+      };
+    }).filter(Boolean);
+    const sourceDetail = cornerRefinement
       ? [
           `source=${cornerRefinement.outputSource || 'unknown'}`,
+          `role=${cornerRefinement.outputFrameRole || 'inner-frame'}`,
+          cornerRefinement.dominantBoundaryRole ? `darkest=${cornerRefinement.dominantBoundaryRole}` : null,
+          (outwardInferredOuterFrame?.applied && outwardInferredOuterFrame?.diagnostics?.outerFramePattern)
+            ? `outer-pattern=${outwardInferredOuterFrame.diagnostics.outerFramePattern}`
+            : null,
+          cornerRefinement.cornerTraversalMode ? `corner-order=${cornerRefinement.cornerTraversalMode}` : null,
           cornerRefinement.edgeLineFit?.preferredBandY?.rejectProjectedTopAnchors ? 'guard=reject-top-projected-anchor' : null,
           cornerRefinement.edgeLineFit?.preferredBandY?.rejectProjectedBottomAnchors ? 'guard=reject-bottom-projected-anchor' : null
         ].filter(Boolean).join(' ; ')
-      : '';
+      : null;
+    const annotationDetail = [patternDetail, globalPatternDetail, repairDetail, sourceDetail].filter(Boolean).join('\n');
+    const outerQuad = normalizeCornerQuad(
+      outwardOuterFrameExtraction?.component?.outerQuad
+      || outwardInferredOuterFrame?.outerQuad
+      || (
+        outwardOuterFrameExtraction?.component?.refinedOuterFrame
+          ? [
+              [outwardOuterFrameExtraction.component.refinedOuterFrame.left, outwardOuterFrameExtraction.component.refinedOuterFrame.top],
+              [outwardOuterFrameExtraction.component.refinedOuterFrame.right, outwardOuterFrameExtraction.component.refinedOuterFrame.top],
+              [outwardOuterFrameExtraction.component.refinedOuterFrame.right, outwardOuterFrameExtraction.component.refinedOuterFrame.bottom],
+              [outwardOuterFrameExtraction.component.refinedOuterFrame.left, outwardOuterFrameExtraction.component.refinedOuterFrame.bottom]
+            ]
+          : (
+            outwardInferredOuterFrame?.refinedOuterFrame
+              ? [
+                  [outwardInferredOuterFrame.refinedOuterFrame.left, outwardInferredOuterFrame.refinedOuterFrame.top],
+                  [outwardInferredOuterFrame.refinedOuterFrame.right, outwardInferredOuterFrame.refinedOuterFrame.top],
+                  [outwardInferredOuterFrame.refinedOuterFrame.right, outwardInferredOuterFrame.refinedOuterFrame.bottom],
+                  [outwardInferredOuterFrame.refinedOuterFrame.left, outwardInferredOuterFrame.refinedOuterFrame.bottom]
+                ]
+              : null
+          )
+      )
+    );
     await renderDetectedGridAnnotation(
       boundaryInputPath,
       gridAnnotatedOutputPath,
@@ -9589,6 +18220,84 @@ async function extractGridArtifactsFromWarpedImages(options = {}) {
         gridCols: Math.max(1, (gridBoundaryDetection.guides?.xPeaks || []).length - 1),
         showGuides: false,
         annotationDetail,
+        extraHorizontalLines: Number.isFinite(topGuideLine)
+          ? [{
+              y: topGuideLine,
+              stroke: '#0f766e',
+              dasharray: '12 8',
+              label: `top-confirm=${Math.round(topGuideLine)}`
+            }]
+          : [],
+        extraPointMarkers: [
+          (topGuideAnchorLeft && Number.isFinite(Number(topGuideAnchorLeft.x)) && Number.isFinite(Number(topGuideAnchorLeft.y)))
+            ? {
+                x: Number(topGuideAnchorLeft.x),
+                y: Number(topGuideAnchorLeft.y),
+                stroke: '#0f766e',
+                fill: '#6ee7b7',
+                label: `LT-anchor (${Math.round(Number(topGuideAnchorLeft.x))},${Math.round(Number(topGuideAnchorLeft.y))})`
+              }
+            : null,
+          (topGuideAnchorRight && Number.isFinite(Number(topGuideAnchorRight.x)) && Number.isFinite(Number(topGuideAnchorRight.y)))
+            ? {
+                x: Number(topGuideAnchorRight.x),
+                y: Number(topGuideAnchorRight.y),
+                stroke: '#0f766e',
+                fill: '#6ee7b7',
+                label: `RT-anchor (${Math.round(Number(topGuideAnchorRight.x))},${Math.round(Number(topGuideAnchorRight.y))})`
+              }
+            : null,
+          (Array.isArray(leftBottomAnchor) && Number.isFinite(Number(leftBottomAnchor[0])) && Number.isFinite(Number(leftBottomAnchor[1])))
+            ? {
+                x: Number(leftBottomAnchor[0]),
+                y: Number(leftBottomAnchor[1]),
+                stroke: '#7c2d12',
+                fill: '#fdba74',
+                label: `LB-start (${Math.round(Number(leftBottomAnchor[0]))},${Math.round(Number(leftBottomAnchor[1]))})`
+              }
+            : null
+        ].concat(localCornerMarkers, finalCornerMarkers).filter(Boolean),
+        extraRectangles: [
+          ['leftTop', 'LT-window', '#0369a1'],
+          ['rightTop', 'RT-window', '#0369a1'],
+          ['leftBottom', 'LB-window', '#7c2d12']
+        ].map(([key, label, stroke]) => {
+          const window = cornerSearchWindows?.[key]?.searchWindow || null;
+          if (!window || !Array.isArray(window.x) || !Array.isArray(window.y)) {
+            return null;
+          }
+          return {
+            box: {
+              left: Number(window.x[0]),
+              right: Number(window.x[1]),
+              top: Number(window.y[0]),
+              bottom: Number(window.y[1])
+            },
+            stroke,
+            dasharray: '10 8',
+            label
+          };
+        }).filter(Boolean),
+        extraQuads: [
+          localConsistencyQuad
+            ? {
+                corners: localConsistencyQuad,
+                stroke: '#0f766e',
+                pointFill: '#34d399',
+                pointPrefix: 'L',
+                dasharray: '10 8'
+              }
+            : null,
+          outerQuad
+            ? {
+                corners: outerQuad,
+                stroke: '#7c3aed',
+                pointFill: '#8b5cf6',
+                pointPrefix: 'O',
+                dasharray: '14 10'
+              }
+            : null
+        ].filter(Boolean),
         selectiveCornerReplacement: cornerRefinement?.edgeLineFit?.quadSelection?.selectiveCornerReplacement || null
       }
     );
@@ -9623,6 +18332,54 @@ async function extractGridArtifactsFromWarpedImages(options = {}) {
       };
     }
   }
+
+  let inferredOuterFrameRectified = null;
+  if (
+    processNo === '03'
+    && outerFrameRectifiedOutputPath
+    && outwardInferredOuterFrame?.applied
+    && !(outerFrameExtraction && !outerFrameExtraction.error && outerFrameExtraction.applied)
+  ) {
+    try {
+      inferredOuterFrameRectified = await exportInferredOuterFrameRectified(
+        preprocessInputPath,
+        outerFrameRectifiedOutputPath,
+        outwardInferredOuterFrame,
+        gridBoundaryDetection,
+        outerFrameRectifiedMetaPath
+      );
+    } catch (inferredOuterFrameExportError) {
+      inferredOuterFrameRectified = {
+        applied: false,
+        reason: 'inferred-outer-frame-export-error',
+        error: inferredOuterFrameExportError.message
+      };
+      await fs.promises.rm(outerFrameRectifiedOutputPath, { force: true }).catch(() => {});
+      if (outerFrameRectifiedMetaPath) {
+        await fs.promises.rm(outerFrameRectifiedMetaPath, { force: true }).catch(() => {});
+      }
+    }
+  }
+  if (
+    processNo === '03'
+    && !(outerFrameExtraction && !outerFrameExtraction.error && outerFrameExtraction.applied)
+    && outwardInferredOuterFrame?.applied
+  ) {
+    const promotedOuterFrameExtraction = confirmInferredOuterFrameAsRealExtraction(
+      outwardInferredOuterFrame,
+      inferredOuterFrameRectified,
+      gridBoundaryDetection
+    );
+    if (promotedOuterFrameExtraction?.applied) {
+      outerFrameExtraction = promotedOuterFrameExtraction;
+      if (decoupleOuterFrameFromInnerFrame) {
+        lockedOuterFrameExtraction = cloneSerializable(promotedOuterFrameExtraction);
+      }
+    }
+  }
+
+  const returnedOuterFrameExtraction = lockedOuterFrameExtraction || outerFrameExtraction;
+  const returnedInferredOuterFrame = outwardInferredOuterFrame;
 
   let realBoundaryRefinement = null;
   if (
@@ -9678,6 +18435,18 @@ async function extractGridArtifactsFromWarpedImages(options = {}) {
     guideRemovedOutputPath: resolvedGuideRemovedPath,
     neutralGuideRemovedOutputPath: neutralGuideRemovedOutputPath || null,
     gridBackgroundMaskOutputPath: gridBackgroundMaskOutputPath || null,
+    outerFrameRectifiedOutputPath: (
+      (returnedOuterFrameExtraction && !returnedOuterFrameExtraction.error && returnedOuterFrameExtraction.applied)
+      || inferredOuterFrameRectified?.applied
+    )
+      ? outerFrameRectifiedOutputPath
+      : null,
+    outerFrameRectifiedMetaPath: (
+      (returnedOuterFrameExtraction && !returnedOuterFrameExtraction.error && returnedOuterFrameExtraction.applied)
+      || inferredOuterFrameRectified?.applied
+    )
+      ? outerFrameRectifiedMetaPath
+      : null,
     gridRectifiedOutputPath: correctedGridRectified && !correctedGridRectified.error ? gridRectifiedOutputPath : null,
     gridRectification,
     correctedGridRectified,
@@ -9686,9 +18455,13 @@ async function extractGridArtifactsFromWarpedImages(options = {}) {
       : null,
     guideRemovalBoundaryDetection,
     gridBoundaryDetection,
+    outerFrameExtraction: returnedOuterFrameExtraction,
+    inferredOuterFrame: returnedInferredOuterFrame,
+    inferredOuterFrameRectified,
     outerFrameCleanup,
     guideConstraintRepair,
     topGuideConfirmation,
+    topLeadingRowRepair,
     cornerRefinement,
     realBoundaryRefinement,
     cleanupCoverageProtection,
@@ -9714,6 +18487,15 @@ async function preprocessPaperImage(inputPath, options = {}) {
       await fs.promises.mkdir(path.dirname(options.neutralGuideRemovedOutputPath), { recursive: true });
       await fs.promises.copyFile(result.warpedOutputPath, options.neutralGuideRemovedOutputPath);
       result.neutralGuideRemovedOutputPath = options.neutralGuideRemovedOutputPath;
+    }
+    let fallbackReadableRefinement = null;
+    if (result.method === 'fallback_no_quad' && options.enableFallbackReadableRefinement === true) {
+      fallbackReadableRefinement = await applyFallbackReadablePreprocess({
+        outputPath: options.outputPath || outputPath,
+        segmentationOutputPath: options.segmentationOutputPath || result.segmentationOutputPath || outputPath,
+        guideSourcePath: result.guideRemovedOutputPath || result.warpedOutputPath || null,
+        blurSigma: options.blurSigma || 18
+      });
     }
     const {
       gridRectifiedOutputPath = null,
@@ -9749,6 +18531,7 @@ async function preprocessPaperImage(inputPath, options = {}) {
     return {
       ...result,
       ...gridArtifacts,
+      fallbackReadableRefinement,
       a4Constraint
     };
   } catch (error) {
@@ -9761,5 +18544,10 @@ module.exports = {
   detectPaperBounds,
   detectPaperRegion,
   extractGridArtifactsFromWarpedImages,
-  evaluateDominantEdgeQuadGuard
+  evaluateDominantEdgeQuadGuard,
+  evaluateRelaxedOuterFrameEvidence,
+  __internals: {
+    estimateNeutralPaperColor,
+    buildReadablePreprocess
+  }
 };

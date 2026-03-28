@@ -7,6 +7,11 @@ const a4ConstraintDetectPlugin = require('../01_0A4规格约束检测插件/inde
 const paperCornerDetectPlugin = require('../02_1纸张角点检测插件/index');
 const perspectiveRectifyPlugin = require('../02_2透视矫正插件/index');
 const guideRemovePlugin = require('../02_3去底纹插件/index');
+const { DEFAULT_GRID_ROWS, DEFAULT_GRID_COLS } = require('../utils/grid_spec');
+const {
+  resolveSingleImageInput,
+  buildStageImageHandoffContract
+} = require('../utils/stage_image_contract');
 let sharp;
 
 try {
@@ -19,6 +24,59 @@ class A4RectifyPlugin {
   constructor() {
     this.name = '02_a4_rectify';
     this.version = '1.0.0';
+  }
+
+  async backfillSegmentationReadyDiagnostics(outputMetaPath, step02_3_2MetaPath) {
+    if (!outputMetaPath || !step02_3_2MetaPath || !fs.existsSync(outputMetaPath) || !fs.existsSync(step02_3_2MetaPath)) {
+      return;
+    }
+    try {
+      const [summaryRaw, stepRaw] = await Promise.all([
+        fs.promises.readFile(outputMetaPath, 'utf8'),
+        fs.promises.readFile(step02_3_2MetaPath, 'utf8')
+      ]);
+      const summary = JSON.parse(summaryRaw);
+      if (summary?.segmentationReadyDiagnostics) {
+        return;
+      }
+      const stepMeta = JSON.parse(stepRaw);
+      if (!stepMeta?.segmentationReadyDiagnostics) {
+        return;
+      }
+      summary.segmentationReadyDiagnostics = stepMeta.segmentationReadyDiagnostics;
+      await fs.promises.writeFile(outputMetaPath, `${JSON.stringify(summary, null, 2)}\n`, 'utf8');
+    } catch (error) {
+      // Keep the main 02 flow non-blocking even if diagnostics backfill fails.
+    }
+  }
+
+  async backfillStageHandoffContract(outputMetaPath, contract = {}) {
+    if (!outputMetaPath || !fs.existsSync(outputMetaPath)) {
+      return;
+    }
+    try {
+      const summaryRaw = await fs.promises.readFile(outputMetaPath, 'utf8');
+      const summary = JSON.parse(summaryRaw);
+      const stageOutputImagePath = contract.stageOutputImagePath || summary.outputPath || null;
+      const nextStageInputPath = contract.nextStageInputPath || stageOutputImagePath || null;
+      const updatedSummary = {
+        ...summary,
+        processNo: contract.processNo || summary.processNo || '02',
+        processName: contract.processName || summary.processName || '02_A4纸张矫正',
+        stageInputPath: contract.stageInputPath || summary.stageInputPath || null,
+        stageOutputImagePath,
+        nextStageInputPath,
+        handoffContract: buildStageImageHandoffContract({
+          stageName: '02阶段',
+          stageInputPath: contract.stageInputPath || summary.stageInputPath || null,
+          stageOutputImagePath,
+          nextStageInputPath
+        })
+      };
+      await fs.promises.writeFile(outputMetaPath, `${JSON.stringify(updatedSummary, null, 2)}\n`, 'utf8');
+    } catch (error) {
+      // Keep the main 02 flow non-blocking even if handoff contract backfill fails.
+    }
   }
 
   buildCornerDebugSvg(width, height, cornerPayload) {
@@ -73,15 +131,26 @@ class A4RectifyPlugin {
   }
 
   async execute(params) {
-    const { imagePath, outputDir, gridRows = 11, gridCols = 7, gridType = 'square', preprocessOptions = {} } = params || {};
-    if (!imagePath) {
-      throw new Error('imagePath参数是必需的');
-    }
+    const {
+      stageInputPath = null,
+      imagePath = null,
+      outputDir,
+      gridRows = DEFAULT_GRID_ROWS,
+      gridCols = DEFAULT_GRID_COLS,
+      gridType = 'square',
+      preprocessOptions = {}
+    } = params || {};
     if (!outputDir) {
       throw new Error('outputDir参数是必需的');
     }
+    const resolvedStageInputPath = resolveSingleImageInput({
+      stageName: '02阶段',
+      primaryInputPath: stageInputPath,
+      imagePath
+    });
 
-    const baseName = path.basename(imagePath, path.extname(imagePath));
+    const baseName = path.basename(resolvedStageInputPath, path.extname(resolvedStageInputPath));
+    void baseName;
     await fs.promises.mkdir(outputDir, { recursive: true });
     const step02_0Dir = path.join(outputDir, '02_0_A4规格约束检测');
     const step02_1Dir = path.join(outputDir, '02_1_纸张角点检测');
@@ -109,9 +178,9 @@ class A4RectifyPlugin {
     const guideRemoveMetaPath = path.join(step02_3Dir, '02_3_去底纹.json');
     const guideRemoveStep01MetaPath = path.join(step02_3_1Dir, '02_3_1_去底纹.json');
     const guideRemoveStep02MetaPath = path.join(step02_3_2Dir, '02_3_2_矫正预处理.json');
-    const inputMeta = await sharp(imagePath).metadata();
+    const inputMeta = await sharp(resolvedStageInputPath).metadata();
     const step02_0 = await a4ConstraintDetectPlugin.execute({
-      imagePath,
+      imagePath: resolvedStageInputPath,
       preprocessResult: {
         paperBounds: {
           left: 0,
@@ -126,7 +195,7 @@ class A4RectifyPlugin {
     });
     const effectiveImagePath = step02_0?.edgeCleanup?.applied && fs.existsSync(a4CleanedInputPath)
       ? a4CleanedInputPath
-      : imagePath;
+      : resolvedStageInputPath;
 
     const initialResult = await preprocessPlugin.execute({
       imagePath: effectiveImagePath,
@@ -179,7 +248,7 @@ class A4RectifyPlugin {
     });
 
     const step02_1 = await paperCornerDetectPlugin.execute({
-      imagePath: effectiveImagePath,
+      stageInputPath: resolvedStageInputPath,
       preprocessResult: result,
       outputMetaPath: cornerMetaPath
     });
@@ -189,17 +258,18 @@ class A4RectifyPlugin {
       step02_1
     );
     const step02_2 = await perspectiveRectifyPlugin.execute({
-      imagePath: effectiveImagePath,
+      stageInputPath: resolvedStageInputPath,
       preprocessResult: result,
       outputMetaPath: perspectiveMetaPath
     });
     const step02_3 = await guideRemovePlugin.execute({
-      imagePath: effectiveImagePath,
+      stageInputPath: resolvedStageInputPath,
       preprocessResult: result,
       outputMetaPath: guideRemoveMetaPath,
       step02_3_1MetaPath: guideRemoveStep01MetaPath,
       step02_3_2MetaPath: guideRemoveStep02MetaPath
     });
+    await this.backfillSegmentationReadyDiagnostics(outputMetaPath, guideRemoveStep02MetaPath);
 
     const stabilizedBorderTargets = [
       warpedOutputPath,
@@ -211,16 +281,35 @@ class A4RectifyPlugin {
         await applySolidPaperBorder(targetPath, step02_0?.edgeCleanup || null);
       }
     }
+    await this.backfillStageHandoffContract(outputMetaPath, {
+      processNo: '02',
+      processName: '02_A4纸张矫正',
+      stageInputPath: resolvedStageInputPath,
+      stageOutputImagePath: outputPath,
+      nextStageInputPath: outputPath
+    });
 
     return {
       processNo: '02',
       processName: '02_A4纸张矫正',
-      imagePath,
+      imagePath: resolvedStageInputPath,
+      stageInputPath: resolvedStageInputPath,
+      stageOutputImagePath: outputPath,
+      nextStageInputPath: outputPath,
+      handoffContract: buildStageImageHandoffContract({
+        stageName: '02阶段',
+        stageInputPath: resolvedStageInputPath,
+        stageOutputImagePath: outputPath,
+        nextStageInputPath: outputPath
+      }),
       outputMetaPath,
       outputs: {
+        stageInputPath: resolvedStageInputPath,
         a4ConstraintImagePath,
         a4CleanedInputPath,
         outputPath,
+        stageOutputImagePath: outputPath,
+        nextStageInputPath: outputPath,
         warpedOutputPath,
         guideRemovedOutputPath: neutralGuideRemovedOutputPath,
         neutralGuideRemovedOutputPath,

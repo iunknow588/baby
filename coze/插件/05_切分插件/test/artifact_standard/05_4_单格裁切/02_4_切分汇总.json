@@ -1,0 +1,250 @@
+{
+  "processNo": "05",
+  "processName": "05_单格切分",
+  "sourceStep": "03_字帖外框与内框定位裁剪",
+  "stageInputPath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/fixtures/test_a4.png",
+  "gridRows": 7,
+  "gridCols": 10,
+  "totalCells": 70,
+  "gridBounds": {
+    "left": 164,
+    "top": 198,
+    "width": 912,
+    "height": 1358
+  },
+  "alignmentStats": {
+    "averageRowHeight": 185.57,
+    "averageColWidth": 86.1,
+    "rowHeights": [
+      186,
+      185,
+      186,
+      185,
+      186,
+      185,
+      186
+    ],
+    "colWidths": [
+      86,
+      86,
+      86,
+      86,
+      87,
+      86,
+      86,
+      86,
+      86,
+      86
+    ],
+    "rowHeightDeviation": [
+      0.43,
+      0.57,
+      0.43,
+      0.57,
+      0.43,
+      0.57,
+      0.43
+    ],
+    "colWidthDeviation": [
+      0.1,
+      0.1,
+      0.1,
+      0.1,
+      0.9,
+      0.1,
+      0.1,
+      0.1,
+      0.1,
+      0.1
+    ],
+    "maxRowHeightDeviation": 0.57,
+    "maxColWidthDeviation": 0.9
+  },
+  "patternProfile": null,
+  "debug": {
+    "threshold": 210,
+    "workingSize": {
+      "width": 912,
+      "height": 1358
+    },
+    "boundaryGuides": null,
+    "patternProfile": null,
+    "segmentationProfile": {
+      "family": null,
+      "profileMode": null,
+      "preferUniform": false,
+      "preferBoundaryGuides": false,
+      "preferPeakEnvelope": false
+    },
+    "debugLegend": {
+      "gridBounds": "#22c55e",
+      "verticalCandidates": "#f59e0b",
+      "selectedVerticalLines": "#2563eb",
+      "selectedHorizontalLines": "#dc2626",
+      "outerRectVerticalLines": "#059669",
+      "outerRectHorizontalLines": "#16a34a",
+      "profileVerticalLines": "#14b8a6",
+      "profileHorizontalLines": "#8b5cf6",
+      "horizontalLinesBeforeCorrection": "#fb7185"
+    },
+    "guideMaskUsed": false,
+    "verticalCandidates": [
+      180,
+      268,
+      356,
+      444,
+      532,
+      620,
+      708,
+      796,
+      884,
+      972,
+      1016,
+      1060
+    ],
+    "verticalLines": [
+      179,
+      265,
+      355,
+      443,
+      531,
+      620,
+      708,
+      796,
+      883,
+      974,
+      1060
+    ],
+    "outerRectVerticalLines": [
+      179,
+      267,
+      355,
+      443,
+      531,
+      620,
+      708,
+      796,
+      884,
+      972,
+      1060
+    ],
+    "selectedBoundaryMode": "外框均分",
+    "directBoundaryQuality": {
+      "blankCount": 0,
+      "averageDarkRatio": 0.1693,
+      "averageCenterOffset": 0.1714,
+      "score": 131.84
+    },
+    "outerRectBoundaryQuality": {
+      "blankCount": 0,
+      "averageDarkRatio": 0.1697,
+      "averageCenterOffset": 0.1493,
+      "score": 134.78
+    },
+    "horizontalLinesBeforeAnomalousCorrection": [
+      217,
+      313,
+      405,
+      500,
+      593,
+      688,
+      781,
+      876
+    ],
+    "horizontalLinesBeforeCorrection": [
+      220,
+      406,
+      594,
+      782,
+      971,
+      1159,
+      1347,
+      1533
+    ],
+    "horizontalLines": [
+      220,
+      406,
+      594,
+      782,
+      971,
+      1159,
+      1347,
+      1533
+    ],
+    "outerRectHorizontalLines": [
+      220,
+      408,
+      595,
+      783,
+      970,
+      1158,
+      1345,
+      1533
+    ],
+    "leftHorizontalLines": [
+      220,
+      406,
+      594,
+      782,
+      971,
+      1159,
+      1347,
+      1533
+    ],
+    "rightHorizontalLines": [
+      220,
+      406,
+      594,
+      782,
+      971,
+      1159,
+      1347,
+      1533
+    ],
+    "sideConsensusHorizontalLines": [
+      220,
+      408,
+      595,
+      783,
+      970,
+      1158,
+      1345,
+      1533
+    ],
+    "profileVerticalLines": [
+      179,
+      265,
+      355,
+      443,
+      531,
+      620,
+      708,
+      796,
+      883,
+      974,
+      1060
+    ],
+    "profileHorizontalLines": [
+      220,
+      406,
+      594,
+      782,
+      971,
+      1159,
+      1347,
+      1533
+    ],
+    "fallbackUsed": false
+  },
+  "cellsDir": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图",
+  "显示信息": {
+    "阶段编号": "05",
+    "阶段名称": "05_单格切分",
+    "来源步骤": "03_字帖外框与内框定位裁剪",
+    "阶段输入图": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/fixtures/test_a4.png",
+    "行数": 7,
+    "列数": 10,
+    "总格数": 70,
+    "单格输出目录": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图"
+  }
+}

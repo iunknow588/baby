@@ -1,0 +1,91 @@
+{
+  "processNo": "07_5",
+  "processName": "07_5_单格总评分",
+  "total": 70.29,
+  "scoreLevel": "pass",
+  "subScores": {
+    "stroke_quality": 79.49,
+    "structure_accuracy": 64.74,
+    "morphology_similarity": 62.97,
+    "cleanliness": null,
+    "layout": 36.82,
+    "size": 74.64,
+    "stability": 81.65,
+    "structure": 64.74,
+    "similarity": 62.97
+  },
+  "scoreBreakdown": {
+    "stroke_quality": {
+      "start": 73.51,
+      "stability": 81.65,
+      "ending": 100,
+      "width_uniformity": 36.52,
+      "fluency": 79.68
+    },
+    "structure_accuracy": {
+      "center": 36.82,
+      "proportion": 74.64,
+      "spacing": 42.19,
+      "crossing": 3.53,
+      "contour": 73.73,
+      "template_structure": 99.47
+    },
+    "similarity": {
+      "score": 62.97,
+      "iou": 0.77,
+      "hu_similarity": 0.38,
+      "hu_distance": 0.28,
+      "edge_direction_similarity": 0.65
+    },
+    "cleanliness": null,
+    "alias_semantics": {
+      "aliases": {
+        "layout": "structure_accuracy.center",
+        "size": "structure_accuracy.proportion",
+        "stability": "stroke_quality.stability",
+        "structure": "structure_accuracy",
+        "similarity": "morphology_similarity"
+      },
+      "note": null
+    }
+  },
+  "penalties": [
+    {
+      "code": "CENTER_RIGHT",
+      "message": "重心偏右",
+      "severity": 0.06
+    },
+    {
+      "code": "CENTER_UP",
+      "message": "重心偏上",
+      "severity": 0.14
+    },
+    {
+      "code": "LOW_BBOX_RATIO",
+      "message": "整体偏小",
+      "severity": 0.14
+    },
+    {
+      "code": "MARGIN_Y_UNBALANCED",
+      "message": "上下留白不均",
+      "severity": 0.6
+    },
+    {
+      "code": "STROKE_WIDTH_VARIANCE",
+      "message": "粗细不均",
+      "severity": 0.47
+    },
+    {
+      "code": "SIMILARITY_LOW",
+      "message": "字形偏差过大",
+      "severity": 0.37
+    },
+    {
+      "code": "CLEANLINESS_LOW",
+      "message": "卷面涂改或残墨较多",
+      "severity": 0.23
+    }
+  ],
+  "sourceStep": "07_3_单格结构评分 + 07_4_单格相似度评分",
+  "inputPath": null
+}

@@ -1,10 +1,33 @@
 const fs = require('fs');
 const path = require('path');
+const { execFileSync } = require('child_process');
 const pipelinePlugin = require('../../00_流水线插件/index');
+let sharp;
+
+try {
+  sharp = require('sharp');
+} catch (error) {
+  sharp = require('../../05_切分插件/node_modules/sharp');
+}
+
+if (sharp && typeof sharp.cache === 'function') {
+  sharp.cache({ memory: 96, items: 48, files: 0 });
+}
+if (sharp && typeof sharp.concurrency === 'function') {
+  sharp.concurrency(2);
+}
 
 const DEFAULT_INPUT_DIR = '/home/lc/luckee_dao/baby/coze/插件/test/obj';
 const SUPPORTED_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.bmp', '.webp']);
 const MAX_STEP = Number(process.env.PIPELINE_MAX_STEP || '7');
+const CHILD_MODE = process.env.REAL_PIPELINE_CHILD === '1';
+const CHILD_OUTPUT_DIR = process.env.REAL_PIPELINE_OUTPUT_DIR || '';
+const CASE_FILTER = new Set(
+  String(process.env.PIPELINE_CASES || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+);
 
 function buildChineseStageManifestView(stageManifest) {
   return {
@@ -19,7 +42,7 @@ function buildChineseStageManifestView(stageManifest) {
     阶段说明: {
       '01_稿纸提取': stageManifest.stages.a4Locate,
       '02_A4纸张矫正': stageManifest.stages.a4Rectify,
-      '03_总方格大矩形提取': stageManifest.stages.gridRectExtract,
+      '03_字帖外框与内框定位裁剪': stageManifest.stages.gridRectExtract,
       '04_方格数量计算标注': stageManifest.stages.gridCount,
       '05_单格切分': stageManifest.stages.segmentation,
       '06_单格背景文字提取': stageManifest.stages.cellTextExtract,
@@ -49,6 +72,78 @@ function pushStageHeader(lines, stageNo, stageName, order, input, outputDir, sta
   pushIfPresent(lines, '子步骤目录', stepDirs.filter(Boolean).join(' ; ') || '无');
 }
 
+function formatOuterFrameKindLabel(localization = null) {
+  const kind = String(localization?.outerFrameKind || '').trim();
+  if (!kind) {
+    return null;
+  }
+  if (kind === 'real') {
+    return '真实外框';
+  }
+  if (kind === 'inferred') {
+    return '推断外框';
+  }
+  if (kind === 'virtual') {
+    return '虚外框';
+  }
+  if (kind === 'none') {
+    return '未检测到外框';
+  }
+  return `未识别类型(${kind})`;
+}
+
+function formatOuterFrameSourceHint(localization = null) {
+  const source = String(localization?.source || '').trim();
+  if (!source) {
+    return null;
+  }
+  const hintMap = {
+    'pattern-outer-frame-inferred': '按方格 pattern 规则推断外框',
+    'broad-guide-window-outer-frame': '按页眉/页脚宽窗口证据推断外框',
+    'grid-rectification-outer-frame': '按网格几何关系推断外框',
+    'virtual-outer-frame-from-image-border': '未检测到可用外框，回退到图像边缘轻微内缩虚外框'
+  };
+  return hintMap[source] || null;
+}
+
+function appendOuterFrameSummary(lines, textRectMeta = null) {
+  const localization = textRectMeta?.outerCornerLocalization || null;
+  const modeRouting = localization?.modeRouting || textRectMeta?.modeRouting || null;
+  const downstreamHints = modeRouting?.downstreamHints || textRectMeta?.downstreamModeHints || null;
+  pushIfPresent(lines, '外框模式', localization?.outerFrameModeLabel || null);
+  pushIfPresent(lines, '外框模式编码', localization?.outerFrameMode || null);
+  pushIfPresent(lines, '外框类型', formatOuterFrameKindLabel(localization));
+  pushIfPresent(lines, '外框来源', localization?.source);
+  pushIfPresent(lines, '外框来源说明', formatOuterFrameSourceHint(localization));
+  pushIfPresent(lines, '处理策略', localization?.processingStrategy || null);
+  pushIfPresent(lines, '模式路由', modeRouting?.processingStrategy || null);
+  pushIfPresent(lines, '切分策略提示', downstreamHints?.splitGuidePolicy || null);
+  pushIfPresent(lines, '旋转策略提示', downstreamHints?.rotationPolicy || null);
+  pushIfPresent(lines, '外框矫正策略提示', downstreamHints?.outerRectificationPolicy || null);
+}
+
+function toYesNo(value) {
+  return value ? '是' : '否';
+}
+
+function appendSegmentationModePolicy(lines, report = null) {
+  const policy = report?.segmentationModePolicy || report?.segmentationSelection?.modePolicy || null;
+  if (!policy) {
+    return;
+  }
+  pushIfPresent(lines, '切分策略(内框阶段)', policy.strategyLabel || policy.strategyScope || null);
+  pushIfPresent(lines, '内框边界引导来源', policy.selectedBoundaryGuideSource || null);
+  pushIfPresent(
+    lines,
+    '内框边界优先级',
+    Array.isArray(policy.boundaryGuidePriority) ? policy.boundaryGuidePriority.join(' > ') : null
+  );
+  pushIfPresent(lines, '切分强制均分', toYesNo(Boolean(policy.finalForceUniformGrid)));
+  pushIfPresent(lines, '切分探测开关', toYesNo(Boolean(policy.modeProbeEnabled)));
+  pushIfPresent(lines, '切分探测已比对', toYesNo(Boolean(policy.modeProbeCompared)));
+  pushIfPresent(lines, '切分探测已切换', toYesNo(Boolean(policy.modeProbePromoted)));
+}
+
 function formatTimestamp(date = new Date()) {
   const pad = (value) => String(value).padStart(2, '0');
   return [
@@ -60,6 +155,32 @@ function formatTimestamp(date = new Date()) {
     pad(date.getMinutes()),
     pad(date.getSeconds())
   ].join('');
+}
+
+function buildGuideResidueDiagnostics(scoring) {
+  const candidates = (scoring?.results || [])
+    .filter((item) => item.status === 'scored' && item.total_score !== null && item.features?.blankDetection)
+    .filter((item) => {
+      const blankFeatures = item.features.blankDetection;
+      return (
+        blankFeatures.primaryAreaRatio <= 0.02 &&
+        blankFeatures.bboxRatio <= 0.08 &&
+        blankFeatures.centralInkRatio <= 0.18
+      );
+    })
+    .sort((a, b) => a.total_score - b.total_score);
+
+  return {
+    count: candidates.length,
+    items: candidates.slice(0, 10).map((item) => ({
+      cell_id: item.cell_id,
+      score: item.total_score,
+      blank_bbox_ratio: item.features.blankDetection.bboxRatio,
+      blank_primary_area_ratio: item.features.blankDetection.primaryAreaRatio,
+      blank_component_count: item.features.blankDetection.componentCount,
+      penalties: (item.penalties || []).map((penalty) => penalty.code)
+    }))
+  };
 }
 
 async function processCase(item, outputDir) {
@@ -110,6 +231,7 @@ async function processCase(item, outputDir) {
     textRectMeta,
     segmentationMeta,
     segmentationSelection: pipeline.segmentationSelection,
+    segmentationModePolicy: pipeline.segmentationModePolicy || pipeline.segmentationSelection?.modePolicy || null,
     scoring,
     annotatedImagePath: pipeline.outputs.scoring?.annotatedImagePath || null,
     summaryPath: pipeline.outputs.scoring?.summaryPath || null,
@@ -127,10 +249,13 @@ async function processCase(item, outputDir) {
     textRectStepDirs: pipeline.outputs.preprocess.textRectStepDirs || {},
     textRectAnnotatedPath: pipeline.outputs.preprocess.textRectAnnotatedPath,
     textRectWarpedPath: pipeline.outputs.preprocess.textRectWarpedPath,
-    textRectPreprocessedPath: pipeline.outputs.preprocess.textRectPreprocessedPath,
+    preprocessGridCornerAnnotatedPath: pipeline.outputs.preprocess.textRectDir
+      ? path.join(pipeline.outputs.preprocess.textRectDir, '03_1_外框四角定位', '03_1_外框四角定位图.png')
+      : null,
+    textRectPreprocessedPath: pipeline.outputs.preprocess.textRectPreprocessedPath || null,
     gridSegmentationInputPath: pipeline.outputs.preprocess.gridSegmentationInputPath,
-    textRectGuideRemovedPath: pipeline.outputs.preprocess.textRectGuideRemovedPath,
-    textRectMaskPath: pipeline.outputs.preprocess.textRectMaskPath,
+    textRectGuideRemovedPath: pipeline.outputs.preprocess.textRectGuideRemovedPath || pipeline.outputs.preprocess.guideRemovedImagePath || null,
+    textRectMaskPath: pipeline.outputs.preprocess.textRectMaskPath || null,
     preprocessPath: pipeline.outputs.preprocess.imagePath,
     preprocessWarpedPath: pipeline.outputs.preprocess.warpedImagePath,
     preprocessGuideRemovedPath: pipeline.outputs.preprocess.guideRemovedImagePath,
@@ -167,6 +292,7 @@ async function discoverCases(inputDir = DEFAULT_INPUT_DIR) {
     .filter((entry) => entry.isFile())
     .map((entry) => entry.name)
     .filter((name) => SUPPORTED_EXTENSIONS.has(path.extname(name).toLowerCase()))
+    .filter((name) => !CASE_FILTER.size || CASE_FILTER.has(path.basename(name, path.extname(name))))
     .sort((a, b) => a.localeCompare(b, 'zh-CN-u-kn-true'));
 
   return files.map((name) => ({
@@ -175,12 +301,48 @@ async function discoverCases(inputDir = DEFAULT_INPUT_DIR) {
   }));
 }
 
+function runCaseInIsolatedProcess(caseName, outputDir) {
+  const env = {
+    ...process.env,
+    PIPELINE_CASES: String(caseName),
+    REAL_PIPELINE_CHILD: '1',
+    REAL_PIPELINE_OUTPUT_DIR: outputDir
+  };
+  const rawOutput = execFileSync(process.execPath, [__filename], {
+    cwd: __dirname,
+    env,
+    encoding: 'utf8',
+    maxBuffer: 20 * 1024 * 1024
+  });
+  const lines = rawOutput.trimEnd().split('\n');
+  const jsonLine = [...lines].reverse().find((line) => line.startsWith('__RESULT_JSON__'));
+  if (!jsonLine) {
+    throw new Error(`子进程未返回结果: case=${caseName}`);
+  }
+  const passthrough = lines.filter((line) => !line.startsWith('__RESULT_JSON__')).join('\n');
+  if (passthrough) {
+    process.stdout.write(`${passthrough}\n`);
+  }
+  return JSON.parse(jsonLine.slice('__RESULT_JSON__'.length));
+}
+
 async function main() {
   const outputRootDir = '/home/lc/luckee_dao/baby/coze/插件/test/out';
   const inputDir = DEFAULT_INPUT_DIR;
   const cases = await discoverCases(inputDir);
   if (!cases.length) {
     throw new Error(`默认目录中没有可处理图片: ${inputDir}`);
+  }
+  if (CHILD_MODE) {
+    if (cases.length !== 1) {
+      throw new Error(`子进程模式只允许单样本执行，当前样本数=${cases.length}`);
+    }
+    if (!CHILD_OUTPUT_DIR) {
+      throw new Error('子进程模式缺少 REAL_PIPELINE_OUTPUT_DIR');
+    }
+    const childReport = await processCase(cases[0], CHILD_OUTPUT_DIR);
+    console.log(`__RESULT_JSON__${JSON.stringify(childReport)}`);
+    return;
   }
   const runTimestamp = formatTimestamp();
   const outputDir = path.join(outputRootDir, runTimestamp);
@@ -242,33 +404,33 @@ async function main() {
         subSteps: {
           step02_0: '02_0_A4规格约束检测 <- 01_2_稿纸裁切图',
           step02_1: '02_1_纸张角点检测 <- 01_2_稿纸裁切图',
-          step02_2: '02_2_1_透视矫正图 <- 02_1_1_纸张角点调试图',
-          step02_3: '02_3_去底纹 <- 02_2_1_透视矫正图',
-          step02_3_1: '02_3_1_1_检测去底纹图 <- 02_2_1_透视矫正图',
-          step02_3_2: '02_3_2_1_矫正预处理图 <- 02_3_1_1_检测去底纹图'
+          step02_2: '02_2_1_透视矫正图 <- 01_2_稿纸裁切图(按 02 阶段单图合同执行)',
+          step02_3: '02_3_去底纹 <- 01_2_稿纸裁切图(按 02 阶段单图合同执行)',
+          step02_3_1: '02_3_1_1_检测去底纹图 <- 01_2_稿纸裁切图(按 02 阶段单图合同执行)',
+          step02_3_2: '02_3_2_1_矫正预处理图 <- 01_2_稿纸裁切图(按 02 阶段单图合同执行)'
         }
       },
       gridRectExtract: {
-        displayName: '03 总方格大矩形提取',
-        dirPattern: path.join(outputDir, '<file_name>', '03_总方格大矩形提取'),
-        description: '先基于 02_3_2 做粗裁剪去外框，再做四角点定位、透视矫正，并输出定位标注图、计数参考图和切分输入图',
+        displayName: '03 字帖外框与内框定位裁剪',
+        dirPattern: path.join(outputDir, '<file_name>', '03_字帖外框与内框定位裁剪'),
+        description: '依次输出外框四角定位、外框裁剪与矫正、内框四角定位、字帖内框裁剪与矫正',
         input: '02_3_2_1_矫正预处理图',
         subSteps: {
-          step03_0: '03_0_方格背景与边界检测 <- 02_3_2_1_矫正预处理图',
-          step03_1: '03_1_总方格候选矩形 <- 03_0',
-          step03_2: '03_2_总方格矩形纠偏 <- 03_1_总方格候选矩形',
-          step03_3: '03_3_总方格裁切标注 <- 03_2_总方格矩形纠偏'
+          step03_1: '03_1_外框四角定位 <- 02_3_2_1_矫正预处理图',
+          step03_2: '03_2_外框裁剪与矫正 <- 03_1_外框四角定位',
+          step03_3: '03_3_内框四角定位 <- 03_2_外框裁剪与矫正',
+          step03_4: '03_4_字帖内框裁剪与矫正 <- 03_3_内框四角定位'
         }
       },
       gridCount: {
-        displayName: '04 总方格数量计算与标注',
+        displayName: '04 方格数量计算标注',
         dirPattern: path.join(outputDir, '<file_name>', '04_方格数量计算标注'),
-        description: '计算总方格矩形的行列数量与总格数，并输出数量标注图与05阶段唯一切分输入图',
-        input: '03_3_总方格计数参考图',
+        description: '计算字帖内框的行列数量与总格数，并输出数量标注图与05阶段唯一切分输入图',
+        input: '03_4_字帖内框裁剪与矫正图',
         subSteps: {
-          step04_1: '04_1_方格数量估计 <- 03_3_总方格计数参考图',
+          step04_1: '04_1_方格数量估计 <- 03_4_字帖内框裁剪与矫正图',
           step04_2: '04_2_方格数量标注 <- 04_1_方格数量估计',
-          step04_3: '04_3_单格切分输入 <- 03_3_总方格计数参考图'
+          step04_3: '04_3_单格切分输入 <- 03_4_字帖内框裁剪与矫正图'
         }
       },
       segmentation: {
@@ -328,7 +490,8 @@ async function main() {
   const reports = [];
 
   for (const item of cases) {
-    reports.push(await processCase(item, outputDir));
+    const baseName = path.basename(item.imagePath, path.extname(item.imagePath));
+    reports.push(runCaseInIsolatedProcess(baseName, outputDir));
   }
 
   const reportPath = path.join(outputDir, '07_REPORT.md');
@@ -383,16 +546,20 @@ async function main() {
         pushStageHeader(
           lines,
           '03',
-          '总方格大矩形提取',
-          '02_3_2_1_矫正预处理图 -> 03_0_1_粗裁剪去外框输入图 -> 03_0_2_四角点定位标注图 -> 03_0_6_单格切分输入图 -> 03_1_总方格候选矩形 -> 03_2_总方格矩形纠偏 -> 03_3_总方格裁切标注',
+          '字帖外框与内框定位裁剪',
+          '02_3_2_1_矫正预处理图 -> 03 阶段各子步骤(共享单一阶段输入图) -> 03_4_字帖内框裁剪与矫正图',
           '02_3_2_1_矫正预处理图',
           report.textRectDir,
           path.join(report.textRectDir, 'stage_info.json'),
           Object.values(report.textRectStepDirs || {})
         );
-        pushIfPresent(lines, '总方格定位标注图', report.textRectAnnotatedPath);
-        pushIfPresent(lines, '总方格计数参考图', report.textRectWarpedPath);
+        pushIfPresent(lines, '外框四角定位图', report.preprocessGridCornerAnnotatedPath);
+        pushIfPresent(lines, '外框裁剪与矫正图', report.preprocessGridBackgroundMaskPath);
+        pushIfPresent(lines, '内框四角定位图', report.textRectAnnotatedPath);
+        pushIfPresent(lines, '字帖内框裁剪与矫正图', report.textRectWarpedPath);
         pushIfPresent(lines, '阶段结果JSON', report.textRectMetaPath);
+        appendOuterFrameSummary(lines, report.textRectMeta);
+        pushIfPresent(lines, '内框四角定位输入图', report.textRectMeta?.innerCornerLocalization?.inputImagePath);
       }
       if (report.gridCountDir) {
         lines.push('');
@@ -400,8 +567,8 @@ async function main() {
           lines,
           '04',
           '方格数量计算标注',
-          '03_3_总方格计数参考图 -> 04_1_方格数量估计 -> 04_2_方格数量标注',
-          '03_3_总方格计数参考图',
+          '03_4_字帖内框裁剪与矫正图 -> 04_1_方格数量估计 -> 04_2_方格数量标注',
+          '03_4_字帖内框裁剪与矫正图',
           report.gridCountDir,
           path.join(report.gridCountDir, 'stage_info.json'),
           Object.values(report.gridCountStepDirs || {})
@@ -423,6 +590,7 @@ async function main() {
         );
         pushIfPresent(lines, '单格图目录', report.segmentationCellsDir);
         pushIfPresent(lines, '阶段结果JSON', report.segmentationSummaryPath);
+        appendSegmentationModePolicy(lines, report);
       }
       if (report.cellLayerDir) {
         lines.push('');
@@ -469,6 +637,7 @@ async function main() {
       .filter((item) => item.status === 'scored' && item.total_score !== null)
       .sort((a, b) => a.total_score - b.total_score)
       .slice(0, 10);
+    const guideResidueDiagnostics = buildGuideResidueDiagnostics(report.scoring);
 
     lines.push(`## ${report.baseName}`);
     lines.push('');
@@ -524,8 +693,8 @@ async function main() {
         pushStageHeader(
           lines,
           '03',
-          '总方格大矩形提取',
-          '02_3_2_1_矫正预处理图 -> 03_0_1_粗裁剪去外框输入图 -> 03_0_2_四角点定位标注图 -> 03_0_6_单格切分输入图 -> 03_1_总方格候选矩形 -> 03_2_总方格矩形纠偏 -> 03_3_总方格裁切标注',
+          '字帖外框与内框定位裁剪',
+          '02_3_2_1_矫正预处理图 -> 03 阶段各子步骤(共享单一阶段输入图) -> 03_4_字帖内框裁剪与矫正图',
           '02_3_2_1_矫正预处理图',
           report.textRectDir,
           path.join(report.textRectDir, 'stage_info.json'),
@@ -535,20 +704,23 @@ async function main() {
     lines.push(`- A4矫正后图: ${report.preprocessPath}`);
     lines.push(`- 透视矫正图: ${report.preprocessWarpedPath}`);
     lines.push(`- 去底纹图: ${report.preprocessGuideRemovedPath}`);
-    lines.push(`- 方格背景mask: ${report.preprocessGridBackgroundMaskPath}`);
-    lines.push(`- 总方格定位标注图: ${report.textRectAnnotatedPath}`);
-    lines.push(`- 大矩形JSON: ${report.textRectMetaPath}`);
-    lines.push(`- 总方格计数参考图: ${report.textRectWarpedPath}`);
+    pushIfPresent(lines, '外框四角定位图', report.preprocessGridCornerAnnotatedPath);
+    pushIfPresent(lines, '外框裁剪与矫正图', report.preprocessGridBackgroundMaskPath);
+    pushIfPresent(lines, '内框四角定位图', report.textRectAnnotatedPath);
+    pushIfPresent(lines, '阶段结果JSON', report.textRectMetaPath);
+    pushIfPresent(lines, '字帖内框裁剪与矫正图', report.textRectWarpedPath);
+    appendOuterFrameSummary(lines, report.textRectMeta);
+    pushIfPresent(lines, '内框四角定位输入图', report.textRectMeta.innerCornerLocalization?.inputImagePath);
     pushIfPresent(lines, '矩形白纸黑字图', report.textRectPreprocessedPath);
     lines.push(`- 单格切分输入图: ${report.gridSegmentationInputPath}`);
     pushIfPresent(lines, '矩形方格mask', report.textRectMaskPath);
     lines.push(`- A4角点调试图: ${report.preprocessDebugPath}`);
     lines.push(`- A4矫正元数据: ${report.preprocessMetaPath}`);
     if (report.preprocessGridRectifiedPath) {
-      lines.push(`- 03_0_6_单格切分输入图: ${report.preprocessGridRectifiedPath}`);
+      lines.push(`- 03_4_字帖内框裁剪与矫正图: ${report.preprocessGridRectifiedPath}`);
     }
     if (report.preprocessGridRectifiedMetaPath) {
-      lines.push(`- 03_0_6_单格切分输入信息: ${report.preprocessGridRectifiedMetaPath}`);
+      lines.push(`- 03_4_字帖内框裁剪与矫正信息: ${report.preprocessGridRectifiedMetaPath}`);
     }
     if (report.preprocessGridEstimateMetaPath) {
     lines.push(`- 方格规格预估JSON: ${report.preprocessGridEstimateMetaPath}`);
@@ -566,9 +738,9 @@ async function main() {
         pushStageHeader(
           lines,
           '04',
-          '总方格数量计算与标注',
-          '03_3_总方格计数参考图 -> 04_1_方格数量估计 -> 04_2_方格数量标注 -> 04_3_单格切分输入图',
-          '03_3_总方格计数参考图',
+          '方格数量计算标注',
+          '03_4_字帖内框裁剪与矫正图 -> 04_1_方格数量估计 -> 04_2_方格数量标注 -> 04_3_单格切分输入图',
+          '03_4_字帖内框裁剪与矫正图',
           report.gridCountDir,
           path.join(report.gridCountDir, 'stage_info.json'),
       Object.values(report.gridCountStepDirs || {})
@@ -593,9 +765,9 @@ async function main() {
       Object.values(report.segmentationStepDirs || {})
     );
     pushIfPresent(lines, '矩形去底纹图', report.textRectGuideRemovedPath);
-    lines.push(`- 矩形来源: ${report.textRectMeta.sourceMethod || 'unknown'}`);
-    lines.push(`- 是否自动纠偏: ${report.textRectMeta.adjusted ? '是' : '否'}`);
-    lines.push(`- 矩形范围: left=${report.textRectMeta.bounds.left}, top=${report.textRectMeta.bounds.top}, width=${report.textRectMeta.bounds.width}, height=${report.textRectMeta.bounds.height}`);
+    lines.push(`- 内框裁剪来源: ${report.textRectMeta.sourceMethod || report.textRectMeta.innerFrameRectification?.sourceMethod || 'unknown'}`);
+    lines.push(`- 是否自动纠偏: ${(report.textRectMeta.adjusted ?? report.textRectMeta.innerFrameRectification?.internalFlow?.adjusted?.adjusted) ? '是' : '否'}`);
+    lines.push(`- 内框范围: left=${report.textRectMeta.bounds.left}, top=${report.textRectMeta.bounds.top}, width=${report.textRectMeta.bounds.width}, height=${report.textRectMeta.bounds.height}`);
     if (report.textRectMeta.sourceImageSize) {
       lines.push(`- 来源图尺寸: ${report.textRectMeta.sourceImageSize.width} x ${report.textRectMeta.sourceImageSize.height}`);
     }
@@ -609,12 +781,18 @@ async function main() {
       lines.push(`- 裁剪比例: left=${report.textRectMeta.diagnostics.cropRatios.left}, right=${report.textRectMeta.diagnostics.cropRatios.right}, top=${report.textRectMeta.diagnostics.cropRatios.top}, bottom=${report.textRectMeta.diagnostics.cropRatios.bottom}`);
     }
     lines.push(`- 贴边告警: ${(report.textRectMeta.diagnostics?.warnings || []).join(', ') || '无'}`);
-    if (report.textRectMeta.adjustment) {
+    if (
+      report.textRectMeta.adjustment
+      && Number.isFinite(report.textRectMeta.adjustment.insetX)
+      && Number.isFinite(report.textRectMeta.adjustment.insetY)
+    ) {
       lines.push(`- 纠偏参数: insetX=${report.textRectMeta.adjustment.insetX}, insetY=${report.textRectMeta.adjustment.insetY}`);
+    }
+    if (report.textRectMeta.adjustment?.originalBounds) {
       lines.push(`- 原始矩形: left=${report.textRectMeta.adjustment.originalBounds.left}, top=${report.textRectMeta.adjustment.originalBounds.top}, width=${report.textRectMeta.adjustment.originalBounds.width}, height=${report.textRectMeta.adjustment.originalBounds.height}`);
     }
     if (report.textRectMeta.gridRectificationGuides) {
-      lines.push(`- 外框guides: left=${Math.round(report.textRectMeta.gridRectificationGuides.left)}, right=${Math.round(report.textRectMeta.gridRectificationGuides.right)}, top=${Math.round(report.textRectMeta.gridRectificationGuides.top)}, bottom=${Math.round(report.textRectMeta.gridRectificationGuides.bottom)}`);
+      lines.push(`- 内框引导: left=${Math.round(report.textRectMeta.gridRectificationGuides.left)}, right=${Math.round(report.textRectMeta.gridRectificationGuides.right)}, top=${Math.round(report.textRectMeta.gridRectificationGuides.top)}, bottom=${Math.round(report.textRectMeta.gridRectificationGuides.bottom)}`);
     }
     lines.push('');
     pushStageHeader(
@@ -665,7 +843,10 @@ async function main() {
     if (report.segmentationMeta.debug.directBoundaryQuality) {
       lines.push(`- 直接格线质量: score=${report.segmentationMeta.debug.directBoundaryQuality.score}, blanks=${report.segmentationMeta.debug.directBoundaryQuality.blankCount}, center=${report.segmentationMeta.debug.directBoundaryQuality.averageCenterOffset}`);
     }
-    if (report.segmentationMeta.debug.outerRectBoundaryQuality) {
+    if (
+      report.segmentationMeta.debug.outerRectBoundaryQuality
+      && Number.isFinite(report.segmentationMeta.debug.outerRectBoundaryQuality.score)
+    ) {
       lines.push(`- 外框均分质量: score=${report.segmentationMeta.debug.outerRectBoundaryQuality.score}, blanks=${report.segmentationMeta.debug.outerRectBoundaryQuality.blankCount}, center=${report.segmentationMeta.debug.outerRectBoundaryQuality.averageCenterOffset}`);
     }
     if ((report.segmentationMeta.debug.outerRectVerticalLines || []).length) {
@@ -684,6 +865,7 @@ async function main() {
       }
     }
     if (report.segmentationSelection) {
+      appendSegmentationModePolicy(lines, report);
       lines.push(`- 选中切分源: ${report.segmentationSelection.selectedSource}`);
       lines.push(`- 选中质量分: ${report.segmentationSelection.quality.score}`);
       for (const candidate of report.segmentationSelection.candidates || []) {
@@ -700,6 +882,13 @@ async function main() {
     lines.push(`- 平均分: ${report.scoring.summary.avg_score}`);
     lines.push(`- 空白格列表: ${report.scoring.summary.blank_cell_ids.join(', ') || '无'}`);
     lines.push(`- 低分格列表: ${report.scoring.summary.low_score_cell_ids.join(', ') || '无'}`);
+    lines.push(`- 疑似底纹误判格数量: ${guideResidueDiagnostics.count}`);
+    if (guideResidueDiagnostics.items.length) {
+      lines.push('- 疑似底纹误判样本:');
+      for (const item of guideResidueDiagnostics.items) {
+        lines.push(`  - ${item.cell_id}: ${item.score} 分, blank_bbox=${item.blank_bbox_ratio}, blank_primary=${item.blank_primary_area_ratio}, blank_components=${item.blank_component_count}, penalties=${item.penalties.join('/') || '无'}`);
+      }
+    }
     lines.push('- 低分样本:');
     for (const item of lowScoreItems) {
       const penalties = item.penalties.map((penalty) => penalty.message).join(' / ') || '无';

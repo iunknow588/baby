@@ -394,6 +394,39 @@ def estimate_global_background_gray(gray):
     return float(np.median(candidate_values))
 
 
+def analyze_gray_histogram_distribution(gray):
+    quantile_points = {
+        "p01": 1.0,
+        "p05": 5.0,
+        "p10": 10.0,
+        "p25": 25.0,
+        "p50": 50.0,
+        "p75": 75.0,
+        "p90": 90.0,
+        "p95": 95.0,
+        "p99": 99.0
+    }
+    stats = {
+        key: float(np.percentile(gray, percentile))
+        for key, percentile in quantile_points.items()
+    }
+    paper_peak_mask = gray >= stats["p90"]
+    paper_peak_values = gray[paper_peak_mask]
+    paper_peak = float(np.median(paper_peak_values)) if paper_peak_values.size else stats["p95"]
+    stats.update({
+        "mean": float(np.mean(gray)),
+        "std": float(np.std(gray)),
+        "paperPeak": paper_peak,
+        "paperPeakWidth": float(max(0.0, stats["p95"] - stats["p75"])),
+        "darkTailSpan": float(max(0.0, stats["p25"] - stats["p10"])),
+        "brightCoreRatio": float(np.mean(gray >= max(stats["p95"] - 2.0, stats["p90"]))),
+        "nearPaperRatio": float(np.mean(gray >= max(paper_peak - 6.0, stats["p75"]))),
+        "tailWeight": float(max(0.0, stats["p75"] - stats["p25"])),
+        "peakContrast": float(max(0.0, paper_peak - stats["p50"]))
+    })
+    return stats
+
+
 def apply_line_band_mask(mask, positions, axis, band):
     if not positions:
         return
@@ -435,32 +468,195 @@ def build_segmentation_ready_image(
     grid_rows=None,
     grid_cols=None,
     grid_type="square",
-    disable_internal_grid_guide_cleanup=False
+    disable_internal_grid_guide_cleanup=False,
+    return_diagnostics=False
 ):
     rgb = image_array.astype(np.float32)
     gray = 0.299 * rgb[..., 0] + 0.587 * rgb[..., 1] + 0.114 * rgb[..., 2]
     smoothed_gray = ndimage.gaussian_filter(gray, sigma=max(0.8, blur_sigma * 0.08))
+    histogram_stats = analyze_gray_histogram_distribution(smoothed_gray)
     global_background = estimate_global_background_gray(smoothed_gray)
-    paper_gray = np.clip(global_background * 1.15, 145.0, 210.0)
-    baseline = np.clip(paper_gray * 0.60, 0.0, paper_gray)
+    paper_gray = np.clip(max(global_background, histogram_stats["paperPeak"]), 145.0, 210.0)
+    stats = {
+        "p05": histogram_stats["p05"],
+        "p10": histogram_stats["p10"],
+        "p25": histogram_stats["p25"],
+        "p50": histogram_stats["p50"],
+        "p75": histogram_stats["p75"],
+        "p90": histogram_stats["p90"],
+        "p95": histogram_stats["p95"],
+        "mean": histogram_stats["mean"],
+        "std": histogram_stats["std"]
+    }
+    near_paper_ratio = float(np.mean(smoothed_gray >= (paper_gray - 6.0)))
+    sharp_highlight_peak_mode = (
+        histogram_stats["paperPeakWidth"] <= 4.5
+        and histogram_stats["brightCoreRatio"] >= 0.22
+    )
+    dark_tail_shadow_mode = (
+        histogram_stats["darkTailSpan"] >= max(24.0, paper_gray * 0.12)
+        and histogram_stats["peakContrast"] >= 10.0
+        and near_paper_ratio >= 0.32
+    )
+    ultra_light_faint_mode = (
+        stats["p10"] >= paper_gray * 0.78
+        and stats["p25"] >= paper_gray * 0.92
+        and stats["std"] <= 30.0
+        and near_paper_ratio >= 0.55
+    )
+    low_contrast_light_mode = (
+        stats["p25"] >= paper_gray * 0.84
+        and stats["p10"] >= paper_gray * 0.62
+        and stats["std"] <= 38.0
+        and near_paper_ratio >= 0.42
+    )
+    dark_heavy_mode = (
+        stats["p10"] <= paper_gray * 0.48
+        and stats["std"] >= 42.0
+    )
+    transform_method = "histogram-balanced"
+    if sharp_highlight_peak_mode and dark_tail_shadow_mode:
+        profile = {
+            "name": "bright-paper-dark-tail",
+            "baseline_ratio": 0.78,
+            "bright_critical_ratio": 0.22,
+            "bright_soft_gain": 0.025,
+            "bright_power": 1.95,
+            "bright_ratio_gain": 0.03,
+            "dark_linear": 0.62,
+            "dark_quadratic": 0.82,
+            "dark_cubic": 0.56,
+            "dark_floor": 0.0,
+            "local_contrast_gain": 0.08
+        }
+        transform_method = "histogram-peak-preserving-tail-suppression"
+    elif ultra_light_faint_mode:
+        profile = {
+            "name": "ultra-light-faint-foreground",
+            "baseline_ratio": 0.80,
+            "bright_critical_ratio": 0.26,
+            "bright_soft_gain": 0.02,
+            "bright_power": 1.55,
+            "bright_ratio_gain": 0.02,
+            "dark_linear": 1.75,
+            "dark_quadratic": 2.85,
+            "dark_cubic": 2.05,
+            "dark_floor": 0.0,
+            "local_contrast_gain": 0.34
+        }
+        transform_method = "histogram-ultra-light-foreground-boost"
+    elif low_contrast_light_mode:
+        profile = {
+            "name": "light-low-contrast",
+            "baseline_ratio": 0.72,
+            "bright_critical_ratio": 0.24,
+            "bright_soft_gain": 0.03,
+            "bright_power": 1.75,
+            "bright_ratio_gain": 0.03,
+            "dark_linear": 1.45,
+            "dark_quadratic": 2.45,
+            "dark_cubic": 1.75,
+            "dark_floor": 0.0,
+            "local_contrast_gain": 0.28
+        }
+        transform_method = "histogram-light-low-contrast"
+    elif dark_heavy_mode:
+        profile = {
+            "name": "dark-heavy-foreground",
+            "baseline_ratio": 0.58,
+            "bright_critical_ratio": 0.06,
+            "bright_soft_gain": 0.14,
+            "bright_power": 4.2,
+            "bright_ratio_gain": 0.14,
+            "dark_linear": 0.88,
+            "dark_quadratic": 1.22,
+            "dark_cubic": 0.92,
+            "dark_floor": 0.0,
+            "local_contrast_gain": 0.0
+        }
+        transform_method = "histogram-dark-heavy-foreground"
+    else:
+        profile = {
+            "name": "balanced",
+            "baseline_ratio": 0.60,
+            "bright_critical_ratio": 0.08,
+            "bright_soft_gain": 0.12,
+            "bright_power": 3.8,
+            "bright_ratio_gain": 0.12,
+            "dark_linear": 0.92,
+            "dark_quadratic": 1.35,
+            "dark_cubic": 0.95,
+            "dark_floor": 0.0,
+            "local_contrast_gain": 0.0
+        }
+    histogram_baseline = max(
+        paper_gray * profile["baseline_ratio"],
+        stats["p50"] + max(4.0, (stats["p75"] - stats["p50"]) * 0.18)
+    )
+    baseline = np.clip(histogram_baseline, 0.0, paper_gray)
     delta = smoothed_gray - baseline
     # Bright side remains capped by the global paper gray ceiling.
     bright_delta = np.clip(delta, 0.0, None)
     bright_headroom = np.maximum(paper_gray - baseline, 1.0)
+    bright_critical_ratio = profile["bright_critical_ratio"]
     bright_ratio = np.clip(bright_delta / bright_headroom, 0.0, 1.0)
-    bright_eased = 1.0 - np.power(1.0 - bright_ratio, 3.4)
-    bright_eased = np.clip(bright_eased + 0.10 * bright_ratio, 0.0, 1.0)
+    bright_ratio_shifted = np.clip(
+        (bright_ratio - bright_critical_ratio) / max(1e-6, 1.0 - bright_critical_ratio),
+        0.0,
+        1.0
+    )
+    bright_soft = np.clip(bright_ratio / max(bright_critical_ratio, 1e-6), 0.0, 1.0) * profile["bright_soft_gain"]
+    bright_eased = 1.0 - np.power(1.0 - bright_ratio_shifted, profile["bright_power"])
+    bright_eased = np.maximum(bright_soft, bright_eased)
+    bright_eased = np.clip(bright_eased + profile["bright_ratio_gain"] * bright_ratio, 0.0, 1.0)
     bright_enhanced = baseline + bright_headroom * bright_eased
 
     # Dark side uses ratio-based nonlinear expansion:
     # the darker it is relative to baseline, the faster it darkens.
     dark_delta = np.clip(-delta, 0.0, None)
     dark_ratio = dark_delta / np.maximum(baseline, 1.0)
-    dark_scale = dark_ratio * (0.92 + 1.35 * dark_ratio + 0.95 * (dark_ratio ** 2))
+    dark_scale = dark_ratio * (
+        profile["dark_linear"]
+        + profile["dark_quadratic"] * dark_ratio
+        + profile["dark_cubic"] * (dark_ratio ** 2)
+    )
     dark_enhanced = baseline * (1.0 - dark_scale)
+    dark_enhanced = np.maximum(dark_enhanced, profile["dark_floor"])
 
     enhanced = np.where(delta >= 0.0, bright_enhanced, dark_enhanced)
     enhanced = np.clip(enhanced, 0.0, paper_gray)
+    local_contrast_applied = False
+    weak_foreground_protection_applied = False
+    weak_foreground_pixels = 0
+    local_contrast_gain = float(profile.get("local_contrast_gain", 0.0))
+    if local_contrast_gain > 1e-6:
+        local_mean = ndimage.gaussian_filter(enhanced, sigma=max(1.2, blur_sigma * 0.045))
+        local_detail = enhanced - local_mean
+        foreground_mask = enhanced < (paper_gray - max(9.0, (paper_gray - baseline) * 0.14))
+        detail_boost = np.clip(local_detail, -18.0, 8.0) * local_contrast_gain
+        enhanced[foreground_mask] = np.clip(enhanced[foreground_mask] + detail_boost[foreground_mask], 0.0, paper_gray)
+        local_contrast_applied = True
+    protection_bg = ndimage.gaussian_filter(gray, sigma=max(2.0, blur_sigma * 0.11))
+    protection_detail = protection_bg - gray
+    weak_foreground_threshold = max(5.5, stats["std"] * 0.11)
+    weak_foreground_mask = (
+        (gray <= paper_gray - max(6.0, (paper_gray - baseline) * 0.08))
+        & (protection_detail >= weak_foreground_threshold)
+    )
+    weak_foreground_mask = ndimage.binary_opening(weak_foreground_mask, structure=np.ones((2, 2)))
+    weak_foreground_mask = ndimage.binary_dilation(weak_foreground_mask, structure=np.ones((2, 2)))
+    weak_foreground_pixels = int(np.count_nonzero(weak_foreground_mask))
+    if weak_foreground_pixels > 0:
+        protected_floor = np.clip(
+            gray - np.clip(protection_detail * 0.22, 0.0, 8.0),
+            0.0,
+            paper_gray
+        )
+        enhanced[weak_foreground_mask] = np.minimum(
+            enhanced[weak_foreground_mask],
+            protected_floor[weak_foreground_mask]
+        )
+        weak_foreground_protection_applied = True
     guide_mask = None if disable_internal_grid_guide_cleanup else build_guide_mask(
         gray.shape[0],
         gray.shape[1],
@@ -474,7 +670,24 @@ def build_segmentation_ready_image(
         enhanced[highlight_mask] = np.minimum(enhanced[highlight_mask], np.minimum(guide_reference[highlight_mask] + 2.0, paper_gray))
     enhanced = ndimage.gaussian_filter(enhanced, sigma=0.6)
     enhanced = np.minimum(enhanced, paper_gray)
-    return np.clip(enhanced, 0, 255).astype(np.uint8)
+    output = np.clip(enhanced, 0, 255).astype(np.uint8)
+    diagnostics = {
+        "profile": profile["name"],
+        "transformMethod": transform_method,
+        "paperGray": float(paper_gray),
+        "globalBackgroundGray": float(global_background),
+        "baseline": float(baseline),
+        "nearPaperRatio": near_paper_ratio,
+        "localContrastApplied": bool(local_contrast_applied),
+        "weakForegroundProtectionApplied": bool(weak_foreground_protection_applied),
+        "weakForegroundProtectionPixels": weak_foreground_pixels,
+        "weakForegroundThreshold": float(weak_foreground_threshold),
+        "stats": stats,
+        "histogram": histogram_stats
+    }
+    if return_diagnostics:
+        return output, diagnostics
+    return output
 
 
 def normalize_grid_type(grid_type):
@@ -492,6 +705,310 @@ def normalize_grid_type(grid_type):
 
 def estimate_neutral_paper_color(image_array, exclude_mask=None):
     return DEFAULT_NEUTRAL_PAPER_COLOR.copy()
+
+
+def build_header_zone_candidate(gray, color_span, local_bg, top_frame_y, width, height):
+    top_frame_y = int(top_frame_y)
+    lower_y = max(0, top_frame_y - max(10, int(round(height * 0.012))))
+    upper_y = max(0, int(round(height * 0.025)))
+    zone_x0 = int(round(width * 0.14))
+    zone_x1 = int(round(width * 0.86))
+    if lower_y <= upper_y + 6 or zone_x1 <= zone_x0:
+        return {
+            "topFrameY": top_frame_y,
+            "upperY": upper_y,
+            "lowerY": lower_y,
+            "zoneX0": zone_x0,
+            "zoneX1": zone_x1,
+            "candidatePixels": 0,
+            "candidateRatio": 0.0,
+            "rowCoverage": 0.0,
+            "colCoverage": 0.0,
+            "textThreshold": None,
+            "backgroundLevel": None,
+            "removableMask": np.zeros((height, width), dtype=bool),
+            "reason": "header-zone-too-thin"
+        }
+
+    zone_mask = np.zeros((height, width), dtype=bool)
+    zone_mask[upper_y:lower_y, zone_x0:zone_x1] = True
+    zone_gray = gray[zone_mask]
+    if zone_gray.size < 64:
+        return {
+            "topFrameY": top_frame_y,
+            "upperY": upper_y,
+            "lowerY": lower_y,
+            "zoneX0": zone_x0,
+            "zoneX1": zone_x1,
+            "candidatePixels": 0,
+            "candidateRatio": 0.0,
+            "rowCoverage": 0.0,
+            "colCoverage": 0.0,
+            "textThreshold": None,
+            "backgroundLevel": None,
+            "removableMask": zone_mask,
+            "reason": "header-zone-empty"
+        }
+
+    zone_bg = local_bg[zone_mask]
+    bg_level = float(np.percentile(zone_bg, 76.0))
+    text_threshold = min(bg_level - 3.0, float(np.percentile(zone_gray, 42.0) + 10.0))
+    removable_mask = (
+        zone_mask
+        & (gray <= text_threshold)
+        & (color_span <= 42.0)
+        & ((local_bg - gray) >= 4.0)
+    )
+    removable_mask = ndimage.binary_opening(removable_mask, structure=np.ones((2, 2)))
+    removable_mask = ndimage.binary_dilation(removable_mask, structure=np.ones((2, 2)))
+
+    removable_pixels = int(np.count_nonzero(removable_mask))
+    zone_height = max(1, lower_y - upper_y)
+    zone_width = max(1, zone_x1 - zone_x0)
+    zone_area = max(1, zone_height * zone_width)
+    candidate_ratio = removable_pixels / float(zone_area)
+    masked_zone = removable_mask[upper_y:lower_y, zone_x0:zone_x1]
+    row_coverage = float(np.mean(np.any(masked_zone, axis=1))) if masked_zone.size else 0.0
+    col_coverage = float(np.mean(np.any(masked_zone, axis=0))) if masked_zone.size else 0.0
+
+    return {
+        "topFrameY": top_frame_y,
+        "upperY": upper_y,
+        "lowerY": lower_y,
+        "zoneX0": zone_x0,
+        "zoneX1": zone_x1,
+        "candidatePixels": removable_pixels,
+        "candidateRatio": float(candidate_ratio),
+        "rowCoverage": row_coverage,
+        "colCoverage": col_coverage,
+        "textThreshold": float(text_threshold),
+        "backgroundLevel": bg_level,
+        "removableMask": removable_mask,
+        "reason": None
+    }
+
+
+def build_header_zone_hint(gray, color_span, local_bg, top_frame_y, width, height):
+    top_frame_y = int(top_frame_y)
+    lower_y = max(0, top_frame_y - max(10, int(round(height * 0.012))))
+    upper_y = max(0, int(round(height * 0.025)))
+    zone_x0 = int(round(width * 0.14))
+    zone_x1 = int(round(width * 0.86))
+    if lower_y <= upper_y + 6 or zone_x1 <= zone_x0:
+        return {
+            "candidatePixels": 0,
+            "candidateRatio": 0.0,
+            "rowCoverage": 0.0,
+            "colCoverage": 0.0
+        }
+
+    zone_gray = gray[upper_y:lower_y, zone_x0:zone_x1]
+    if zone_gray.size < 64:
+        return {
+            "candidatePixels": 0,
+            "candidateRatio": 0.0,
+            "rowCoverage": 0.0,
+            "colCoverage": 0.0
+        }
+
+    zone_color_span = color_span[upper_y:lower_y, zone_x0:zone_x1]
+    zone_bg = local_bg[upper_y:lower_y, zone_x0:zone_x1]
+    bg_level = float(np.percentile(zone_bg, 76.0))
+    text_threshold = min(bg_level - 3.0, float(np.percentile(zone_gray, 42.0) + 10.0))
+    raw_mask = (
+        (zone_gray <= text_threshold)
+        & (zone_color_span <= 42.0)
+        & ((zone_bg - zone_gray) >= 4.0)
+    )
+    candidate_pixels = int(np.count_nonzero(raw_mask))
+    zone_area = max(1, raw_mask.shape[0] * raw_mask.shape[1])
+    candidate_ratio = candidate_pixels / float(zone_area)
+    row_coverage = float(np.mean(np.any(raw_mask, axis=1))) if raw_mask.size else 0.0
+    col_coverage = float(np.mean(np.any(raw_mask, axis=0))) if raw_mask.size else 0.0
+    return {
+        "candidatePixels": candidate_pixels,
+        "candidateRatio": float(candidate_ratio),
+        "rowCoverage": row_coverage,
+        "colCoverage": col_coverage
+    }
+
+
+def detect_top_frame_line(image_array):
+    rgb = image_array.astype(np.float32)
+    gray = 0.299 * rgb[..., 0] + 0.587 * rgb[..., 1] + 0.114 * rgb[..., 2]
+    smoothed = ndimage.gaussian_filter(gray, sigma=1.4)
+    height, width = gray.shape
+    x0 = int(round(width * 0.12))
+    x1 = int(round(width * 0.88))
+    y_start = max(4, int(round(height * 0.01)))
+    y_end = min(height - 4, int(round(height * 0.34)))
+    if x1 <= x0 or y_end <= y_start:
+        return None
+
+    best = None
+    candidates = []
+    for y in range(y_start, y_end):
+        center = smoothed[max(0, y - 1):min(height, y + 2), x0:x1]
+        above = smoothed[max(0, y - 8):max(0, y - 3), x0:x1]
+        below = smoothed[min(height, y + 3):min(height, y + 8), x0:x1]
+        if center.size == 0 or above.size == 0 or below.size == 0:
+            continue
+        center_gray = float(np.mean(center))
+        outer_gray = float((np.mean(above) + np.mean(below)) * 0.5)
+        darkness = max(0.0, 255.0 - center_gray)
+        contrast = max(0.0, outer_gray - center_gray)
+        dark_profile = np.mean(np.maximum(0.0, outer_gray - center), axis=0)
+        continuity = float(np.mean(dark_profile >= max(6.0, contrast * 0.55)))
+        score = darkness * 0.28 + contrast * 0.52 + continuity * 34.0
+        if best is None or score > best["score"]:
+            best = {
+                "y": y,
+                "score": float(score),
+                "darkness": float(darkness),
+                "contrast": float(contrast),
+                "continuity": float(continuity),
+                "span": [x0, x1]
+            }
+        candidates.append({
+            "y": y,
+            "score": float(score),
+            "darkness": float(darkness),
+            "contrast": float(contrast),
+            "continuity": float(continuity),
+            "span": [x0, x1]
+        })
+
+    if best is None:
+        return None
+    if best["contrast"] < 7.0 or best["continuity"] < 0.42:
+        return None
+
+    local_bg = ndimage.gaussian_filter(gray, sigma=max(5.0, min(height, width) * 0.008))
+    max_channel = np.max(rgb, axis=2)
+    min_channel = np.min(rgb, axis=2)
+    color_span = max_channel - min_channel
+    shortlist = sorted(
+        [
+            candidate for candidate in candidates
+            if candidate["score"] >= max(24.0, best["score"] * 0.18)
+            and candidate["contrast"] >= 0.0
+            and candidate["continuity"] >= 0.1
+        ],
+        key=lambda candidate: candidate["y"]
+    )
+    for candidate in shortlist:
+        zone_hint = build_header_zone_hint(
+            gray,
+            color_span,
+            local_bg,
+            candidate["y"],
+            width,
+            height
+        )
+        if zone_hint["candidatePixels"] < 24:
+            continue
+        if zone_hint["candidateRatio"] > 0.045:
+            continue
+        if zone_hint["rowCoverage"] > 0.72:
+            continue
+        if zone_hint["colCoverage"] > 0.55:
+            continue
+        return {
+            **candidate,
+            "headerZoneCandidate": zone_hint
+        }
+    return best
+
+
+def suppress_header_band_above_frame(image_array):
+    frame = detect_top_frame_line(image_array)
+    if frame is None:
+        return image_array, {
+            "applied": False,
+            "reason": "top-frame-not-detected"
+        }
+
+    rgb = image_array.astype(np.float32).copy()
+    height, width = rgb.shape[:2]
+    gray = 0.299 * rgb[..., 0] + 0.587 * rgb[..., 1] + 0.114 * rgb[..., 2]
+    max_channel = np.max(rgb, axis=2)
+    min_channel = np.min(rgb, axis=2)
+    color_span = max_channel - min_channel
+    top_frame_y = int(frame["y"])
+    local_bg = ndimage.gaussian_filter(gray, sigma=max(5.0, min(height, width) * 0.008))
+    zone_candidate = build_header_zone_candidate(gray, color_span, local_bg, top_frame_y, width, height)
+    lower_y = zone_candidate["lowerY"]
+    upper_y = zone_candidate["upperY"]
+    if lower_y <= upper_y + 6:
+        return image_array, {
+            "applied": False,
+            "reason": "header-zone-too-thin",
+            "topFrameY": top_frame_y
+        }
+    if zone_candidate["reason"] == "header-zone-empty":
+        return image_array, {
+            "applied": False,
+            "reason": "header-zone-empty",
+            "topFrameY": top_frame_y
+        }
+    removable_mask = zone_candidate["removableMask"]
+    removable_pixels = zone_candidate["candidatePixels"]
+    candidate_ratio = zone_candidate["candidateRatio"]
+    row_coverage = zone_candidate["rowCoverage"]
+    col_coverage = zone_candidate["colCoverage"]
+    if removable_pixels < 24:
+        return image_array, {
+            "applied": False,
+            "reason": "header-text-not-significant",
+            "topFrameY": top_frame_y,
+            "candidatePixels": removable_pixels,
+            "candidateRatio": float(candidate_ratio),
+            "rowCoverage": row_coverage,
+            "colCoverage": col_coverage,
+            "frame": frame
+        }
+
+    # If the candidate mask fills most rows/columns above the detected line,
+    # we are looking at actual grid content rather than sparse header text.
+    if candidate_ratio >= 0.08 or (row_coverage >= 0.9 and col_coverage >= 0.9):
+        return image_array, {
+            "applied": False,
+            "reason": "header-zone-looks-like-grid-content",
+            "topFrameY": top_frame_y,
+            "candidatePixels": removable_pixels,
+            "candidateRatio": float(candidate_ratio),
+            "rowCoverage": row_coverage,
+            "colCoverage": col_coverage,
+            "frame": frame
+        }
+
+    neutral_paper = estimate_neutral_paper_color(image_array)
+    sigma = max(4.0, min(height, width) * 0.006)
+    for channel in range(3):
+        blurred = ndimage.gaussian_filter(rgb[..., channel], sigma=sigma)
+        rgb[..., channel][removable_mask] = (
+            rgb[..., channel][removable_mask] * 0.04
+            + blurred[removable_mask] * 0.18
+            + neutral_paper[channel] * 0.78
+        )
+
+    return np.clip(rgb, 0, 255).astype(np.uint8), {
+        "applied": True,
+        "topFrameY": top_frame_y,
+        "headerZone": {
+            "x0": zone_candidate["zoneX0"],
+            "x1": zone_candidate["zoneX1"],
+            "y0": upper_y,
+            "y1": lower_y
+        },
+        "candidatePixels": removable_pixels,
+        "candidateRatio": float(candidate_ratio),
+        "rowCoverage": row_coverage,
+        "colCoverage": col_coverage,
+        "textThreshold": zone_candidate["textThreshold"],
+        "backgroundLevel": zone_candidate["backgroundLevel"],
+        "frame": frame
+    }
 
 
 def remove_grid_guides(image_array, grid_rows=None, grid_cols=None, grid_type="square", disable_internal_grid_guide_cleanup=False):
@@ -733,18 +1250,19 @@ def main():
         grid_type=args.grid_type,
         disable_internal_grid_guide_cleanup=args.disable_internal_grid_guide_cleanup
     )
+    header_suppressed_array, header_suppression_diagnostics = suppress_header_band_above_frame(cleaned_warped_array)
     if warped_output_path:
         warped_output_path.parent.mkdir(parents=True, exist_ok=True)
         Image.fromarray(warped_array, mode="RGB").save(warped_output_path)
     if guide_removed_output_path:
         guide_removed_output_path.parent.mkdir(parents=True, exist_ok=True)
-        Image.fromarray(cleaned_warped_array, mode="RGB").save(guide_removed_output_path)
+        Image.fromarray(header_suppressed_array, mode="RGB").save(guide_removed_output_path)
     if neutral_guide_removed_output_path:
         neutral_guide_removed_output_path.parent.mkdir(parents=True, exist_ok=True)
-        Image.fromarray(cleaned_warped_array, mode="RGB").save(neutral_guide_removed_output_path)
+        Image.fromarray(header_suppressed_array, mode="RGB").save(neutral_guide_removed_output_path)
 
     grid_background_mask = build_grid_background_mask(
-        cleaned_warped_array,
+        header_suppressed_array,
         grid_rows=args.grid_rows or None,
         grid_cols=args.grid_cols or None
     )
@@ -761,13 +1279,14 @@ def main():
         grid_annotated_output_path.parent.mkdir(parents=True, exist_ok=True)
         grid_annotated.save(grid_annotated_output_path)
 
-    segmentation_ready = build_segmentation_ready_image(
-        cleaned_warped_array,
+    segmentation_ready, segmentation_ready_diagnostics = build_segmentation_ready_image(
+        header_suppressed_array,
         blur_sigma=args.blur_sigma,
         grid_rows=args.grid_rows or None,
         grid_cols=args.grid_cols or None,
         grid_type=args.grid_type,
-        disable_internal_grid_guide_cleanup=args.disable_internal_grid_guide_cleanup
+        disable_internal_grid_guide_cleanup=args.disable_internal_grid_guide_cleanup,
+        return_diagnostics=True
     )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -830,10 +1349,12 @@ def main():
         "refinedPaperCorners": refined_corners_list,
         "cornerSelection": corner_result["selection"] if corner_result is not None else None,
         "warp": warp_meta,
+        "headerSuppressionDiagnostics": header_suppression_diagnostics,
         "outputInfo": {
             "width": int(segmentation_ready.shape[1]),
             "height": int(segmentation_ready.shape[0])
-        }
+        },
+        "segmentationReadyDiagnostics": segmentation_ready_diagnostics
     }
 
     meta_path.parent.mkdir(parents=True, exist_ok=True)

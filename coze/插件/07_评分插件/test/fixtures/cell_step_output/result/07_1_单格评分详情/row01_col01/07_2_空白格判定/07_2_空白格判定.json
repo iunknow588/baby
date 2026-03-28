@@ -1,0 +1,11 @@
+{
+  "processNo": "07_2",
+  "processName": "07_2_空白格判定",
+  "blankResult": {
+    "isBlank": false,
+    "blankProb": 0
+  },
+  "blankReason": "LIKELY_EMPTY_CELL",
+  "sourceStep": "07_1_单格特征提取",
+  "inputPath": null
+}

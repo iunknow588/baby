@@ -1,0 +1,18 @@
+{
+  "processNo": "05_1",
+  "processName": "05_1_网格范围检测",
+  "detectedGridBounds": {
+    "minX": 177,
+    "maxX": 1063,
+    "minY": 217,
+    "maxY": 1537,
+    "width": 886,
+    "height": 1320
+  },
+  "gridBounds": {
+    "left": 164,
+    "top": 198,
+    "width": 912,
+    "height": 1358
+  }
+}

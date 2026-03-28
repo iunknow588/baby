@@ -1,13 +1,19 @@
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const a4PaperExtractPlugin = require('../01_A4纸张提取插件/index');
 const a4RectifyPlugin = require('../02_A4纸张矫正插件/index');
-const gridOuterRectExtractPlugin = require('../03_总方格大矩形提取插件/index');
+const gridOuterRectExtractPlugin = require('../03_字帖外框与内框定位裁剪插件/index');
 const segmentationPlugin = require('../05_切分插件/index');
 const scoringPlugin = require('../07_评分插件/index');
 const gridCountAnnotatePlugin = require('../04_方格数量计算标注插件/index');
 const cellLayerExtractPlugin = require('../06_单格背景文字提取插件/index');
 const { estimateGridSize } = require('../00_预处理插件/grid_size_estimator');
+const {
+  DEFAULT_GRID_ROWS,
+  DEFAULT_GRID_COLS,
+  resolveEffectiveGrid
+} = require('../utils/grid_spec');
 let sharp;
 
 try {
@@ -21,6 +27,41 @@ function average(values) {
     return 0;
   }
   return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function buildSegmentationOutputSnapshot(segmentation) {
+  const outputs = segmentation?.outputs || {};
+  return {
+    artifactLevel: segmentation?.artifactLevel || outputs.artifactLevel || null,
+    cellsDir: outputs.cellsDir || null,
+    summaryPath: outputs.summaryPath || null,
+    debugImagePath: segmentation?.debugOutputPath || null,
+    debugMetaPath: segmentation?.debugMetaPath || null,
+    stepDirs: outputs.stepDirs || {},
+    stepMetaPaths: outputs.stepMetaPaths || {}
+  };
+}
+
+function buildCellLayerOutputSnapshot(cellLayerExtraction) {
+  const outputs = cellLayerExtraction?.outputs || {};
+  return {
+    artifactLevel: cellLayerExtraction?.artifactLevel || outputs.artifactLevel || null,
+    outputDir: cellLayerExtraction?.outputDir || null,
+    textOnlyDir: cellLayerExtraction?.textOnlyDir || outputs.textOnlyDir || null,
+    backgroundOnlyDir: cellLayerExtraction?.backgroundOnlyDir || outputs.backgroundOnlyDir || null,
+    summaryPath: cellLayerExtraction?.summaryPath || null,
+    stepDirs: outputs.stepDirs || cellLayerExtraction?.stepDirs || {}
+  };
+}
+
+function buildScoringOutputSnapshot(scoring) {
+  return {
+    artifactLevel: scoring?.artifactLevel || null,
+    cellStepsDir: scoring?.outputDir || null,
+    cellsRootDir: scoring?.cellsRootDir || null,
+    ocrDir: scoring?.ocrOutputDir || null,
+    ocr: scoring?.ocr || null
+  };
 }
 
 function fitBoundaryGuidesToImage(boundaryGuides, imageWidth, imageHeight) {
@@ -46,47 +87,143 @@ function fitBoundaryGuidesToImage(boundaryGuides, imageWidth, imageHeight) {
   };
 }
 
-function getSegmentationVariantLabel(source) {
-  switch (source) {
-    case 'grid_rectified':
-      return '单格切分输入图';
-    case 'binary':
-      return '二值预处理图';
-    case 'segmentation_ready':
-      return '单格切分输入图';
-    default:
-      return source;
+function computeGuideCompleteness(boundaryGuides, gridRows, gridCols) {
+  if (!boundaryGuides) {
+    return -1;
   }
+  const xPeaks = Array.isArray(boundaryGuides.xPeaks) ? boundaryGuides.xPeaks.filter(Number.isFinite).length : 0;
+  const yPeaks = Array.isArray(boundaryGuides.yPeaks) ? boundaryGuides.yPeaks.filter(Number.isFinite).length : 0;
+  const xTarget = Math.max(1, Number(gridCols) || 1) + 1;
+  const yTarget = Math.max(1, Number(gridRows) || 1) + 1;
+  const xScore = Math.min(xPeaks, xTarget) / xTarget;
+  const yScore = Math.min(yPeaks, yTarget) / yTarget;
+  return xScore + yScore;
+}
+
+function pickPreferredBoundaryGuides(textRectMeta, gridRows, gridCols) {
+  const candidates = [
+    textRectMeta?.gridGuideDiagnostics?.normalizedGuides || null,
+    textRectMeta?.steps?.step03_0?.gridGuideDiagnostics?.normalizedGuides || null,
+    textRectMeta?.localizedBoundaryGuides || null
+  ].filter(Boolean);
+
+  if (!candidates.length) {
+    return null;
+  }
+
+  return candidates
+    .map((candidate) => ({
+      candidate,
+      score: computeGuideCompleteness(candidate, gridRows, gridCols)
+    }))
+    .sort((left, right) => right.score - left.score)[0].candidate;
 }
 
 function inferSegmentationSourceStep(imagePath, context = {}) {
   if (!imagePath) {
-    return '03_总方格大矩形提取';
+    return '03_字帖外框与内框定位裁剪';
   }
   if (context.gridCountCarryForwardPath && imagePath === context.gridCountCarryForwardPath) {
     return '04_方格数量计算标注';
   }
   if (context.gridRectifiedPath && imagePath === context.gridRectifiedPath) {
-    return '03_0_方格背景与边界检测';
+    return '03_4_字帖内框裁剪与矫正';
   }
   if (context.textRectPreprocessedPath && imagePath === context.textRectPreprocessedPath) {
-    return '03_3_总方格裁切标注';
+    return '03_4_字帖内框裁剪与矫正';
   }
   if (context.gridSegmentationInputPath && imagePath === context.gridSegmentationInputPath) {
-    return imagePath.includes('/03_0_') ? '03_0_方格背景与边界检测' : '03_3_总方格裁切标注';
+    return imagePath.includes('/03_4_') ? '03_4_字帖内框裁剪与矫正' : '03_字帖外框与内框定位裁剪';
   }
-  return '03_总方格大矩形提取';
+  return '03_字帖外框与内框定位裁剪';
 }
 
-function getGridSourceLabel(source) {
-  switch (source) {
-    case 'estimated':
-      return '自动估计';
-    case 'provided':
-      return '指定值';
-    default:
-      return source;
+function resolvePatternProfile(textRectMeta) {
+  return (
+    textRectMeta?.gridGuideDiagnostics?.patternProfile ||
+    textRectMeta?.guides?.patternProfile ||
+    null
+  );
+}
+
+function shouldPreferUniformSegmentation(patternProfile) {
+  if (!patternProfile) {
+    return false;
   }
+  if (patternProfile.settings && patternProfile.settings.forceUniformSegmentation) {
+    return true;
+  }
+  return patternProfile.globalMode === 'uniform-boundary-grid';
+}
+
+function pickBoundaryGuidesByPriority(candidates, priorityOrder = []) {
+  const normalizedPriority = Array.isArray(priorityOrder)
+    ? priorityOrder.filter(Boolean)
+    : [];
+  for (const source of normalizedPriority) {
+    if (candidates[source]) {
+      return {
+        source,
+        guides: candidates[source]
+      };
+    }
+  }
+  const fallbackSource = Object.keys(candidates).find((key) => Boolean(candidates[key]));
+  if (!fallbackSource) {
+    return {
+      source: 'none',
+      guides: null
+    };
+  }
+  return {
+    source: fallbackSource,
+    guides: candidates[fallbackSource]
+  };
+}
+
+function resolveSegmentationModePolicy({
+  textRectMeta = null,
+  rectifiedBoundaryGuides = null,
+  preferredBoundaryGuides = null,
+  localizedBoundaryGuides = null,
+  patternProfile = null,
+  segmentationOptions = null
+} = {}) {
+  void textRectMeta;
+  const manualBoundaryGuidesOverride = Object.prototype.hasOwnProperty.call(segmentationOptions || {}, 'boundaryGuides');
+  const manualForceUniformOverride = Object.prototype.hasOwnProperty.call(segmentationOptions || {}, 'forceUniformGrid');
+  const baseForceUniformGrid = shouldPreferUniformSegmentation(patternProfile);
+  const boundaryPriority = ['localized', 'preferred', 'rectified'];
+  const boundaryGuideCandidates = {
+    rectified: rectifiedBoundaryGuides || null,
+    preferred: preferredBoundaryGuides || null,
+    localized: localizedBoundaryGuides || null
+  };
+  const selectedBoundary = manualBoundaryGuidesOverride
+    ? {
+        source: segmentationOptions.boundaryGuides ? 'manual-override' : 'manual-none',
+        guides: segmentationOptions.boundaryGuides || null
+      }
+    : pickBoundaryGuidesByPriority(boundaryGuideCandidates, boundaryPriority);
+  const finalForceUniformGrid = manualForceUniformOverride
+    ? Boolean(segmentationOptions.forceUniformGrid)
+    : baseForceUniformGrid;
+
+  return {
+    boundaryGuides: selectedBoundary.guides,
+    boundaryGuideCandidates,
+    forceUniformGrid: finalForceUniformGrid,
+    policy: {
+      strategyScope: 'inner-frame-only',
+      strategyLabel: '内框优先切分策略',
+      boundaryGuidePriority: boundaryPriority,
+      selectedBoundaryGuideSource: selectedBoundary.source,
+      manualBoundaryGuidesOverride,
+      manualForceUniformOverride,
+      baseForceUniformGrid,
+      finalForceUniformGrid
+    }
+  };
 }
 
 async function writeStageInfo(stageDir, payload) {
@@ -195,6 +332,69 @@ async function estimateSegmentationQuality(scoringImagePath, segmentation) {
   };
 }
 
+function describeBoundaryGuideSource(source) {
+  const sourceMap = {
+    rectified: 'rectified',
+    preferred: 'preferred',
+    localized: 'localized',
+    'manual-override': 'manual-override',
+    'manual-none': 'manual-none',
+    none: 'none'
+  };
+  return sourceMap[source] || String(source || 'unknown');
+}
+
+function shouldEnableSegmentationModeProbe(modePolicy = null, segmentationOptions = null) {
+  if (Object.prototype.hasOwnProperty.call(segmentationOptions || {}, 'modePolicyProbe')) {
+    return Boolean(segmentationOptions.modePolicyProbe);
+  }
+  if (!modePolicy || modePolicy.manualBoundaryGuidesOverride || modePolicy.manualForceUniformOverride) {
+    return false;
+  }
+  return true;
+}
+
+function pickSecondaryBoundaryGuideSource(modePolicy = null, boundaryGuideCandidates = {}) {
+  if (!modePolicy || !Array.isArray(modePolicy.boundaryGuidePriority)) {
+    return null;
+  }
+  for (const source of modePolicy.boundaryGuidePriority) {
+    if (!source || source === modePolicy.selectedBoundaryGuideSource) {
+      continue;
+    }
+    if (boundaryGuideCandidates[source]) {
+      return source;
+    }
+  }
+  return null;
+}
+
+function shouldReplaceWithSecondaryCandidate(primaryQuality, secondaryQuality) {
+  if (!secondaryQuality) {
+    return false;
+  }
+  if (!primaryQuality) {
+    return true;
+  }
+  if (secondaryQuality.score > primaryQuality.score + 2) {
+    return true;
+  }
+  if (
+    primaryQuality.fallbackUsed
+    && !secondaryQuality.fallbackUsed
+    && secondaryQuality.score >= primaryQuality.score - 1
+  ) {
+    return true;
+  }
+  if (
+    secondaryQuality.blankCount + 2 <= primaryQuality.blankCount
+    && secondaryQuality.score >= primaryQuality.score - 0.5
+  ) {
+    return true;
+  }
+  return false;
+}
+
 class HanziPipelinePlugin {
   constructor() {
     this.name = '00_hanzi_pipeline';
@@ -207,10 +407,11 @@ class HanziPipelinePlugin {
     const {
       imagePath,
       outputRootDir,
-      gridRows = 11,
-      gridCols = 7,
+      gridRows = DEFAULT_GRID_ROWS,
+      gridCols = DEFAULT_GRID_COLS,
       gridType = 'square',
       target_chars = [],
+      recognized_chars = null,
       task_id = null,
       image_id = null,
       trimContent = false,
@@ -234,7 +435,7 @@ class HanziPipelinePlugin {
     const fileRootDir = path.join(outputRootDir, baseName);
     const locateDir = path.join(fileRootDir, '01_稿纸提取');
     const rectifyDir = path.join(fileRootDir, '02_A4纸张矫正');
-    const textRectDir = path.join(fileRootDir, '03_总方格大矩形提取');
+    const textRectDir = path.join(fileRootDir, '03_字帖外框与内框定位裁剪');
     const gridCountDir = path.join(fileRootDir, '04_方格数量计算标注');
     const segmentationDir = path.join(fileRootDir, '05_单格切分');
     const cellLayerDir = path.join(fileRootDir, '06_单格背景文字提取');
@@ -258,22 +459,18 @@ class HanziPipelinePlugin {
     const preprocessNeutralGuideRemovedPath = path.join(rectifyDir, '02_3_去底纹', '02_3_1_去底纹输出', '02_3_1_1_检测去底纹图.png');
     const preprocessGuideRemovedPath = preprocessNeutralGuideRemovedPath;
     const preprocessMetaPath = path.join(rectifyDir, '02_A4纸张矫正结果.json');
-    const textRectGridStageDir = path.join(textRectDir, '03_0_方格背景与边界检测');
-    const preprocessGridStageReferencePath = path.join(textRectGridStageDir, '03_0_1_粗裁剪去外框输入', '03_0_1_粗裁剪去外框输入图.png');
-    const preprocessGridCornerAnnotatedPath = path.join(textRectGridStageDir, '03_0_2_四角点定位标注', '03_0_2_四角点定位标注图.png');
-    const preprocessGridBackgroundMaskPath = path.join(textRectGridStageDir, '03_0_4_方格背景Mask', '03_0_4_方格背景Mask图.png');
-    const preprocessGridRectifiedPath = path.join(textRectGridStageDir, '03_0_6_单格切分输入', '03_0_6_单格切分输入图.png');
-    const preprocessGridRectifiedMetaPath = path.join(textRectGridStageDir, '03_0_6_单格切分输入', '03_0_6_单格切分输入信息.json');
-    const preprocessGridStageMetaPath = path.join(textRectGridStageDir, '03_0_方格背景与边界检测.json');
-    const textRectBoundsMetaPath = path.join(textRectDir, '03_总方格大矩形提取结果.json');
-    const textRectAnnotatedPath = path.join(textRectDir, '03_3_总方格裁切标注', '03_3_1_总方格定位标注', '03_3_1_总方格定位标注图.png');
-    const textRectWarpedPath = path.join(textRectDir, '03_3_总方格裁切标注', '03_3_2_总方格计数参考', '03_3_2_总方格计数参考图.png');
+    const preprocessGridCornerAnnotatedPath = path.join(textRectDir, '03_1_外框四角定位', '03_1_外框四角定位图.png');
+    const preprocessGridBackgroundMaskPath = path.join(textRectDir, '03_2_外框裁剪与矫正', '03_2_外框裁剪与矫正图.png');
+    const preprocessGridRectifiedPath = path.join(textRectDir, '03_4_字帖内框裁剪与矫正', '03_4_字帖内框裁剪与矫正图.png');
+    const preprocessGridRectifiedMetaPath = path.join(textRectDir, '03_4_字帖内框裁剪与矫正', '03_4_字帖内框裁剪与矫正.json');
+    const preprocessGridStageMetaPath = path.join(textRectDir, '03_3_内框四角定位', '03_3_内框四角定位.json');
+    const textRectBoundsMetaPath = path.join(textRectDir, '03_字帖外框与内框定位裁剪结果.json');
+    const textRectAnnotatedPath = path.join(textRectDir, '03_3_内框四角定位', '03_3_内框四角定位图.png');
+    const textRectWarpedPath = path.join(textRectDir, '03_4_字帖内框裁剪与矫正', '03_4_字帖内框裁剪与矫正图.png');
     const gridCountAnnotatedPath = path.join(gridCountDir, '04_2_方格数量标注图.png');
     const gridCountMetaPath = path.join(gridCountDir, '04_方格数量计算标注结果.json');
     const gridCountCarryForwardPath = path.join(gridCountDir, '04_3_单格切分输入', '04_3_单格切分输入图.png');
     const segmentationCellsDir = path.join(segmentationDir, '05_4_单格图');
-    const segmentationDebugPath = path.join(segmentationDir, '05_3_切分调试图.png');
-    const segmentationDebugMetaPath = path.join(segmentationDir, '05_3_切分调试信息.json');
     const cellLayerOutputDir = path.join(cellLayerDir, '06_0_单格分层总览');
     const scoringAnnotatedPath = path.join(scoringPageRenderDir, '07_6_页面评分标注图.png');
     const scoringSummaryPath = path.join(scoringPageRenderDir, '07_6_页面评分摘要.txt');
@@ -295,6 +492,7 @@ class HanziPipelinePlugin {
         effectiveGrid: payload.effectiveGrid || null,
         gridCount: payload.gridCount || null,
         segmentation: payload.segmentation || null,
+        segmentationModePolicy: payload.segmentationModePolicy || null,
         cellLayerExtraction: payload.cellLayerExtraction || null,
         segmentationSelection: payload.segmentationSelection || null,
         scoring: payload.scoring || null
@@ -308,10 +506,14 @@ class HanziPipelinePlugin {
     };
 
     const a4Extract = await a4PaperExtractPlugin.execute({
-      imagePath,
+      stageInputPath: imagePath,
       outputDir: locateDir,
       paperCropOutputPath: locatePaperCropPath
     });
+    const stage01OutputImagePath = a4Extract.stageOutputImagePath || a4Extract.paperCropOutputPath || locatePaperCropPath;
+    if (!stage01OutputImagePath || !fs.existsSync(stage01OutputImagePath)) {
+      throw new Error('01阶段未产出唯一标准输出图，禁止进入02阶段');
+    }
     const locateStageInfoPath = await writeStageInfo(locateDir, {
       processNo: '01',
       processName: '01_稿纸提取',
@@ -320,7 +522,8 @@ class HanziPipelinePlugin {
       imagePath,
       keyOutputs: {
         paperBoundsImagePath: path.join(locateDir, '01_1_纸张范围检测', '01_1_纸张范围检测图.png'),
-        paperCropImagePath: a4Extract.paperCropOutputPath || locatePaperCropPath,
+        paperCropImagePath: stage01OutputImagePath,
+        stageOutputImagePath: stage01OutputImagePath,
         metaPath: locateMetaPath
       },
       processChain: [
@@ -338,19 +541,20 @@ class HanziPipelinePlugin {
         outputs: {
           preprocess: {
             locateDir,
-            locateImagePath: a4Extract.paperCropOutputPath || locatePaperCropPath,
+            locateImagePath: stage01OutputImagePath,
             locateMetaPath,
             locateStepMetaPaths: a4Extract.stepMetaPaths || {},
             locateStepDirs: a4Extract.stepDirs || {},
-            locateStageInfoPath
+            locateStageInfoPath,
+            stageOutputImagePath: stage01OutputImagePath
           }
         }
       });
     }
 
-    const locatePerspectiveInputPath = a4Extract.paperCropOutputPath || locatePaperCropPath;
+    const locatePerspectiveInputPath = stage01OutputImagePath;
     const a4Rectify = await a4RectifyPlugin.execute({
-      imagePath: locatePerspectiveInputPath,
+      stageInputPath: locatePerspectiveInputPath,
       outputDir: rectifyDir,
       gridRows,
       gridCols,
@@ -367,6 +571,10 @@ class HanziPipelinePlugin {
       }
     });
     const preprocessing = a4Rectify.result;
+    const stage02OutputImagePath = a4Rectify.stageOutputImagePath || a4Rectify.outputs?.stageOutputImagePath || a4Rectify.outputs?.outputPath || preprocessPath;
+    if (!stage02OutputImagePath || !fs.existsSync(stage02OutputImagePath)) {
+      throw new Error('02阶段未产出唯一标准输出图，禁止进入03阶段');
+    }
 
     const rectifyStageInfoPath = await writeStageInfo(rectifyDir, {
       processNo: '02',
@@ -380,6 +588,7 @@ class HanziPipelinePlugin {
         a4ConstraintMetaPath: rectifyA4ConstraintMetaPath,
         a4ConstraintImagePath: path.join(rectifyDir, '02_0_A4规格约束检测', '02_0_2_A4规格约束检测图.png'),
         preprocessPath,
+        stageOutputImagePath: stage02OutputImagePath,
         warpedPath: preprocessWarpedPath,
         guideRemovedPath: preprocessGuideRemovedPath,
         neutralGuideRemovedPath: preprocessNeutralGuideRemovedPath,
@@ -404,12 +613,13 @@ class HanziPipelinePlugin {
         step02_3_2: a4Rectify.outputs.step02_3_2MetaPath
       },
       processChain: [
-        '01_2_稿纸裁切图 -> 02_0_1_A4内切清边图',
-        '02_0_1_A4内切清边图 -> 02_0_2_A4规格约束检测图',
-        '02_0_2_A4规格约束检测图 -> 02_1_1_纸张角点调试图',
-        '02_1_1_纸张角点调试图 -> 02_2_1_透视矫正图',
-        '02_2_1_透视矫正图 -> 02_3_1_1_检测去底纹图',
-        '02_3_1_1_检测去底纹图 -> 02_3_2_1_矫正预处理图'
+        '01_2_稿纸裁切图 -> 02 阶段单图输入',
+        '02 阶段单图输入 -> 02_0_1_A4内切清边图',
+        '02 阶段单图输入 -> 02_0_2_A4规格约束检测图',
+        '02 阶段单图输入 -> 02_1_1_纸张角点调试图',
+        '02 阶段单图输入 -> 02_2_1_透视矫正图',
+        '02 阶段单图输入 -> 02_3_1_1_检测去底纹图',
+        '02 阶段单图输入 -> 02_3_2_1_矫正预处理图'
       ]
     });
     if (maxStep <= 2) {
@@ -420,7 +630,7 @@ class HanziPipelinePlugin {
         outputs: {
           preprocess: {
             locateDir,
-            locateImagePath: a4Extract.paperCropOutputPath || locatePaperCropPath,
+            locateImagePath: stage01OutputImagePath,
             locateMetaPath,
             locateStepMetaPaths: a4Extract.stepMetaPaths || {},
             locateStepDirs: a4Extract.stepDirs || {},
@@ -429,11 +639,12 @@ class HanziPipelinePlugin {
             quadMetaPath,
             rectifyDir,
             imagePath: preprocessPath,
-            paperCropImagePath: a4Extract.paperCropOutputPath || locatePaperCropPath,
+            paperCropImagePath: stage01OutputImagePath,
             rectifyA4ConstraintMetaPath,
             warpedImagePath: preprocessWarpedPath,
             guideRemovedImagePath: preprocessGuideRemovedPath,
             neutralGuideRemovedImagePath: preprocessNeutralGuideRemovedPath,
+            stageOutputImagePath: stage02OutputImagePath,
             metaPath: preprocessMetaPath,
             debugImagePath: quadDebugPath,
             rectifyStageInfoPath,
@@ -460,15 +671,11 @@ class HanziPipelinePlugin {
 
     const textRectMeta = await gridOuterRectExtractPlugin.execute({
       baseName,
-      preprocessPath,
-      preprocessWarpedPath,
-      preprocessGuideRemovedPath: preprocessNeutralGuideRemovedPath,
+      stageInputPath: stage02OutputImagePath,
       gridRows,
       gridCols,
-      a4Constraint: preprocessing.a4Constraint || null,
       outputDir: textRectDir,
       gridStageMetaPath: preprocessGridStageMetaPath,
-      gridStagePreprocessPath: preprocessGridStageReferencePath,
       gridStageMaskPath: preprocessGridBackgroundMaskPath,
       gridStageRectifiedPath: preprocessGridRectifiedPath,
       gridStageRectifiedMetaPath: preprocessGridRectifiedMetaPath,
@@ -477,11 +684,13 @@ class HanziPipelinePlugin {
       textRectWarpedPath
     });
     const localizedBoundaryGuides = textRectMeta.localizedBoundaryGuides || null;
+    const preferredBoundaryGuides = pickPreferredBoundaryGuides(textRectMeta, gridRows, gridCols);
+    const patternProfile = resolvePatternProfile(textRectMeta);
     let rectifiedBoundaryGuides = null;
     if (preprocessGridRectifiedPath) {
       const rectifiedMeta = await sharp(preprocessGridRectifiedPath).metadata();
       rectifiedBoundaryGuides = fitBoundaryGuidesToImage(
-        localizedBoundaryGuides,
+        preferredBoundaryGuides,
         rectifiedMeta.width || 0,
         rectifiedMeta.height || 0
       );
@@ -498,34 +707,25 @@ class HanziPipelinePlugin {
     }
     const textRectStageInfoPath = await writeStageInfo(textRectDir, {
       processNo: '03',
-      processName: '03_总方格大矩形提取',
-      displayName: '03 总方格大矩形提取',
+      processName: '03_字帖外框与内框定位裁剪',
+      displayName: '03 字帖外框与内框定位裁剪',
       stageDir: textRectDir,
       imagePath,
-      stageInputPath: preprocessPath,
+      stageInputPath: stage02OutputImagePath,
       keyOutputs: {
           '02_3_2_1_矫正预处理图': preprocessPath,
-          '03_0_方格背景与边界检测.json': preprocessGridStageMetaPath,
-          '03_0_1_粗裁剪去外框输入图': preprocessGridStageReferencePath,
-          '03_0_2_四角点定位标注图': preprocessGridCornerAnnotatedPath,
-          '03_0_4_方格背景Mask图': preprocessGridBackgroundMaskPath,
-          '03_0_6_单格切分输入图': preprocessGridRectifiedPath,
-          '03_1_总方格候选矩形图': path.join(textRectDir, '03_1_总方格候选矩形', '03_1_总方格候选矩形图.png'),
-          '03_2_总方格矩形纠偏图': path.join(textRectDir, '03_2_总方格矩形纠偏', '03_2_总方格矩形纠偏图.png'),
-          '03_总方格大矩形提取结果.json': textRectBoundsMetaPath,
-          '03_3_1_总方格定位标注图': textRectAnnotatedOutputPath,
-          '03_3_2_总方格计数参考图': textRectWarpedOutputPath
+          '03_1_外框四角定位图': preprocessGridCornerAnnotatedPath,
+          '03_2_外框裁剪与矫正图': preprocessGridBackgroundMaskPath,
+          '03_3_内框四角定位图': textRectAnnotatedOutputPath,
+          '03_4_字帖内框裁剪与矫正图': textRectWarpedOutputPath,
+          '03_字帖外框与内框定位裁剪结果.json': textRectBoundsMetaPath
       },
       processChain: [
-        '02_3_2_1_矫正预处理图 -> 03_0_1_粗裁剪去外框输入图',
-        '03_0_1_粗裁剪去外框输入图 -> 03_0_2_四角点定位标注图',
-        '03_0_1_粗裁剪去外框输入图 + 02_3_1_1_检测去底纹图(内部输入) -> 03_0_方格背景与边界检测.json',
-        '03_0_方格背景与边界检测.json -> 03_0_4_方格背景Mask图',
-        '03_0_方格背景与边界检测.json -> 03_0_6_单格切分输入图(四角点透视矫正后)',
-        '03_0_6_单格切分输入图 -> 03_1_总方格候选矩形图',
-        '03_1_总方格候选矩形图 -> 03_2_总方格矩形纠偏图',
-        '03_2_总方格矩形纠偏图 -> 03_3_1_总方格定位标注图',
-        '03_0_6_单格切分输入图 + 03_2_总方格矩形纠偏图 -> 03_3_2_总方格计数参考图'
+        '02_3_2_1_矫正预处理图 -> 03 阶段单图输入',
+        '03 阶段单图输入 -> 03_1_外框四角定位图',
+        '03 阶段单图输入 -> 03_2_外框裁剪与矫正图(仅外框存在时输出)',
+        '03 阶段单图输入 -> 03_3_内框四角定位图',
+        '03 阶段单图输入 -> 03_4_字帖内框裁剪与矫正图'
       ],
       stepDirs: textRectMeta.stepDirs || {},
       stepMetaPaths: textRectMeta.stepMetaPaths || {}
@@ -538,7 +738,7 @@ class HanziPipelinePlugin {
         outputs: {
           preprocess: {
             locateDir,
-            locateImagePath: a4Extract.paperCropOutputPath || locatePaperCropPath,
+            locateImagePath: stage01OutputImagePath,
             locateMetaPath,
             locateStepMetaPaths: a4Extract.stepMetaPaths || {},
             locateStepDirs: a4Extract.stepDirs || {},
@@ -555,11 +755,12 @@ class HanziPipelinePlugin {
             textRectWarpedPath: textRectWarpedOutputPath,
             gridSegmentationInputPath: gridSegmentationInputOutputPath,
             imagePath: preprocessPath,
-            paperCropImagePath: a4Extract.paperCropOutputPath || locatePaperCropPath,
+            paperCropImagePath: stage01OutputImagePath,
             rectifyA4ConstraintMetaPath,
             warpedImagePath: preprocessWarpedPath,
             guideRemovedImagePath: preprocessNeutralGuideRemovedPath,
             guideRemovedDisplayImagePath: preprocessGuideRemovedPath,
+            stageOutputImagePath: stage02OutputImagePath,
             gridBackgroundMaskImagePath: preprocessGridBackgroundMaskPath,
             gridRectifiedImagePath: preprocessGridRectifiedPath,
             gridRectifiedMetaPath: preprocessGridRectifiedMetaPath,
@@ -581,17 +782,16 @@ class HanziPipelinePlugin {
       };
     }
 
-    const useEstimatedGrid = Boolean(
-      autoUseEstimatedGrid &&
-      (!hasProvidedGridRows || !hasProvidedGridCols) &&
-      estimatedGrid &&
-      !estimatedGrid.error &&
-      estimatedGrid.confidence >= 0.35 &&
-      estimatedGrid.estimatedGridRows &&
-      estimatedGrid.estimatedGridCols
-    );
-    const effectiveGridRows = useEstimatedGrid ? estimatedGrid.estimatedGridRows : gridRows;
-    const effectiveGridCols = useEstimatedGrid ? estimatedGrid.estimatedGridCols : gridCols;
+    const effectiveGrid = resolveEffectiveGrid({
+      providedRows: gridRows,
+      providedCols: gridCols,
+      hasProvidedRows: hasProvidedGridRows,
+      hasProvidedCols: hasProvidedGridCols,
+      estimatedGrid,
+      autoUseEstimatedGrid
+    });
+    const effectiveGridRows = effectiveGrid.rows;
+    const effectiveGridCols = effectiveGrid.cols;
 
     await ensureDir(gridCountDir);
     const gridCount = await gridCountAnnotatePlugin.execute({
@@ -601,7 +801,7 @@ class HanziPipelinePlugin {
       outputCarryForwardPath: gridCountCarryForwardPath,
       gridRows: effectiveGridRows,
       gridCols: effectiveGridCols,
-      source: useEstimatedGrid ? '自动估计' : '指定值',
+      source: effectiveGrid.sourceLabel,
       processNo: '04'
     });
     const gridCountStageInfoPath = await writeStageInfo(gridCountDir, {
@@ -619,9 +819,9 @@ class HanziPipelinePlugin {
         carryForwardInputPath: gridCount.carryForwardInputPath || gridCountCarryForwardPath
       },
       processChain: [
-        '03_3_2_总方格计数参考图 -> 04_1_方格数量估计图',
+        '03_4_字帖内框裁剪与矫正图 -> 04_1_方格数量估计图',
         '04_1_方格数量估计图 -> 04_2_方格数量标注图',
-        '03_3_2_总方格计数参考图 -> 04_3_单格切分输入图'
+        '03_4_字帖内框裁剪与矫正图 -> 04_3_单格切分输入图'
       ],
       stepDirs: gridCount.stepDirs || {},
       stepMetaPaths: gridCount.stepMetaPaths || {}
@@ -632,23 +832,25 @@ class HanziPipelinePlugin {
         stoppedAtStep: 4,
         preprocessing,
         estimatedGrid,
-        effectiveGrid: {
-          rows: effectiveGridRows,
-          cols: effectiveGridCols,
-          source: useEstimatedGrid ? '自动估计' : '指定值'
-        },
+        effectiveGrid,
         gridCount,
         outputs: {
           preprocess: {
             locateDir,
-            locateImagePath: a4Extract.paperCropOutputPath || locatePaperCropPath,
+            locateImagePath: stage01OutputImagePath,
             locateMetaPath,
             locateStageInfoPath,
             rectifyDir,
             textRectDir,
             textRectMetaPath: textRectBoundsMetaPath,
+            textRectStepMetaPaths: textRectMeta.stepMetaPaths || {},
+            textRectStepDirs: textRectMeta.stepDirs || {},
             textRectStageInfoPath,
+            textRectAnnotatedPath: textRectAnnotatedOutputPath,
+            textRectWarpedPath: textRectWarpedOutputPath,
+            gridSegmentationInputPath: gridSegmentationInputOutputPath,
             imagePath: preprocessPath,
+            stageOutputImagePath: stage02OutputImagePath,
             rectifyA4ConstraintMetaPath,
             guideRemovedImagePath: preprocessNeutralGuideRemovedPath,
             guideRemovedDisplayImagePath: preprocessGuideRemovedPath,
@@ -671,41 +873,153 @@ class HanziPipelinePlugin {
     }
 
     const segmentationInputImagePath = gridCount.carryForwardInputPath || gridCountCarryForwardPath;
-    await ensureDir(segmentationDir);
-    const primarySegmentation = await segmentationPlugin.execute({
-      imagePath: segmentationInputImagePath,
-      sourceStep: inferSegmentationSourceStep(
-        segmentationInputImagePath,
-        {
-          gridCountCarryForwardPath,
-          gridRectifiedPath: preprocessGridRectifiedPath,
-          gridSegmentationInputPath: gridSegmentationInputOutputPath
-        }
-      ),
-      returnBase64: false,
-      outputDir: segmentationCellsDir,
-      gridRows: effectiveGridRows,
-      gridCols: effectiveGridCols,
-      trimContent,
-      cropToGrid: false,
-      pageBounds,
-      boundaryGuides: localizedBoundaryGuides,
-      gridGuideMaskPath: null,
-      outputPrefix: '05',
-      ...segmentationOptions
+    const segmentationModeResolution = resolveSegmentationModePolicy({
+      textRectMeta,
+      rectifiedBoundaryGuides,
+      preferredBoundaryGuides,
+      localizedBoundaryGuides,
+      patternProfile,
+      segmentationOptions
     });
-
-    const primarySegmentationSource = 'grid_rectified';
-    let segmentation = primarySegmentation;
-    let segmentationSelection = {
-      selectedSource: getSegmentationVariantLabel(primarySegmentationSource),
-      selectedImagePath: segmentationInputImagePath,
-      quality: await estimateSegmentationQuality(
-        segmentationInputImagePath,
-        primarySegmentation
-      ),
-      candidates: []
+    const segmentationModePolicy = segmentationModeResolution.policy;
+    const boundaryGuideCandidates = segmentationModeResolution.boundaryGuideCandidates || {};
+    const {
+      boundaryGuides: _ignoredBoundaryGuides,
+      forceUniformGrid: _ignoredForceUniformGrid,
+      modePolicyProbe: _ignoredModePolicyProbe,
+      ...segmentationRuntimeOptions
+    } = segmentationOptions || {};
+    const segmentationSourceStep = inferSegmentationSourceStep(
+      segmentationInputImagePath,
+      {
+        gridCountCarryForwardPath,
+        gridRectifiedPath: preprocessGridRectifiedPath,
+        gridSegmentationInputPath: gridSegmentationInputOutputPath
+      }
+    );
+    const runSegmentationCandidate = async ({ outputDir, boundaryGuides, forceUniformGrid }) => {
+      return segmentationPlugin.execute({
+        imagePath: segmentationInputImagePath,
+        sourceStep: segmentationSourceStep,
+        returnBase64: false,
+        outputDir,
+        gridRows: effectiveGridRows,
+        gridCols: effectiveGridCols,
+        trimContent,
+        cropToGrid: true,
+        pageBounds,
+        boundaryGuides,
+        patternProfile,
+        forceUniformGrid,
+        gridGuideMaskPath: null,
+        outputPrefix: '05',
+        ...segmentationRuntimeOptions
+      });
     };
+    await ensureDir(segmentationDir);
+    let segmentation = await runSegmentationCandidate({
+      outputDir: segmentationCellsDir,
+      boundaryGuides: segmentationModeResolution.boundaryGuides,
+      forceUniformGrid: segmentationModeResolution.forceUniformGrid
+    });
+    const primaryQuality = await estimateSegmentationQuality(
+      segmentationInputImagePath,
+      segmentation
+    );
+    let selectedCandidate = {
+      source: segmentationModePolicy.selectedBoundaryGuideSource || 'primary',
+      sourceLabel: describeBoundaryGuideSource(segmentationModePolicy.selectedBoundaryGuideSource || 'primary'),
+      forceUniformGrid: segmentationModeResolution.forceUniformGrid,
+      quality: primaryQuality,
+      selected: true
+    };
+    const candidateList = [
+      {
+        ...selectedCandidate
+      }
+    ];
+    const modeProbeEnabled = shouldEnableSegmentationModeProbe(segmentationModePolicy, segmentationOptions);
+    let modeProbeCompared = false;
+    let modeProbePromoted = false;
+    if (modeProbeEnabled) {
+      const secondarySource = pickSecondaryBoundaryGuideSource(
+        segmentationModePolicy,
+        boundaryGuideCandidates
+      );
+      if (secondarySource && boundaryGuideCandidates[secondarySource]) {
+        modeProbeCompared = true;
+        const probeTempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'seg-mode-probe-'));
+        try {
+          const secondarySegmentation = await runSegmentationCandidate({
+            outputDir: path.join(probeTempDir, '05_4_单格图'),
+            boundaryGuides: boundaryGuideCandidates[secondarySource],
+            forceUniformGrid: segmentationModeResolution.forceUniformGrid
+          });
+          const secondaryQuality = await estimateSegmentationQuality(
+            segmentationInputImagePath,
+            secondarySegmentation
+          );
+          const secondaryCandidate = {
+            source: secondarySource,
+            sourceLabel: describeBoundaryGuideSource(secondarySource),
+            forceUniformGrid: segmentationModeResolution.forceUniformGrid,
+            quality: secondaryQuality,
+            selected: false
+          };
+          candidateList.push(secondaryCandidate);
+          if (shouldReplaceWithSecondaryCandidate(primaryQuality, secondaryQuality)) {
+            modeProbePromoted = true;
+            segmentation = await runSegmentationCandidate({
+              outputDir: segmentationCellsDir,
+              boundaryGuides: boundaryGuideCandidates[secondarySource],
+              forceUniformGrid: segmentationModeResolution.forceUniformGrid
+            });
+            selectedCandidate = {
+              ...secondaryCandidate,
+              selected: true
+            };
+          }
+        } catch (probeError) {
+          candidateList.push({
+            source: secondarySource,
+            sourceLabel: describeBoundaryGuideSource(secondarySource),
+            forceUniformGrid: segmentationModeResolution.forceUniformGrid,
+            quality: {
+              blankCount: -1,
+              averageDarkRatio: 0,
+              averageCenterOffset: 0,
+              lineCount: 0,
+              profileLineCount: 0,
+              fallbackUsed: true,
+              score: -9999
+            },
+            error: probeError.message,
+            selected: false
+          });
+        } finally {
+          await fs.promises.rm(probeTempDir, { recursive: true, force: true });
+        }
+      }
+    }
+    const effectiveSegmentationModePolicy = {
+      ...segmentationModePolicy,
+      modeProbeEnabled,
+      modeProbeCompared,
+      modeProbePromoted,
+      selectedBoundaryGuideSource: selectedCandidate.source,
+      selectedForceUniformGrid: selectedCandidate.forceUniformGrid
+    };
+    const segmentationSelection = {
+      selectedSource: selectedCandidate.sourceLabel,
+      selectedImagePath: segmentationInputImagePath,
+      quality: selectedCandidate.quality,
+      candidates: candidateList.map((candidate) => ({
+        ...candidate,
+        selected: candidate.source === selectedCandidate.source
+      })),
+      modePolicy: effectiveSegmentationModePolicy
+    };
+    const segmentationOutputSnapshot = buildSegmentationOutputSnapshot(segmentation);
 
     const segmentationStageInfoPath = await writeStageInfo(segmentationDir, {
       processNo: '05',
@@ -716,13 +1030,15 @@ class HanziPipelinePlugin {
       stageInputPath: segmentationSelection.selectedImagePath,
       keyOutputs: {
         inputPath: segmentationSelection.selectedImagePath,
-        cellsDir: segmentation.outputs.cellsDir,
-        summaryPath: segmentation.outputs.summaryPath,
-        debugImagePath: segmentation.debugOutputPath || segmentationDebugPath,
-        debugMetaPath: segmentation.debugMetaPath || segmentationDebugMetaPath
+        artifactLevel: segmentationOutputSnapshot.artifactLevel,
+        cellsDir: segmentationOutputSnapshot.cellsDir,
+        summaryPath: segmentationOutputSnapshot.summaryPath,
+        debugImagePath: segmentationOutputSnapshot.debugImagePath,
+        debugMetaPath: segmentationOutputSnapshot.debugMetaPath,
+        modePolicy: effectiveSegmentationModePolicy
       },
-      stepDirs: segmentation.outputs.stepDirs || {},
-      stepMetaPaths: segmentation.outputs.stepMetaPaths || {}
+      stepDirs: segmentationOutputSnapshot.stepDirs,
+      stepMetaPaths: segmentationOutputSnapshot.stepMetaPaths
     });
     if (maxStep <= 5) {
       return finish({
@@ -730,25 +1046,28 @@ class HanziPipelinePlugin {
         stoppedAtStep: 5,
         preprocessing,
         estimatedGrid,
-        effectiveGrid: {
-          rows: effectiveGridRows,
-          cols: effectiveGridCols,
-          source: useEstimatedGrid ? '自动估计' : '指定值'
-        },
+        effectiveGrid,
         gridCount,
         segmentation,
+        segmentationModePolicy: effectiveSegmentationModePolicy,
         segmentationSelection,
         outputs: {
           preprocess: {
             locateDir,
-            locateImagePath: a4Extract.paperCropOutputPath || locatePaperCropPath,
+            locateImagePath: stage01OutputImagePath,
             locateMetaPath,
             locateStageInfoPath,
             rectifyDir,
             textRectDir,
             textRectMetaPath: textRectBoundsMetaPath,
+            textRectStepMetaPaths: textRectMeta.stepMetaPaths || {},
+            textRectStepDirs: textRectMeta.stepDirs || {},
             textRectStageInfoPath,
+            textRectAnnotatedPath: textRectAnnotatedOutputPath,
+            textRectWarpedPath: textRectWarpedOutputPath,
+            gridSegmentationInputPath: gridSegmentationInputOutputPath,
             imagePath: preprocessPath,
+            stageOutputImagePath: stage02OutputImagePath,
             rectifyA4ConstraintMetaPath,
             guideRemovedImagePath: preprocessNeutralGuideRemovedPath,
             guideRemovedDisplayImagePath: preprocessGuideRemovedPath,
@@ -765,13 +1084,8 @@ class HanziPipelinePlugin {
             stepDirs: gridCount.stepDirs || {}
           },
           segmentation: {
-            cellsDir: segmentation.outputs.cellsDir,
-            summaryPath: segmentation.outputs.summaryPath,
-            debugImagePath: segmentation.debugOutputPath || segmentationDebugPath,
-            debugMetaPath: segmentation.debugMetaPath || segmentationDebugMetaPath,
-            stageInfoPath: segmentationStageInfoPath,
-            stepDirs: segmentation.outputs.stepDirs || {},
-            stepMetaPaths: segmentation.outputs.stepMetaPaths || {}
+            ...segmentationOutputSnapshot,
+            stageInfoPath: segmentationStageInfoPath
           }
         }
       });
@@ -783,8 +1097,29 @@ class HanziPipelinePlugin {
       inputPath: segmentationSelection.selectedImagePath,
       outputDir: cellLayerOutputDir,
       outputPrefix: '06',
+      patternProfile,
       options: scoringOptions
+        ? {
+            ...scoringOptions,
+            patternProfile,
+            config: {
+              ...(scoringOptions.config || {}),
+              image: {
+                ...((scoringOptions.config && scoringOptions.config.image) || {}),
+                grid_type: gridType
+              }
+            }
+          }
+        : {
+            patternProfile,
+            config: {
+              image: {
+                grid_type: gridType
+              }
+            }
+          }
     });
+    const cellLayerOutputSnapshot = buildCellLayerOutputSnapshot(cellLayerExtraction);
     const cellLayerStageInfoPath = await writeStageInfo(cellLayerDir, {
       processNo: '06',
       processName: '06_单格背景文字提取',
@@ -793,11 +1128,13 @@ class HanziPipelinePlugin {
       imagePath,
       stageInputPath: segmentationSelection.selectedImagePath,
       keyOutputs: {
+        artifactLevel: cellLayerOutputSnapshot.artifactLevel,
         inputPath: segmentationSelection.selectedImagePath,
-        cellsDir: cellLayerOutputDir,
-        summaryPath: cellLayerExtraction.summaryPath || null
+        cellsDir: cellLayerOutputSnapshot.textOnlyDir,
+        backgroundDir: cellLayerOutputSnapshot.backgroundOnlyDir,
+        summaryPath: cellLayerOutputSnapshot.summaryPath
       },
-      stepDirs: cellLayerExtraction.stepDirs || {}
+      stepDirs: cellLayerOutputSnapshot.stepDirs
     });
     if (maxStep <= 6) {
       return finish({
@@ -805,13 +1142,10 @@ class HanziPipelinePlugin {
         stoppedAtStep: 6,
         preprocessing,
         estimatedGrid,
-        effectiveGrid: {
-          rows: effectiveGridRows,
-          cols: effectiveGridCols,
-          source: useEstimatedGrid ? '自动估计' : '指定值'
-        },
+        effectiveGrid,
         gridCount,
         segmentation,
+        segmentationModePolicy: effectiveSegmentationModePolicy,
         cellLayerExtraction,
         segmentationSelection,
         outputs: {
@@ -823,7 +1157,12 @@ class HanziPipelinePlugin {
             rectifyDir,
             textRectDir,
             textRectMetaPath: textRectBoundsMetaPath,
+            textRectStepMetaPaths: textRectMeta.stepMetaPaths || {},
+            textRectStepDirs: textRectMeta.stepDirs || {},
             textRectStageInfoPath,
+            textRectAnnotatedPath: textRectAnnotatedOutputPath,
+            textRectWarpedPath: textRectWarpedOutputPath,
+            gridSegmentationInputPath: gridSegmentationInputOutputPath,
             imagePath: preprocessPath,
             rectifyA4ConstraintMetaPath,
             guideRemovedImagePath: preprocessNeutralGuideRemovedPath,
@@ -836,13 +1175,8 @@ class HanziPipelinePlugin {
           },
           segmentation: {
             dir: segmentationDir,
-            cellsDir: segmentation.outputs.cellsDir,
-            summaryPath: segmentation.outputs.summaryPath,
-            debugImagePath: segmentation.debugOutputPath || segmentationDebugPath,
-            debugMetaPath: segmentation.debugMetaPath || segmentationDebugMetaPath,
-            stageInfoPath: segmentationStageInfoPath,
-            stepDirs: segmentation.outputs.stepDirs || {},
-            stepMetaPaths: segmentation.outputs.stepMetaPaths || {}
+            ...segmentationOutputSnapshot,
+            stageInfoPath: segmentationStageInfoPath
           },
           gridCount: {
             dir: gridCountDir,
@@ -855,15 +1189,17 @@ class HanziPipelinePlugin {
           },
           cellLayerExtraction: {
             dir: cellLayerDir,
-            cellsDir: cellLayerOutputDir,
+            artifactLevel: cellLayerOutputSnapshot.artifactLevel,
+            cellsDir: cellLayerOutputSnapshot.textOnlyDir,
+            backgroundDir: cellLayerOutputSnapshot.backgroundOnlyDir,
+            summaryPath: cellLayerOutputSnapshot.summaryPath,
             stageInfoPath: cellLayerStageInfoPath,
-            stepDirs: cellLayerExtraction.stepDirs || {}
+            stepDirs: cellLayerOutputSnapshot.stepDirs
           }
         }
       });
     }
 
-    await ensureDir(scoringCellDir);
     await ensureDir(scoringPageRenderDir);
     await ensureDir(scoringResultDir);
     const scoring = await scoringPlugin.execute({
@@ -874,11 +1210,13 @@ class HanziPipelinePlugin {
       outputAnnotatedPath: scoringAnnotatedPath,
       outputSummaryPath: scoringSummaryPath,
       target_chars,
+      recognized_chars,
       segmentation,
       cellLayerExtraction,
       options: scoringOptions
         ? {
             ...scoringOptions,
+            patternProfile,
             config: {
               ...(scoringOptions.config || {}),
               image: {
@@ -888,6 +1226,7 @@ class HanziPipelinePlugin {
             }
           }
         : {
+            patternProfile,
             config: {
               image: {
                 grid_type: gridType
@@ -895,6 +1234,7 @@ class HanziPipelinePlugin {
             }
           }
     });
+    const scoringOutputSnapshot = buildScoringOutputSnapshot(scoring);
 
     await fs.promises.writeFile(scoringJsonPath, JSON.stringify(scoring, null, 2), 'utf8');
     const scoringStageInfoPath = await writeStageInfo(scoringDir, {
@@ -905,9 +1245,11 @@ class HanziPipelinePlugin {
       imagePath,
       stageInputPath: segmentationSelection.selectedImagePath,
       keyOutputs: {
+        artifactLevel: scoringOutputSnapshot.artifactLevel,
         inputPath: segmentationSelection.selectedImagePath,
-        cellStepsDir: scoringCellDir,
-        cellsRootDir: scoring.cellsRootDir || null,
+        cellStepsDir: scoringOutputSnapshot.cellStepsDir,
+        cellsRootDir: scoringOutputSnapshot.cellsRootDir,
+        ocrDir: scoringOutputSnapshot.ocrDir,
         pageRenderDir: scoringPageRenderDir,
         pageResultDir: scoringResultDir,
         annotatedImagePath: scoringAnnotatedPath,
@@ -923,7 +1265,7 @@ class HanziPipelinePlugin {
         fileRootDir,
         preprocess: {
           locateDir,
-          locateImagePath: a4Extract.paperCropOutputPath || locatePaperCropPath,
+          locateImagePath: stage01OutputImagePath,
           locateMetaPath,
           locateStepMetaPaths: a4Extract.stepMetaPaths || {},
           locateStepDirs: a4Extract.stepDirs || {},
@@ -940,7 +1282,8 @@ class HanziPipelinePlugin {
           textRectWarpedPath: textRectWarpedOutputPath,
           gridSegmentationInputPath: gridSegmentationInputOutputPath,
           imagePath: preprocessPath,
-          paperCropImagePath: a4Extract.paperCropOutputPath || locatePaperCropPath,
+          paperCropImagePath: stage01OutputImagePath,
+          stageOutputImagePath: stage02OutputImagePath,
           rectifyA4ConstraintMetaPath,
           warpedImagePath: preprocessWarpedPath,
           guideRemovedImagePath: preprocessNeutralGuideRemovedPath,
@@ -970,13 +1313,8 @@ class HanziPipelinePlugin {
           }
         },
         segmentation: {
-          cellsDir: segmentation.outputs.cellsDir,
-          summaryPath: segmentation.outputs.summaryPath,
-          debugImagePath: segmentation.debugOutputPath || segmentationDebugPath,
-          debugMetaPath: segmentation.debugMetaPath || segmentationDebugMetaPath,
-          stageInfoPath: segmentationStageInfoPath,
-          stepDirs: segmentation.outputs.stepDirs || {},
-          stepMetaPaths: segmentation.outputs.stepMetaPaths || {}
+          ...segmentationOutputSnapshot,
+          stageInfoPath: segmentationStageInfoPath
         },
         gridCount: {
           dir: gridCountDir,
@@ -989,31 +1327,34 @@ class HanziPipelinePlugin {
         },
         cellLayerExtraction: {
           dir: cellLayerDir,
-          cellsDir: cellLayerOutputDir,
+          artifactLevel: cellLayerOutputSnapshot.artifactLevel,
+          cellsDir: cellLayerOutputSnapshot.textOnlyDir,
+          backgroundDir: cellLayerOutputSnapshot.backgroundOnlyDir,
+          summaryPath: cellLayerOutputSnapshot.summaryPath,
           stageInfoPath: cellLayerStageInfoPath,
-          stepDirs: cellLayerExtraction.stepDirs || {}
+          stepDirs: cellLayerOutputSnapshot.stepDirs
         },
         scoring: {
           dir: scoringDir,
-          cellStepsDir: scoringCellDir,
+          artifactLevel: scoringOutputSnapshot.artifactLevel,
+          cellStepsDir: scoringOutputSnapshot.cellStepsDir,
+          ocrDir: scoringOutputSnapshot.ocrDir,
           pageRenderDir: scoringPageRenderDir,
           pageResultDir: scoringResultDir,
           annotatedImagePath: scoringAnnotatedPath,
           summaryPath: scoringSummaryPath,
           jsonPath: scoringJsonPath,
           stageInfoPath: scoringStageInfoPath,
-          cellsRootDir: scoring.cellsRootDir || null
+          cellsRootDir: scoringOutputSnapshot.cellsRootDir,
+          ocr: scoringOutputSnapshot.ocr
         }
       },
       preprocessing,
       estimatedGrid,
-      effectiveGrid: {
-        rows: effectiveGridRows,
-        cols: effectiveGridCols,
-        source: useEstimatedGrid ? '自动估计' : '指定值'
-      },
+      effectiveGrid,
       gridCount,
       segmentation,
+      segmentationModePolicy: effectiveSegmentationModePolicy,
       cellLayerExtraction,
       segmentationSelection,
       scoring

@@ -1,4 +1,5 @@
-const { scoreSegmentation, renderAnnotatedPage } = require('./scoring');
+const { scoreSegmentation } = require('./application/page_scoring_service');
+const { renderAnnotatedPage } = require('./adapters/page_annotation');
 
 class HanziScoringPlugin {
   constructor() {

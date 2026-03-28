@@ -6,17 +6,8 @@ class CellFeatureExtractPlugin {
   }
 
   async execute(params) {
-    const { cellImage, options = {} } = params || {};
-    if (!cellImage) {
-      throw new Error('cellImage参数是必需的');
-    }
-    const { extractFeatures } = require('../07_评分插件/scoring');
-    const features = await extractFeatures(cellImage, options);
-    return {
-      processNo: this.processNo,
-      processName: '07_1_单格特征提取',
-      features
-    };
+    const { executeCellFeatureExtractionStep } = require('../07_评分插件/application/cell_scoring_steps');
+    return executeCellFeatureExtractionStep(params);
   }
 }
 

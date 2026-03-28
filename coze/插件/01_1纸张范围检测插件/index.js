@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { detectPaperRegion } = require('../00_预处理插件/paper_preprocess');
+const { resolveSingleImageInput } = require('../utils/stage_image_contract');
 let sharp;
 
 try {
@@ -18,23 +19,22 @@ class PaperBoundsDetectPlugin {
 
   async execute(params) {
     const {
+      stageInputPath = null,
       imagePath,
-      preprocessResult,
       outputMetaPath,
       outputImagePath = null
     } = params || {};
-
-    if (!imagePath) {
-      throw new Error('imagePath参数是必需的');
-    }
-    if (!preprocessResult) {
-      throw new Error('preprocessResult参数是必需的');
-    }
+    const resolvedImagePath = resolveSingleImageInput({
+      stageName: '01_1_纸张范围检测',
+      primaryInputPath: stageInputPath,
+      imagePath
+    });
 
     const payload = {
       processNo: this.processNo,
       processName: '01_1_纸张范围检测',
-      imagePath,
+      imagePath: resolvedImagePath,
+      stageInputPath: resolvedImagePath,
       outputImagePath,
       method: 'white-paper connected-region',
       paperBounds: null,
@@ -42,7 +42,7 @@ class PaperBoundsDetectPlugin {
       note: '01_1 仅基于白纸区域连通性检测纸张范围，不使用任何内部方格角点或内容框角点。'
     };
 
-    const { data: colorData, info } = await sharp(imagePath)
+    const { data: colorData, info } = await sharp(resolvedImagePath)
       .ensureAlpha()
       .removeAlpha()
       .raw()
@@ -123,7 +123,7 @@ class PaperBoundsDetectPlugin {
         </svg>
       `;
       await fs.promises.mkdir(path.dirname(outputImagePath), { recursive: true });
-      await sharp(imagePath)
+      await sharp(resolvedImagePath)
         .composite([
           {
             input: previewMask,
