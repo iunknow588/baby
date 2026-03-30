@@ -1,0 +1,16 @@
+{
+  "processNo": "04_1",
+  "processName": "04_1_方格数量估计",
+  "sourceStep": "03_4_字帖内框裁剪与矫正",
+  "inputPath": "/home/lc/luckee_dao/baby/coze/插件/04_方格数量计算标注插件/test/fixtures/grid_count_fixture.png",
+  "imagePath": "/home/lc/luckee_dao/baby/coze/插件/04_方格数量计算标注插件/test/fixtures/grid_count_fixture.png",
+  "outputImagePath": "/home/lc/luckee_dao/baby/coze/插件/04_方格数量计算标注插件/test/output/04_1_wrapper/estimate.png",
+  "gridRows": 7,
+  "gridCols": 10,
+  "totalCells": 70,
+  "source": "指定值",
+  "imageSize": {
+    "width": 1200,
+    "height": 1600
+  }
+}

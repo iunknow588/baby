@@ -16,9 +16,10 @@
 
 ## 重构路线
 
-`04~08` 阶段的结构整理与重构路线已单独整理在：
+`04~08` 阶段的结构整理与重构路线已统一收口到 `works-docs/baby` 文档目录：
 
-- [REFACTOR_04_08_PLAN.md](/home/lc/luckee_dao/baby/coze/插件/REFACTOR_04_08_PLAN.md)
+- [09-Coze插件04-08阶段重构路线图.md](/home/lc/luckee_dao/works-docs/baby/汉字评分系统/09-Coze插件04-08阶段重构路线图.md)
+- [汉字评分系统设计文档 README](/home/lc/luckee_dao/works-docs/baby/汉字评分系统/README.md)
 
 建议后续重构按该文档的执行顺序推进，先修依赖边界，再收敛薄包装步骤。
 

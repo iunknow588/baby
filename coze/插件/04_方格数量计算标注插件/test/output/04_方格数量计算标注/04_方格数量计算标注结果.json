@@ -1,0 +1,60 @@
+{
+  "processNo": "04",
+  "processName": "04_方格数量计算标注",
+  "sourceStep": "03_4_字帖内框裁剪与矫正",
+  "stageInputPath": "/home/lc/luckee_dao/baby/coze/插件/04_方格数量计算标注插件/test/fixtures/grid_count_fixture.png",
+  "gridRows": 7,
+  "gridCols": 10,
+  "totalCells": 70,
+  "source": "指定值",
+  "imageSize": {
+    "width": 1200,
+    "height": 1600
+  },
+  "outputAnnotatedPath": "/home/lc/luckee_dao/baby/coze/插件/04_方格数量计算标注插件/test/output/04_方格数量计算标注/04_2_方格数量标注/04_2_方格数量标注图.png",
+  "carryForwardInputPath": "/home/lc/luckee_dao/baby/coze/插件/04_方格数量计算标注插件/test/output/04_方格数量计算标注/04_3_单格切分输入/04_3_单格切分输入图.png",
+  "stepSummaries": {
+    "step04_1": {
+      "totalCells": 70,
+      "imageSize": {
+        "width": 1200,
+        "height": 1600
+      },
+      "source": "指定值"
+    },
+    "step04_2": {
+      "outputAnnotatedPath": "/home/lc/luckee_dao/baby/coze/插件/04_方格数量计算标注插件/test/output/04_方格数量计算标注/04_2_方格数量标注/04_2_方格数量标注图.png",
+      "imageSize": {
+        "width": 1200,
+        "height": 1600
+      }
+    },
+    "step04_3": {
+      "carryForwardImagePath": "/home/lc/luckee_dao/baby/coze/插件/04_方格数量计算标注插件/test/output/04_方格数量计算标注/04_3_单格切分输入/04_3_单格切分输入图.png"
+    }
+  },
+  "stepDirs": {
+    "step04_1": "/home/lc/luckee_dao/baby/coze/插件/04_方格数量计算标注插件/test/output/04_方格数量计算标注/04_1_方格数量估计",
+    "step04_2": "/home/lc/luckee_dao/baby/coze/插件/04_方格数量计算标注插件/test/output/04_方格数量计算标注/04_2_方格数量标注",
+    "step04_3": "/home/lc/luckee_dao/baby/coze/插件/04_方格数量计算标注插件/test/output/04_方格数量计算标注/04_3_单格切分输入"
+  },
+  "stepMetaPaths": {
+    "step04_1": "/home/lc/luckee_dao/baby/coze/插件/04_方格数量计算标注插件/test/output/04_方格数量计算标注/04_1_方格数量估计/04_1_方格数量估计.json",
+    "step04_2": "/home/lc/luckee_dao/baby/coze/插件/04_方格数量计算标注插件/test/output/04_方格数量计算标注/04_2_方格数量标注/04_2_方格数量标注.json",
+    "step04_3": "/home/lc/luckee_dao/baby/coze/插件/04_方格数量计算标注插件/test/output/04_方格数量计算标注/04_3_单格切分输入/04_3_单格切分输入.json"
+  },
+  "显示信息": {
+    "阶段编号": "04",
+    "阶段名称": "04_方格数量计算标注",
+    "阶段输入图": "/home/lc/luckee_dao/baby/coze/插件/04_方格数量计算标注插件/test/fixtures/grid_count_fixture.png",
+    "行数": 7,
+    "列数": 10,
+    "总格数": 70,
+    "方格数量来源": "指定值",
+    "输出文件": {
+      "方格数量标注图": "/home/lc/luckee_dao/baby/coze/插件/04_方格数量计算标注插件/test/output/04_方格数量计算标注/04_2_方格数量标注/04_2_方格数量标注图.png",
+      "单格切分输入图": "/home/lc/luckee_dao/baby/coze/插件/04_方格数量计算标注插件/test/output/04_方格数量计算标注/04_3_单格切分输入/04_3_单格切分输入图.png",
+      "阶段结果JSON": "/home/lc/luckee_dao/baby/coze/插件/04_方格数量计算标注插件/test/output/04_方格数量计算标注/04_方格数量计算标注结果.json"
+    }
+  }
+}

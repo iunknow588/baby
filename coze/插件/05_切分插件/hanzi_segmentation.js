@@ -2,10 +2,14 @@ const { requireSharp } = require('../utils/require_sharp');
 const sharp = requireSharp([__dirname]);
 const fs = require('fs');
 const path = require('path');
-const boundaryGuideSegmentationPlugin = require('./domain/boundary_guides');
+const { executeBoundaryGuideSegmentation } = require('./domain/boundary_guides');
 const { executeGridBoundsDetection } = require('./domain/grid_bounds');
 const { renderGridDebugImage } = require('./presentation/debug_render');
 const { executeCellCrop } = require('./domain/cell_crop');
+const {
+  SEGMENTATION_STEP_DEFINITIONS,
+  SEGMENTATION_SOURCE_STEPS
+} = require('./step_definitions');
 
 const DEFAULT_GRID_COLS = 10;
 const DEFAULT_GRID_ROWS = 7;
@@ -13,6 +17,14 @@ const DEFAULT_THRESHOLD = 210;
 
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
+}
+
+function buildSegmentationStepResult(stepDefinition, extra = {}) {
+  return {
+    processNo: stepDefinition.processNo,
+    processName: stepDefinition.processName,
+    ...extra
+  };
 }
 
 function translateBoundaryGuidesToCrop(boundaryGuides, cropBox, width, height) {
@@ -1343,7 +1355,7 @@ async function segmentHanzi(imagePath, options = {}) {
       : null;
 
     if (segmentationProfile.preferUniform && normalizedBoundaryGuides && segmentationProfile.preferBoundaryGuides) {
-      const guidedUniformSegmentation = boundaryGuideSegmentationPlugin.execute({
+      const guidedUniformSegmentation = executeBoundaryGuideSegmentation({
         boundaryGuides: normalizedBoundaryGuides,
         segmentationProfile,
         gridRows,
@@ -1355,16 +1367,14 @@ async function segmentHanzi(imagePath, options = {}) {
         xBoundaries = guidedUniformSegmentation.xBoundaries;
         yBoundaries = guidedUniformSegmentation.yBoundaries;
         debug = guidedUniformSegmentation.debug;
-        step05_2Result = {
-          processNo: '05_2',
-          processName: '05_2_边界引导切分',
-          sourceStep: '05_1_网格范围检测',
+        step05_2Result = buildSegmentationStepResult(SEGMENTATION_STEP_DEFINITIONS.step05_2, {
+          sourceStep: SEGMENTATION_SOURCE_STEPS.step05_2,
           inputPath: imagePath,
           mode: '边界框内均分',
           xBoundaries,
           yBoundaries,
           debug
-        };
+        });
       }
     } else if (segmentationProfile.preferUniform) {
       xBoundaries = buildUniformBoundaries(0, workingInfo.width, gridCols);
@@ -1390,18 +1400,16 @@ async function segmentHanzi(imagePath, options = {}) {
         profileVerticalLines: [],
         profileHorizontalLines: []
       };
-      step05_2Result = {
-        processNo: '05_2',
-        processName: '05_2_边界引导切分',
-        sourceStep: '05_1_网格范围检测',
+      step05_2Result = buildSegmentationStepResult(SEGMENTATION_STEP_DEFINITIONS.step05_2, {
+        sourceStep: SEGMENTATION_SOURCE_STEPS.step05_2,
         inputPath: imagePath,
         mode: '整图均分',
         xBoundaries,
         yBoundaries,
         debug
-      };
+      });
     } else if (normalizedBoundaryGuides && segmentationProfile.preferBoundaryGuides) {
-      const guidedSegmentation = boundaryGuideSegmentationPlugin.execute({
+      const guidedSegmentation = executeBoundaryGuideSegmentation({
         boundaryGuides: normalizedBoundaryGuides,
         segmentationProfile,
         gridRows,
@@ -1413,16 +1421,14 @@ async function segmentHanzi(imagePath, options = {}) {
         xBoundaries = guidedSegmentation.xBoundaries;
         yBoundaries = guidedSegmentation.yBoundaries;
         debug = guidedSegmentation.debug;
-        step05_2Result = {
-          processNo: '05_2',
-          processName: '05_2_边界引导切分',
-          sourceStep: '05_1_网格范围检测',
+        step05_2Result = buildSegmentationStepResult(SEGMENTATION_STEP_DEFINITIONS.step05_2, {
+          sourceStep: SEGMENTATION_SOURCE_STEPS.step05_2,
           inputPath: imagePath,
           mode: '边界引导',
           xBoundaries,
           yBoundaries,
           debug
-        };
+        });
       }
     } else {
       const workingMask = workingGuideMask || buildDarkMask(workingData, workingInfo, threshold);
@@ -1440,16 +1446,14 @@ async function segmentHanzi(imagePath, options = {}) {
       xBoundaries = resolved.xBoundaries;
       yBoundaries = resolved.yBoundaries;
       debug = resolved.debug;
-      step05_2Result = {
-        processNo: '05_2',
-        processName: '05_2_边界引导切分',
-        sourceStep: '05_1_网格范围检测',
+      step05_2Result = buildSegmentationStepResult(SEGMENTATION_STEP_DEFINITIONS.step05_2, {
+        sourceStep: SEGMENTATION_SOURCE_STEPS.step05_2,
         inputPath: imagePath,
         mode: '直接检测线',
         xBoundaries,
         yBoundaries,
         debug
-      };
+      });
     }
     const result = Array(gridRows).fill().map(() => Array(gridCols).fill(null));
     const cells = [];
@@ -1563,22 +1567,18 @@ async function segmentHanzi(imagePath, options = {}) {
       stepResults: {
         step05_1: gridBoundsResult,
         step05_2: step05_2Result,
-        step05_3: {
-          processNo: '05_3',
-          processName: '05_3_切分调试渲染',
-          sourceStep: '05_2_边界引导切分',
+        step05_3: buildSegmentationStepResult(SEGMENTATION_STEP_DEFINITIONS.step05_3, {
+          sourceStep: SEGMENTATION_SOURCE_STEPS.step05_3,
           inputPath: imagePath,
           debugOutputPath: debugOutputPath || null,
           debugMetaPath: debugMetaPath || null
-        },
-        step05_4: {
-          processNo: '05_4',
-          processName: '05_4_单格裁切',
-          sourceStep: '05_2_边界引导切分',
+        }),
+        step05_4: buildSegmentationStepResult(SEGMENTATION_STEP_DEFINITIONS.step05_4, {
+          sourceStep: SEGMENTATION_SOURCE_STEPS.step05_4,
           inputPath: imagePath,
           totalCells: cells.length,
           cells
-        }
+        })
       }
     };
   } catch (error) {

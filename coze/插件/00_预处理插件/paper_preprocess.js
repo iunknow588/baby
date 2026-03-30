@@ -3,14 +3,8 @@ const path = require('path');
 const os = require('os');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
-
-let sharp;
-
-try {
-  sharp = require('sharp');
-} catch (error) {
-  sharp = require('../05_切分插件/node_modules/sharp');
-}
+const { requireSharp } = require('../utils/require_sharp');
+const sharp = requireSharp();
 
 const execFileAsync = promisify(execFile);
 const { normalizeGridBoundaryGuides } = require('../05_切分插件/domain/guide_normalization');

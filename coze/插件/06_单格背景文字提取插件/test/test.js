@@ -2,13 +2,8 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-let sharp;
-
-try {
-  sharp = require('sharp');
-} catch (error) {
-  sharp = require('../../05_切分插件/node_modules/sharp');
-}
+const { requireSharp } = require('../../utils/require_sharp');
+const sharp = requireSharp();
 
 const cellLayerPlugin = require('../index');
 

@@ -3,6 +3,15 @@ const path = require('path');
 const { segmentHanzi, matrixToBase64, saveMatrixToFiles } = require('./hanzi_segmentation');
 const { DEFAULT_GRID_ROWS, DEFAULT_GRID_COLS } = require('../utils/grid_spec');
 const { resolveSegmentationArtifactPolicy } = require('../utils/artifact_policy');
+const {
+  resolveStageImageJsonInput,
+  buildStageImageHandoffContract
+} = require('../utils/stage_image_contract');
+const {
+  SEGMENTATION_STAGE_DEFINITION,
+  SEGMENTATION_STEP_DEFINITIONS,
+  SEGMENTATION_SOURCE_STEPS
+} = require('./step_definitions');
 
 function formatCellFileName(row, col) {
   return `05_单格_row${String(row + 1).padStart(2, '0')}_col${String(col + 1).padStart(2, '0')}.png`;
@@ -20,7 +29,7 @@ function isDefaultContentBox(contentBox, pageBox) {
   );
 }
 
-function compactCellMeta(cell) {
+function compactCellMeta(cell, cellsDir = null) {
   if (!cell) {
     return cell;
   }
@@ -28,6 +37,7 @@ function compactCellMeta(cell) {
     row: cell.row,
     col: cell.col,
     cellFileName: formatCellFileName(cell.row, cell.col),
+    imagePath: cellsDir ? path.join(cellsDir, formatCellFileName(cell.row, cell.col)) : null,
     pageBox: cell.pageBox,
     ...(isDefaultContentBox(cell.contentBox, cell.pageBox) ? {} : { contentBox: cell.contentBox || null })
   };
@@ -119,12 +129,14 @@ class HanziSegmentationPlugin {
    */
   async execute(params) {
     const {
+      stageInput = null,
       imagePath,
+      stageInputMetaPath = null,
       returnBase64 = true,
       outputDir,
-      sourceStep = '03_字帖外框与内框定位裁剪',
-      gridRows = DEFAULT_GRID_ROWS,
-      gridCols = DEFAULT_GRID_COLS,
+      sourceStep = SEGMENTATION_SOURCE_STEPS.stageInput,
+      gridRows,
+      gridCols,
       trimContent = false,
       cropToGrid = true,
       pageBounds,
@@ -139,23 +151,49 @@ class HanziSegmentationPlugin {
       artifact_level
     } = params;
 
-    if (!imagePath) {
-      throw new Error('imagePath参数是必需的');
+    const resolvedStageInput = resolveStageImageJsonInput({
+      stageName: '05阶段',
+      stageInput,
+      imagePath,
+      metaPath: stageInputMetaPath
+    });
+    const resolvedImagePath = resolvedStageInput.imagePath;
+    let resolvedGridRows = Number.isInteger(gridRows) ? gridRows : null;
+    let resolvedGridCols = Number.isInteger(gridCols) ? gridCols : null;
+
+    if ((resolvedGridRows === null || resolvedGridCols === null) && resolvedStageInput.metaPath) {
+      try {
+        const inputMeta = JSON.parse(await fs.promises.readFile(resolvedStageInput.metaPath, 'utf8'));
+        if (resolvedGridRows === null && Number.isInteger(inputMeta?.gridRows)) {
+          resolvedGridRows = inputMeta.gridRows;
+        }
+        if (resolvedGridCols === null && Number.isInteger(inputMeta?.gridCols)) {
+          resolvedGridCols = inputMeta.gridCols;
+        }
+      } catch (error) {
+        // Keep defaults when the upstream JSON is missing or unreadable.
+      }
     }
+    resolvedGridRows = resolvedGridRows || DEFAULT_GRID_ROWS;
+    resolvedGridCols = resolvedGridCols || DEFAULT_GRID_COLS;
 
     const artifactPolicy = resolveSegmentationArtifactPolicy({ artifactLevel, artifact_level });
     const stageDir = outputDir ? path.dirname(outputDir) : null;
+    const step05_1Definition = SEGMENTATION_STEP_DEFINITIONS.step05_1;
+    const step05_2Definition = SEGMENTATION_STEP_DEFINITIONS.step05_2;
+    const step05_3Definition = SEGMENTATION_STEP_DEFINITIONS.step05_3;
+    const step05_4Definition = SEGMENTATION_STEP_DEFINITIONS.step05_4;
     const step05_1Dir = stageDir && artifactPolicy.emitStep05_1
-      ? path.join(stageDir, '05_1_网格范围检测')
+      ? path.join(stageDir, step05_1Definition.dirName)
       : null;
     const step05_2Dir = stageDir && artifactPolicy.emitStep05_2
-      ? path.join(stageDir, '05_2_边界引导切分')
+      ? path.join(stageDir, step05_2Definition.dirName)
       : null;
     const step05_3Dir = stageDir && artifactPolicy.emitStep05_3
-      ? path.join(stageDir, '05_3_切分调试渲染')
+      ? path.join(stageDir, step05_3Definition.dirName)
       : null;
     const step05_4Dir = stageDir && artifactPolicy.emitStep05_4
-      ? path.join(stageDir, '05_4_单格裁切')
+      ? path.join(stageDir, step05_4Definition.dirName)
       : null;
     const resolvedCellsDir = step05_4Dir ? path.join(step05_4Dir, path.basename(outputDir)) : outputDir;
     const resolvedDebugOutputPath = artifactPolicy.emitStep05_3
@@ -171,9 +209,9 @@ class HanziSegmentationPlugin {
     if (step05_4Dir) await fs.promises.mkdir(step05_4Dir, { recursive: true });
     if (resolvedCellsDir) await fs.promises.mkdir(resolvedCellsDir, { recursive: true });
 
-    const { matrix, cells, gridBounds, alignmentStats, debug, stepResults = {} } = await segmentHanzi(imagePath, {
-      gridRows,
-      gridCols,
+    const { matrix, cells, gridBounds, alignmentStats, debug, stepResults = {} } = await segmentHanzi(resolvedImagePath, {
+      gridRows: resolvedGridRows,
+      gridCols: resolvedGridCols,
       trimContent,
       cropToGrid,
       pageBounds,
@@ -194,32 +232,55 @@ class HanziSegmentationPlugin {
     let step05_2MetaPath = null;
     let step05_4MetaPath = null;
     const summaryDebug = compactDebugMeta(debug);
+    const compactCells = cells.map((cell) => compactCellMeta(cell, resolvedCellsDir));
 
     if (resolvedCellsDir) {
       summaryPath = path.join(step05_4Dir || path.dirname(resolvedCellsDir), `${outputPrefix}_4_切分汇总.json`);
+      const handoffContract = buildStageImageHandoffContract({
+        stageName: '05阶段',
+        processNo: SEGMENTATION_STAGE_DEFINITION.processNo,
+        processName: SEGMENTATION_STAGE_DEFINITION.processName,
+        stageInputPath: resolvedImagePath,
+        stageInputMetaPath: resolvedStageInput.metaPath,
+        stageOutputImagePath: resolvedImagePath,
+        stageOutputMetaPath: summaryPath,
+        nextStageInputPath: resolvedImagePath,
+        nextStageInputMetaPath: summaryPath
+      });
       await fs.promises.writeFile(
         summaryPath,
         `${JSON.stringify({
-          processNo: '05',
-          processName: '05_单格切分',
+          processNo: SEGMENTATION_STAGE_DEFINITION.processNo,
+          processName: SEGMENTATION_STAGE_DEFINITION.processName,
           sourceStep,
-          stageInputPath: imagePath,
-          gridRows,
-          gridCols,
-          totalCells: gridRows * gridCols,
+          stageInputPath: resolvedImagePath,
+          stageInputMetaPath: resolvedStageInput.metaPath,
+          gridRows: resolvedGridRows,
+          gridCols: resolvedGridCols,
+          totalCells: resolvedGridRows * resolvedGridCols,
           gridBounds,
           alignmentStats,
           patternProfile,
           debug: summaryDebug,
           cellsDir: resolvedCellsDir,
+          cells: compactCells,
+          stageOutputImagePath: resolvedImagePath,
+          stageOutputMetaPath: summaryPath,
+          nextStageInputPath: resolvedImagePath,
+          nextStageInputMetaPath: summaryPath,
+          stageInput: handoffContract.stageInput,
+          stageOutput: handoffContract.stageOutput,
+          nextStageInput: handoffContract.nextStageInput,
+          handoffContract,
           显示信息: {
-            阶段编号: '05',
-            阶段名称: '05_单格切分',
+            阶段编号: SEGMENTATION_STAGE_DEFINITION.processNo,
+            阶段名称: SEGMENTATION_STAGE_DEFINITION.processName,
             来源步骤: sourceStep,
-            阶段输入图: imagePath,
-            行数: gridRows,
-            列数: gridCols,
-            总格数: gridRows * gridCols,
+            阶段输入图: resolvedImagePath,
+            阶段输入JSON: resolvedStageInput.metaPath,
+            行数: resolvedGridRows,
+            列数: resolvedGridCols,
+            总格数: resolvedGridRows * resolvedGridCols,
             单格输出目录: resolvedCellsDir
           }
         }, null, 2)}\n`,
@@ -237,25 +298,25 @@ class HanziSegmentationPlugin {
     }
     if (artifactPolicy.emitStep05_4 && step05_4Dir) {
       step05_4MetaPath = path.join(step05_4Dir, `${outputPrefix}_4_单格裁切.json`);
-      const compactCells = cells.map(compactCellMeta);
       await fs.promises.writeFile(
         step05_4MetaPath,
         `${JSON.stringify({
-          processNo: '05_4',
-          processName: '05_4_单格裁切',
-          sourceStep: '05_2_边界引导切分',
-          inputPath: imagePath,
-          stageInputPath: imagePath,
+          processNo: step05_4Definition.processNo,
+          processName: step05_4Definition.processName,
+          sourceStep: SEGMENTATION_SOURCE_STEPS.step05_4,
+          inputPath: resolvedImagePath,
+          stageInputPath: resolvedImagePath,
+          stageInputMetaPath: resolvedStageInput.metaPath,
           totalCells: compactCells.length,
-          gridRows,
-          gridCols,
+          gridRows: resolvedGridRows,
+          gridCols: resolvedGridCols,
           patternProfile,
           cellsDir: resolvedCellsDir,
           cells: compactCells,
           显示信息: {
-            步骤编号: '05_4',
-            步骤名称: '05_4_单格裁切',
-            阶段输入图: imagePath,
+            步骤编号: step05_4Definition.processNo,
+            步骤名称: step05_4Definition.processName,
+            阶段输入图: resolvedImagePath,
             总格数: compactCells.length,
             单格输出目录: resolvedCellsDir
           }
@@ -266,9 +327,14 @@ class HanziSegmentationPlugin {
 
     return {
       artifactLevel: artifactPolicy.artifactLevel,
-      gridRows,
-      gridCols,
-      totalCells: gridRows * gridCols,
+      processNo: SEGMENTATION_STAGE_DEFINITION.processNo,
+      processName: SEGMENTATION_STAGE_DEFINITION.processName,
+      sourceStep,
+      stageInputPath: resolvedImagePath,
+      stageInputMetaPath: resolvedStageInput.metaPath,
+      gridRows: resolvedGridRows,
+      gridCols: resolvedGridCols,
+      totalCells: resolvedGridRows * resolvedGridCols,
       gridBounds,
       alignmentStats,
       debug,
@@ -278,6 +344,12 @@ class HanziSegmentationPlugin {
       debugMetaPath: resolvedDebugMetaPath || null,
       outputs: {
         artifactLevel: artifactPolicy.artifactLevel,
+        stageInputPath: resolvedImagePath,
+        stageInputMetaPath: resolvedStageInput.metaPath,
+        stageOutputImagePath: resolvedImagePath,
+        stageOutputMetaPath: summaryPath,
+        nextStageInputPath: resolvedImagePath,
+        nextStageInputMetaPath: summaryPath,
         cellsDir: resolvedCellsDir || null,
         summaryPath,
         stepDirs: {
@@ -293,6 +365,50 @@ class HanziSegmentationPlugin {
           step05_4: step05_4MetaPath
         }
       },
+      stageInput: buildStageImageHandoffContract({
+        stageName: '05阶段',
+        processNo: SEGMENTATION_STAGE_DEFINITION.processNo,
+        processName: SEGMENTATION_STAGE_DEFINITION.processName,
+        stageInputPath: resolvedImagePath,
+        stageInputMetaPath: resolvedStageInput.metaPath,
+        stageOutputImagePath: resolvedImagePath,
+        stageOutputMetaPath: summaryPath,
+        nextStageInputPath: resolvedImagePath,
+        nextStageInputMetaPath: summaryPath
+      }).stageInput,
+      stageOutput: buildStageImageHandoffContract({
+        stageName: '05阶段',
+        processNo: SEGMENTATION_STAGE_DEFINITION.processNo,
+        processName: SEGMENTATION_STAGE_DEFINITION.processName,
+        stageInputPath: resolvedImagePath,
+        stageInputMetaPath: resolvedStageInput.metaPath,
+        stageOutputImagePath: resolvedImagePath,
+        stageOutputMetaPath: summaryPath,
+        nextStageInputPath: resolvedImagePath,
+        nextStageInputMetaPath: summaryPath
+      }).stageOutput,
+      nextStageInput: buildStageImageHandoffContract({
+        stageName: '05阶段',
+        processNo: SEGMENTATION_STAGE_DEFINITION.processNo,
+        processName: SEGMENTATION_STAGE_DEFINITION.processName,
+        stageInputPath: resolvedImagePath,
+        stageInputMetaPath: resolvedStageInput.metaPath,
+        stageOutputImagePath: resolvedImagePath,
+        stageOutputMetaPath: summaryPath,
+        nextStageInputPath: resolvedImagePath,
+        nextStageInputMetaPath: summaryPath
+      }).nextStageInput,
+      handoffContract: buildStageImageHandoffContract({
+        stageName: '05阶段',
+        processNo: SEGMENTATION_STAGE_DEFINITION.processNo,
+        processName: SEGMENTATION_STAGE_DEFINITION.processName,
+        stageInputPath: resolvedImagePath,
+        stageInputMetaPath: resolvedStageInput.metaPath,
+        stageOutputImagePath: resolvedImagePath,
+        stageOutputMetaPath: summaryPath,
+        nextStageInputPath: resolvedImagePath,
+        nextStageInputMetaPath: summaryPath
+      }),
       cells,
       matrix: returnBase64 ? matrixToBase64(matrix) : matrix
     };

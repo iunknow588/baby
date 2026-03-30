@@ -1,12 +1,14 @@
 const fs = require('fs');
 const path = require('path');
 const { extractCellLayers } = require('../utils/cell_image_analysis');
-const cellOriginalExportPlugin = require('../06_1单格原图导出插件/index');
-const cellForegroundMaskPlugin = require('../06_2单格前景Mask插件/index');
-const cellCleanedTextMaskPlugin = require('../06_3单格清洗文字Mask插件/index');
-const cellTextOnlyPlugin = require('../06_4单格文字图插件/index');
-const cellBackgroundOnlyPlugin = require('../06_5单格背景图插件/index');
 const { resolveCellLayerArtifactPolicy } = require('../utils/artifact_policy');
+const {
+  cellOriginalExportPlugin,
+  cellForegroundMaskPlugin,
+  cellCleanedTextMaskPlugin,
+  cellTextOnlyPlugin,
+  cellBackgroundOnlyPlugin
+} = require('./application/cell_layer_step_plugins');
 
 function withValue(key, value) {
   if (value === null || value === undefined) {

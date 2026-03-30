@@ -3,7 +3,10 @@ const fs = require('fs');
 const path = require('path');
 const sharp = require('sharp');
 const hanziPlugin = require('../index');
+const gridBoundsDetectPlugin = require('../../05_1网格范围检测插件/index');
 const boundaryGuideSegmentationPlugin = require('../../05_2边界引导切分插件/index');
+const segmentationDebugRenderPlugin = require('../../05_3切分调试渲染插件/index');
+const cellCropPlugin = require('../../05_4单格裁切插件/index');
 const guideLocalizePlugin = require('../../03_0方格边界局部化插件/index');
 const guideNormalizePlugin = require('../../05_0方格边界规范化插件/index');
 const { generateTestA4Image } = require('./generate_test_image');
@@ -61,6 +64,71 @@ async function testPlugin() {
   for (const stageDir of stageDirs) {
     await fs.promises.rm(stageDir, { recursive: true, force: true });
   }
+
+  const syntheticMaskWidth = 100;
+  const syntheticMaskHeight = 80;
+  const syntheticMask = new Uint8Array(syntheticMaskWidth * syntheticMaskHeight);
+  for (let y = 10; y < 70; y++) {
+    for (let x = 15; x < 85; x++) {
+      syntheticMask[y * syntheticMaskWidth + x] = 1;
+    }
+  }
+
+  const gridBoundsResult = await gridBoundsDetectPlugin.execute({
+    sourceMask: syntheticMask,
+    sourceWidth: syntheticMaskWidth,
+    sourceHeight: syntheticMaskHeight
+  });
+
+  assert.strictEqual(gridBoundsResult.processNo, '05_1', '05_1 wrapper 应保留 processNo');
+  assert.strictEqual(gridBoundsResult.processName, '05_1_网格范围检测', '05_1 wrapper 应保留 processName');
+  assert.strictEqual(gridBoundsResult.detectedGridBounds.width, 70, '05_1 wrapper 应返回准确的检测宽度');
+  assert.strictEqual(gridBoundsResult.detectedGridBounds.height, 60, '05_1 wrapper 应返回准确的检测高度');
+
+  const wrapperDebugOutputPath = path.join(__dirname, '05_3_切分调试渲染', 'wrapper_smoke.png');
+  await fs.promises.mkdir(path.dirname(wrapperDebugOutputPath), { recursive: true });
+  const debugRenderResult = await segmentationDebugRenderPlugin.execute({
+    imageInput: fixturePath,
+    debugOutputPath: wrapperDebugOutputPath,
+    debugData: {
+      gridBounds: { left: 120, top: 180, width: 1250, height: 1700 },
+      verticalLines: [220, 420, 620],
+      horizontalLines: [320, 620, 920],
+      selectedBoundaryMode: '边界引导',
+      fallbackUsed: false
+    }
+  });
+
+  assert.strictEqual(debugRenderResult.processNo, '05_3', '05_3 wrapper 应保留 processNo');
+  assert.strictEqual(debugRenderResult.processName, '05_3_切分调试渲染', '05_3 wrapper 应保留 processName');
+  assert(await pathExists(wrapperDebugOutputPath), '05_3 wrapper 应成功输出调试图');
+
+  const wrapperCropInput = await sharp(
+    Buffer.from(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">'
+      + '<rect width="100" height="100" fill="white"/>'
+      + '<rect x="58" y="8" width="20" height="30" fill="black"/>'
+      + '</svg>'
+    )
+  ).png().toBuffer();
+  const wrapperCropResult = await cellCropPlugin.execute({
+    sourceImage: sharp(wrapperCropInput),
+    gridBounds: { left: 0, top: 0, width: 100, height: 100 },
+    xBoundaries: [[0, 50], [50, 100]],
+    yBoundaries: [[0, 50], [50, 100]],
+    row: 0,
+    col: 1,
+    gridRows: 2,
+    gridCols: 2,
+    trimContent: true,
+    threshold: 220
+  });
+
+  assert.strictEqual(wrapperCropResult.processNo, '05_4', '05_4 wrapper 应保留 processNo');
+  assert.strictEqual(wrapperCropResult.processName, '05_4_单格裁切', '05_4 wrapper 应保留 processName');
+  assert.deepStrictEqual(wrapperCropResult.pageBox, { left: 51, top: 1, width: 48, height: 48 }, '05_4 wrapper 应保留默认最小内缩后的页内裁切框');
+  assert(wrapperCropResult.contentBox.width < wrapperCropResult.pageBox.width, '05_4 wrapper 在 trimContent 模式下应返回收缩后的内容框');
+  assert(await countDarkPixels(wrapperCropResult.buffer) > 100, '05_4 wrapper 裁切结果中应保留文字像素');
 
   const result = await hanziPlugin.execute({
     imagePath: fixturePath,
@@ -176,6 +244,8 @@ async function testPlugin() {
   });
 
   assert(guidedSegmentation, '边界引导切分应返回结果');
+  assert.strictEqual(guidedSegmentation.processNo, '05_2', '05_2 wrapper 应保留 processNo');
+  assert.strictEqual(guidedSegmentation.processName, '05_2_边界引导切分', '05_2 wrapper 应保留 processName');
   assert.strictEqual(guidedSegmentation.yBoundaries[0][0], 0, '显式顶部边界应保留为 0');
   assert.strictEqual(guidedSegmentation.yBoundaries[guidedSegmentation.yBoundaries.length - 1][1], 1885, '显式底部边界应保留为整图高度');
   assert.strictEqual(guidedSegmentation.xBoundaries[0][0], 0, '显式左边界应保留为 0');

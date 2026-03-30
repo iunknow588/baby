@@ -2,6 +2,10 @@ const { resolveConfig } = require('../config');
 const { roundScore } = require('../shared/math');
 const { prepareCellStepArtifacts } = require('../adapters/cell_step_outputs');
 const {
+  CELL_STEP_DEFINITIONS,
+  CELL_SCORING_SOURCE_STEPS
+} = require('../step_definitions');
+const {
   executeCellFeatureExtractionStep,
   executeBlankCellJudgeStep,
   executeCellStructureScoreStep,
@@ -35,12 +39,12 @@ async function scoreCell(cell, options = {}, outputDir = null) {
     cellImage: cell.cell_image,
     options: { ...options, config }
   });
-  step07_1.sourceStep = '06_4_单格文字图';
+  step07_1.sourceStep = CELL_SCORING_SOURCE_STEPS.inputTextOnly;
   step07_1.inputPath = cell.cell_image_path || null;
   const features = step07_1.features;
 
   const step07_2 = executeBlankCellJudgeStep({ features, config });
-  step07_2.sourceStep = '07_1_单格特征提取';
+  step07_2.sourceStep = CELL_SCORING_SOURCE_STEPS.blankJudgeFromFeature;
   step07_2.inputPath = cell.cell_image_path || null;
   const { blankResult, blankReason } = step07_2;
 
@@ -49,9 +53,9 @@ async function scoreCell(cell, options = {}, outputDir = null) {
 
   if (blankResult.isBlank) {
     const step07_5 = {
-      processNo: '07_5',
-      processName: '07_5_单格总评分',
-      sourceStep: '07_2_空白格判定',
+      processNo: CELL_STEP_DEFINITIONS.step07_5.processNo,
+      processName: CELL_STEP_DEFINITIONS.step07_5.processName,
+      sourceStep: CELL_SCORING_SOURCE_STEPS.finalFromBlankJudge,
       inputPath: cell.cell_image_path || null,
       status: 'blank',
       blankResult,
@@ -86,7 +90,7 @@ async function scoreCell(cell, options = {}, outputDir = null) {
     targetChar: cell.target_char,
     options: { ...options, config }
   });
-  step07_3.sourceStep = '07_2_空白格判定';
+  step07_3.sourceStep = CELL_SCORING_SOURCE_STEPS.structureFromBlankJudge;
   step07_3.inputPath = cell.cell_image_path || null;
   const structure = step07_3.structure;
 
@@ -95,7 +99,7 @@ async function scoreCell(cell, options = {}, outputDir = null) {
     targetChar: cell.target_char,
     options: { ...options, config }
   });
-  step07_4.sourceStep = '07_2_空白格判定';
+  step07_4.sourceStep = CELL_SCORING_SOURCE_STEPS.similarityFromBlankJudge;
   step07_4.inputPath = cell.cell_image_path || null;
   const similarity = step07_4.similarity;
 
@@ -105,7 +109,7 @@ async function scoreCell(cell, options = {}, outputDir = null) {
     similarity,
     config
   });
-  step07_5.sourceStep = '07_3_单格结构评分 + 07_4_单格相似度评分';
+  step07_5.sourceStep = CELL_SCORING_SOURCE_STEPS.finalFromStructureSimilarity;
   step07_5.inputPath = cell.cell_image_path || null;
 
   await writeStepMeta('step07_3', step07_3);

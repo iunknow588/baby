@@ -14,13 +14,8 @@ const {
   DEFAULT_GRID_COLS,
   resolveEffectiveGrid
 } = require('../utils/grid_spec');
-let sharp;
-
-try {
-  sharp = require('sharp');
-} catch (error) {
-  sharp = require('../05_切分插件/node_modules/sharp');
-}
+const { requireSharp } = require('../utils/require_sharp');
+const sharp = requireSharp();
 
 function average(values) {
   if (!values.length) {
@@ -29,28 +24,36 @@ function average(values) {
   return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
+function buildStageStepArtifacts(stepDirs = null, stepMetaPaths = null) {
+  return {
+    stepDirs: stepDirs || {},
+    stepMetaPaths: stepMetaPaths || {}
+  };
+}
+
 function buildSegmentationOutputSnapshot(segmentation) {
   const outputs = segmentation?.outputs || {};
+  const stepArtifacts = buildStageStepArtifacts(outputs.stepDirs, outputs.stepMetaPaths);
   return {
     artifactLevel: segmentation?.artifactLevel || outputs.artifactLevel || null,
     cellsDir: outputs.cellsDir || null,
     summaryPath: outputs.summaryPath || null,
     debugImagePath: segmentation?.debugOutputPath || null,
     debugMetaPath: segmentation?.debugMetaPath || null,
-    stepDirs: outputs.stepDirs || {},
-    stepMetaPaths: outputs.stepMetaPaths || {}
+    ...stepArtifacts
   };
 }
 
 function buildCellLayerOutputSnapshot(cellLayerExtraction) {
   const outputs = cellLayerExtraction?.outputs || {};
+  const stepArtifacts = buildStageStepArtifacts(outputs.stepDirs || cellLayerExtraction?.stepDirs, null);
   return {
     artifactLevel: cellLayerExtraction?.artifactLevel || outputs.artifactLevel || null,
     outputDir: cellLayerExtraction?.outputDir || null,
     textOnlyDir: cellLayerExtraction?.textOnlyDir || outputs.textOnlyDir || null,
     backgroundOnlyDir: cellLayerExtraction?.backgroundOnlyDir || outputs.backgroundOnlyDir || null,
     summaryPath: cellLayerExtraction?.summaryPath || null,
-    stepDirs: outputs.stepDirs || cellLayerExtraction?.stepDirs || {}
+    stepDirs: stepArtifacts.stepDirs
   };
 }
 
@@ -62,6 +65,617 @@ function buildScoringOutputSnapshot(scoring) {
     ocrDir: scoring?.ocrOutputDir || null,
     ocr: scoring?.ocr || null
   };
+}
+
+function buildGridCountOutputSnapshot(gridCount, options = {}) {
+  const {
+    dir = null,
+    annotatedPath = null,
+    carryForwardInputPath = null,
+    metaPath = null,
+    stageInfoPath = null
+  } = options;
+  const stepArtifacts = buildStageStepArtifacts(gridCount?.stepDirs, gridCount?.stepMetaPaths);
+  return {
+    dir,
+    annotatedPath: gridCount?.outputAnnotatedPath || annotatedPath || null,
+    carryForwardInputPath: gridCount?.carryForwardInputPath || carryForwardInputPath || null,
+    metaPath: metaPath || null,
+    stageInfoPath: stageInfoPath || null,
+    ...stepArtifacts
+  };
+}
+
+function buildSegmentationStageOutputSnapshot(segmentation, options = {}) {
+  const {
+    dir = null,
+    stageInfoPath = null
+  } = options;
+  return {
+    dir,
+    ...buildSegmentationOutputSnapshot(segmentation),
+    stageInfoPath: stageInfoPath || null
+  };
+}
+
+function buildCellLayerStageOutputSnapshot(cellLayerExtraction, options = {}) {
+  const {
+    dir = null,
+    stageInfoPath = null
+  } = options;
+  const snapshot = buildCellLayerOutputSnapshot(cellLayerExtraction);
+  return {
+    dir,
+    artifactLevel: snapshot.artifactLevel,
+    cellsDir: snapshot.textOnlyDir,
+    backgroundDir: snapshot.backgroundOnlyDir,
+    summaryPath: snapshot.summaryPath,
+    stageInfoPath: stageInfoPath || null,
+    stepDirs: snapshot.stepDirs
+  };
+}
+
+function buildScoringStageOutputSnapshot(scoring, options = {}) {
+  const {
+    dir = null,
+    pageRenderDir = null,
+    pageResultDir = null,
+    annotatedImagePath = null,
+    summaryPath = null,
+    jsonPath = null,
+    stageInfoPath = null
+  } = options;
+  const snapshot = buildScoringOutputSnapshot(scoring);
+  return {
+    dir,
+    artifactLevel: snapshot.artifactLevel,
+    cellStepsDir: snapshot.cellStepsDir,
+    ocrDir: snapshot.ocrDir,
+    pageRenderDir: pageRenderDir || null,
+    pageResultDir: pageResultDir || null,
+    annotatedImagePath: annotatedImagePath || null,
+    summaryPath: summaryPath || null,
+    jsonPath: jsonPath || null,
+    stageInfoPath: stageInfoPath || null,
+    cellsRootDir: snapshot.cellsRootDir,
+    ocr: snapshot.ocr
+  };
+}
+
+function pickFields(source, keys) {
+  const result = {};
+  for (const key of keys) {
+    if (source[key] !== undefined) {
+      result[key] = source[key];
+    }
+  }
+  return result;
+}
+
+const PREPROCESS_OUTPUT_FIELD_KEYS = Object.freeze({
+  step1: Object.freeze([
+    'locateDir',
+    'locateImagePath',
+    'locateMetaPath',
+    'locateStepMetaPaths',
+    'locateStepDirs',
+    'locateStageInfoPath',
+    'stageOutputImagePath'
+  ]),
+  step2: Object.freeze([
+    'locateDir',
+    'locateImagePath',
+    'locateMetaPath',
+    'locateStepMetaPaths',
+    'locateStepDirs',
+    'locateStageInfoPath',
+    'quadDebugImagePath',
+    'quadMetaPath',
+    'rectifyDir',
+    'imagePath',
+    'paperCropImagePath',
+    'rectifyA4ConstraintMetaPath',
+    'warpedImagePath',
+    'guideRemovedImagePath',
+    'neutralGuideRemovedImagePath',
+    'stageOutputImagePath',
+    'metaPath',
+    'debugImagePath',
+    'rectifyStageInfoPath',
+    'step02MetaPaths',
+    'step02Dirs'
+  ]),
+  step3: Object.freeze([
+    'locateDir',
+    'locateImagePath',
+    'locateMetaPath',
+    'locateStepMetaPaths',
+    'locateStepDirs',
+    'locateStageInfoPath',
+    'quadDebugImagePath',
+    'quadMetaPath',
+    'rectifyDir',
+    'textRectDir',
+    'textRectMetaPath',
+    'textRectStepMetaPaths',
+    'textRectStepDirs',
+    'textRectStageInfoPath',
+    'textRectAnnotatedPath',
+    'textRectWarpedPath',
+    'gridSegmentationInputPath',
+    'imagePath',
+    'paperCropImagePath',
+    'rectifyA4ConstraintMetaPath',
+    'warpedImagePath',
+    'guideRemovedImagePath',
+    'guideRemovedDisplayImagePath',
+    'stageOutputImagePath',
+    'gridBackgroundMaskImagePath',
+    'gridRectifiedImagePath',
+    'gridRectifiedMetaPath',
+    'gridStageMetaPath',
+    'metaPath',
+    'debugImagePath',
+    'rectifyStageInfoPath'
+  ]),
+  step4: Object.freeze([
+    'locateDir',
+    'locateImagePath',
+    'locateMetaPath',
+    'locateStageInfoPath',
+    'rectifyDir',
+    'textRectDir',
+    'textRectMetaPath',
+    'textRectStepMetaPaths',
+    'textRectStepDirs',
+    'textRectStageInfoPath',
+    'textRectAnnotatedPath',
+    'textRectWarpedPath',
+    'gridSegmentationInputPath',
+    'imagePath',
+    'stageOutputImagePath',
+    'rectifyA4ConstraintMetaPath',
+    'guideRemovedImagePath',
+    'guideRemovedDisplayImagePath',
+    'gridBackgroundMaskImagePath',
+    'gridRectifiedImagePath',
+    'gridRectifiedMetaPath',
+    'gridStageMetaPath',
+    'metaPath'
+  ]),
+  step5: Object.freeze([
+    'locateDir',
+    'locateImagePath',
+    'locateMetaPath',
+    'locateStageInfoPath',
+    'rectifyDir',
+    'textRectDir',
+    'textRectMetaPath',
+    'textRectStepMetaPaths',
+    'textRectStepDirs',
+    'textRectStageInfoPath',
+    'textRectAnnotatedPath',
+    'textRectWarpedPath',
+    'gridSegmentationInputPath',
+    'imagePath',
+    'stageOutputImagePath',
+    'rectifyA4ConstraintMetaPath',
+    'guideRemovedImagePath',
+    'guideRemovedDisplayImagePath',
+    'gridBackgroundMaskImagePath',
+    'metaPath'
+  ]),
+  step6: Object.freeze([
+    'locateDir',
+    'locateImagePath',
+    'locateMetaPath',
+    'locateStageInfoPath',
+    'rectifyDir',
+    'textRectDir',
+    'textRectMetaPath',
+    'textRectStepMetaPaths',
+    'textRectStepDirs',
+    'textRectStageInfoPath',
+    'textRectAnnotatedPath',
+    'textRectWarpedPath',
+    'gridSegmentationInputPath',
+    'imagePath',
+    'rectifyA4ConstraintMetaPath',
+    'guideRemovedImagePath',
+    'guideRemovedDisplayImagePath',
+    'gridBackgroundMaskImagePath',
+    'gridRectifiedImagePath',
+    'gridRectifiedMetaPath',
+    'gridStageMetaPath',
+    'metaPath'
+  ]),
+  final: Object.freeze([
+    'locateDir',
+    'locateImagePath',
+    'locateMetaPath',
+    'locateStepMetaPaths',
+    'locateStepDirs',
+    'locateStageInfoPath',
+    'quadDebugImagePath',
+    'quadMetaPath',
+    'rectifyDir',
+    'textRectDir',
+    'textRectMetaPath',
+    'textRectStepMetaPaths',
+    'textRectStepDirs',
+    'textRectStageInfoPath',
+    'textRectAnnotatedPath',
+    'textRectWarpedPath',
+    'gridSegmentationInputPath',
+    'imagePath',
+    'paperCropImagePath',
+    'stageOutputImagePath',
+    'rectifyA4ConstraintMetaPath',
+    'warpedImagePath',
+    'guideRemovedImagePath',
+    'guideRemovedDisplayImagePath',
+    'gridBackgroundMaskImagePath',
+    'gridRectifiedImagePath',
+    'gridRectifiedMetaPath',
+    'gridStageMetaPath',
+    'metaPath',
+    'debugImagePath',
+    'rectifyStageInfoPath',
+    'step02MetaPaths',
+    'step02Dirs'
+  ])
+});
+
+const A4_RECTIFY_STEP_OUTPUT_FIELDS = Object.freeze([
+  Object.freeze({ key: 'step02_0', dirField: 'step02_0Dir', metaField: 'step02_0MetaPath' }),
+  Object.freeze({ key: 'step02_1', dirField: 'step02_1Dir', metaField: 'step02_1MetaPath' }),
+  Object.freeze({ key: 'step02_2', dirField: 'step02_2Dir', metaField: 'step02_2MetaPath' }),
+  Object.freeze({ key: 'step02_3', dirField: 'step02_3Dir', metaField: 'step02_3MetaPath' }),
+  Object.freeze({ key: 'step02_3_1', dirField: 'step02_3_1Dir', metaField: 'step02_3_1MetaPath' }),
+  Object.freeze({ key: 'step02_3_2', dirField: 'step02_3_2Dir', metaField: 'step02_3_2MetaPath' })
+]);
+
+const PIPELINE_RESULT_STATE_KEYS = Object.freeze([
+  'preprocessing',
+  'estimatedGrid',
+  'effectiveGrid',
+  'gridCount',
+  'segmentation',
+  'segmentationModePolicy',
+  'cellLayerExtraction',
+  'segmentationSelection',
+  'scoring'
+]);
+
+const PIPELINE_PROGRESS_STATE_PROFILE_KEYS = Object.freeze({
+  step1: Object.freeze([]),
+  step2: Object.freeze(['preprocessing']),
+  step3: Object.freeze(['preprocessing']),
+  step4: Object.freeze([
+    'preprocessing',
+    'estimatedGrid',
+    'effectiveGrid',
+    'gridCount'
+  ]),
+  step5: Object.freeze([
+    'preprocessing',
+    'estimatedGrid',
+    'effectiveGrid',
+    'gridCount',
+    'segmentation',
+    'segmentationModePolicy',
+    'segmentationSelection'
+  ]),
+  step6: Object.freeze([
+    'preprocessing',
+    'estimatedGrid',
+    'effectiveGrid',
+    'gridCount',
+    'segmentation',
+    'segmentationModePolicy',
+    'cellLayerExtraction',
+    'segmentationSelection'
+  ]),
+  final: Object.freeze([
+    'preprocessing',
+    'estimatedGrid',
+    'effectiveGrid',
+    'gridCount',
+    'segmentation',
+    'segmentationModePolicy',
+    'cellLayerExtraction',
+    'segmentationSelection',
+    'scoring'
+  ])
+});
+
+const PIPELINE_PROGRESS_OUTPUT_PROFILE_KEYS = Object.freeze({
+  step1: Object.freeze(['preprocess']),
+  step2: Object.freeze(['preprocess']),
+  step3: Object.freeze(['preprocess']),
+  step4: Object.freeze(['preprocess', 'gridCount']),
+  step5: Object.freeze(['preprocess', 'gridCount', 'segmentation']),
+  step6: Object.freeze(['preprocess', 'segmentation', 'gridCount', 'cellLayerExtraction']),
+  final: Object.freeze(['preprocess', 'segmentation', 'gridCount', 'cellLayerExtraction', 'scoring'])
+});
+
+const PIPELINE_STAGE_DEFINITIONS = Object.freeze({
+  locate: Object.freeze({
+    processNo: '01',
+    processName: '01_稿纸提取',
+    displayName: '01 稿纸提取'
+  }),
+  rectify: Object.freeze({
+    processNo: '02',
+    processName: '02_A4纸张矫正',
+    displayName: '02 A4纸张矫正'
+  }),
+  textRect: Object.freeze({
+    processNo: '03',
+    processName: '03_字帖外框与内框定位裁剪',
+    displayName: '03 字帖外框与内框定位裁剪'
+  }),
+  gridCount: Object.freeze({
+    processNo: '04',
+    processName: '04_方格数量计算标注',
+    displayName: '04 总方格数量计算与标注'
+  }),
+  segmentation: Object.freeze({
+    processNo: '05',
+    processName: '05_单格切分',
+    displayName: '05 单个方格切分'
+  }),
+  cellLayer: Object.freeze({
+    processNo: '06',
+    processName: '06_单格背景文字提取',
+    displayName: '06 单个方格背景与文字提取'
+  }),
+  scoring: Object.freeze({
+    processNo: '07',
+    processName: '07_单格评分',
+    displayName: '07 单个方格文字评分'
+  })
+});
+
+const PIPELINE_STAGE_OUTPUT_RELATIVE_PATHS = Object.freeze({
+  locatePaperBoundsImagePath: Object.freeze(['01_1_纸张范围检测', '01_1_纸张范围检测图.png']),
+  locatePaperCropPath: Object.freeze(['01_2_纸张裁切导出', '01_2_稿纸裁切图.png']),
+  locateMetaPath: Object.freeze(['01_稿纸提取结果.json']),
+  rectifyA4ConstraintImagePath: Object.freeze(['02_0_A4规格约束检测', '02_0_2_A4规格约束检测图.png']),
+  rectifyA4ConstraintMetaPath: Object.freeze(['02_0_A4规格约束检测', '02_0_A4规格约束检测.json']),
+  quadDebugPath: Object.freeze(['02_1_纸张角点检测', '02_1_1_纸张角点调试图.png']),
+  quadMetaPath: Object.freeze(['02_1_纸张角点检测', '02_1_纸张角点检测.json']),
+  preprocessPath: Object.freeze(['02_3_去底纹', '02_3_2_矫正预处理输出', '02_3_2_1_矫正预处理图.png']),
+  preprocessWarpedPath: Object.freeze(['02_2_透视矫正', '02_2_1_透视矫正图.png']),
+  preprocessNeutralGuideRemovedPath: Object.freeze(['02_3_去底纹', '02_3_1_去底纹输出', '02_3_1_1_检测去底纹图.png']),
+  preprocessMetaPath: Object.freeze(['02_A4纸张矫正结果.json']),
+  preprocessGridCornerAnnotatedPath: Object.freeze(['03_1_外框四角定位', '03_1_外框四角定位图.png']),
+  preprocessGridBackgroundMaskPath: Object.freeze(['03_2_外框裁剪与矫正', '03_2_外框裁剪与矫正图.png']),
+  preprocessGridRectifiedPath: Object.freeze(['03_4_字帖内框裁剪与矫正', '03_4_字帖内框裁剪与矫正图.png']),
+  preprocessGridRectifiedMetaPath: Object.freeze(['03_4_字帖内框裁剪与矫正', '03_4_字帖内框裁剪与矫正.json']),
+  preprocessGridStageMetaPath: Object.freeze(['03_3_内框四角定位', '03_3_内框四角定位.json']),
+  textRectBoundsMetaPath: Object.freeze(['03_字帖外框与内框定位裁剪结果.json']),
+  textRectAnnotatedPath: Object.freeze(['03_3_内框四角定位', '03_3_内框四角定位图.png']),
+  textRectWarpedPath: Object.freeze(['03_4_字帖内框裁剪与矫正', '03_4_字帖内框裁剪与矫正图.png']),
+  gridCountEstimatedImagePath: Object.freeze(['04_1_方格数量估计', '04_1_方格数量估计图.png']),
+  gridCountAnnotatedPath: Object.freeze(['04_2_方格数量标注图.png']),
+  gridCountMetaPath: Object.freeze(['04_方格数量计算标注结果.json']),
+  gridCountCarryForwardPath: Object.freeze(['04_3_单格切分输入', '04_3_单格切分输入图.png']),
+  scoringAnnotatedPath: Object.freeze(['07_6_页面评分标注图.png']),
+  scoringSummaryPath: Object.freeze(['07_6_页面评分摘要.txt']),
+  scoringJsonPath: Object.freeze(['07_7_页面评分结果.json'])
+});
+
+const PIPELINE_STAGE_PROCESS_CHAINS = Object.freeze({
+  locate: Object.freeze([
+    '原始待处理图片 -> 01_1_纸张范围检测图',
+    '01_1_纸张范围检测图 -> 01_2_稿纸裁切图'
+  ]),
+  rectify: Object.freeze([
+    '01_2_稿纸裁切图 -> 02 阶段单图输入',
+    '02 阶段单图输入 -> 02_0_1_A4内切清边图',
+    '02 阶段单图输入 -> 02_0_2_A4规格约束检测图',
+    '02 阶段单图输入 -> 02_1_1_纸张角点调试图',
+    '02 阶段单图输入 -> 02_2_1_透视矫正图',
+    '02 阶段单图输入 -> 02_3_1_1_检测去底纹图',
+    '02 阶段单图输入 -> 02_3_2_1_矫正预处理图'
+  ]),
+  textRect: Object.freeze([
+    '02_3_2_1_矫正预处理图 -> 03 阶段单图输入',
+    '03 阶段单图输入 -> 03_1_外框四角定位图',
+    '03 阶段单图输入 -> 03_2_外框裁剪与矫正图(仅外框存在时输出)',
+    '03 阶段单图输入 -> 03_3_内框四角定位图',
+    '03 阶段单图输入 -> 03_4_字帖内框裁剪与矫正图'
+  ]),
+  gridCount: Object.freeze([
+    '03_4_字帖内框裁剪与矫正图 -> 04_1_方格数量估计图',
+    '04_1_方格数量估计图 -> 04_2_方格数量标注图',
+    '03_4_字帖内框裁剪与矫正图 -> 04_3_单格切分输入图'
+  ])
+});
+
+function buildPreprocessOutputSnapshot(fieldMap, profileKey) {
+  return pickFields(fieldMap, PREPROCESS_OUTPUT_FIELD_KEYS[profileKey] || []);
+}
+
+function buildPipelineResultStateSnapshot(fieldMap) {
+  return pickFields(fieldMap, PIPELINE_RESULT_STATE_KEYS);
+}
+
+function buildPipelineProgressStateSnapshot(fieldMap, profileKey) {
+  return pickFields(fieldMap, PIPELINE_PROGRESS_STATE_PROFILE_KEYS[profileKey] || []);
+}
+
+function buildPipelineProgressOutputsSnapshot(fieldMap, profileKey) {
+  return pickFields(fieldMap, PIPELINE_PROGRESS_OUTPUT_PROFILE_KEYS[profileKey] || []);
+}
+
+function buildStepOutputFieldMap(source = {}, definitions = [], fieldName) {
+  const result = {};
+  for (const definition of definitions) {
+    result[definition.key] = source[definition[fieldName]];
+  }
+  return result;
+}
+
+function buildStepOutputMaps(source = {}, definitions = []) {
+  return {
+    stepDirs: buildStepOutputFieldMap(source, definitions, 'dirField'),
+    stepMetaPaths: buildStepOutputFieldMap(source, definitions, 'metaField')
+  };
+}
+
+function buildLocatePreprocessFieldMap(options = {}) {
+  const {
+    locateDir,
+    locateImagePath,
+    locateMetaPath,
+    locateStepMetaPaths,
+    locateStepDirs,
+    locateStageInfoPath,
+    stageOutputImagePath
+  } = options;
+
+  return {
+    locateDir,
+    locateImagePath,
+    locateMetaPath,
+    locateStepMetaPaths,
+    locateStepDirs,
+    locateStageInfoPath,
+    stageOutputImagePath
+  };
+}
+
+function buildRectifyPreprocessFieldMap(options = {}) {
+  const {
+    locateFieldMap = {},
+    quadDebugPath,
+    quadMetaPath,
+    rectifyDir,
+    preprocessPath,
+    paperCropImagePath,
+    rectifyA4ConstraintMetaPath,
+    preprocessWarpedPath,
+    preprocessGuideRemovedPath,
+    preprocessNeutralGuideRemovedPath,
+    stageOutputImagePath,
+    preprocessMetaPath,
+    rectifyStageInfoPath,
+    step02MetaPaths,
+    step02Dirs
+  } = options;
+
+  return {
+    ...locateFieldMap,
+    quadDebugImagePath: quadDebugPath,
+    quadMetaPath,
+    rectifyDir,
+    imagePath: preprocessPath,
+    paperCropImagePath,
+    rectifyA4ConstraintMetaPath,
+    warpedImagePath: preprocessWarpedPath,
+    guideRemovedImagePath: preprocessGuideRemovedPath,
+    neutralGuideRemovedImagePath: preprocessNeutralGuideRemovedPath,
+    stageOutputImagePath,
+    metaPath: preprocessMetaPath,
+    debugImagePath: quadDebugPath,
+    rectifyStageInfoPath,
+    step02MetaPaths,
+    step02Dirs
+  };
+}
+
+function buildTextRectPreprocessFieldMap(options = {}) {
+  const {
+    rectifyFieldMap = {},
+    textRectDir,
+    textRectBoundsMetaPath,
+    textRectStepMetaPaths,
+    textRectStepDirs,
+    textRectStageInfoPath,
+    textRectAnnotatedOutputPath,
+    textRectWarpedOutputPath,
+    gridSegmentationInputOutputPath,
+    preprocessGuideRemovedPath,
+    preprocessNeutralGuideRemovedPath,
+    preprocessGridBackgroundMaskPath,
+    preprocessGridRectifiedPath,
+    preprocessGridRectifiedMetaPath,
+    preprocessGridStageMetaPath
+  } = options;
+
+  return {
+    ...rectifyFieldMap,
+    textRectDir,
+    textRectMetaPath: textRectBoundsMetaPath,
+    textRectStepMetaPaths,
+    textRectStepDirs,
+    textRectStageInfoPath,
+    textRectAnnotatedPath: textRectAnnotatedOutputPath,
+    textRectWarpedPath: textRectWarpedOutputPath,
+    gridSegmentationInputPath: gridSegmentationInputOutputPath,
+    guideRemovedImagePath: preprocessNeutralGuideRemovedPath,
+    guideRemovedDisplayImagePath: preprocessGuideRemovedPath,
+    gridBackgroundMaskImagePath: preprocessGridBackgroundMaskPath,
+    gridRectifiedImagePath: preprocessGridRectifiedPath,
+    gridRectifiedMetaPath: preprocessGridRectifiedMetaPath,
+    gridStageMetaPath: preprocessGridStageMetaPath
+  };
+}
+
+function buildPreprocessProfileSnapshots(baseFieldMap, profileKeys = [], overridesByProfile = {}) {
+  const snapshots = {};
+  for (const profileKey of profileKeys) {
+    snapshots[profileKey] = buildPreprocessOutputSnapshot({
+      ...baseFieldMap,
+      ...(overridesByProfile[profileKey] || {})
+    }, profileKey);
+  }
+  return snapshots;
+}
+
+function buildGridTypeScopedScoringOptions(baseOptions = {}, patternProfile = null, gridType = 'square') {
+  const normalizedBaseOptions = baseOptions && typeof baseOptions === 'object' ? baseOptions : {};
+  const config = normalizedBaseOptions.config && typeof normalizedBaseOptions.config === 'object'
+    ? normalizedBaseOptions.config
+    : {};
+  const imageConfig = config.image && typeof config.image === 'object'
+    ? config.image
+    : {};
+
+  return {
+    ...normalizedBaseOptions,
+    patternProfile,
+    config: {
+      ...config,
+      image: {
+        ...imageConfig,
+        grid_type: gridType
+      }
+    }
+  };
+}
+
+function createPipelineFinishPayload(completedStep, outputs, stateFieldMap = {}, options = {}) {
+  const {
+    stoppedAtStep = completedStep
+  } = options;
+  return {
+    completedStep,
+    stoppedAtStep,
+    outputs,
+    ...buildPipelineResultStateSnapshot(stateFieldMap)
+  };
+}
+
+function createPipelineProgressPayload(completedStep, profileKey, outputFieldMap = {}, stateFieldMap = {}, options = {}) {
+  return createPipelineFinishPayload(
+    completedStep,
+    buildPipelineProgressOutputsSnapshot(outputFieldMap, profileKey),
+    buildPipelineProgressStateSnapshot(stateFieldMap, profileKey),
+    options
+  );
 }
 
 function fitBoundaryGuidesToImage(boundaryGuides, imageWidth, imageHeight) {
@@ -228,6 +842,7 @@ function resolveSegmentationModePolicy({
 
 async function writeStageInfo(stageDir, payload) {
   await fs.promises.mkdir(stageDir, { recursive: true });
+  const stepArtifacts = buildStageStepArtifacts(payload.stepDirs, payload.stepMetaPaths);
   const chineseView = {
     阶段编号: payload.processNo || null,
     阶段名称: payload.processName || null,
@@ -236,8 +851,8 @@ async function writeStageInfo(stageDir, payload) {
     原始图片: payload.imagePath || null,
     阶段输入图: payload.stageInputPath || null,
     关键输出: payload.keyOutputs || {},
-    子步骤目录: payload.stepDirs || {},
-    子步骤结果JSON: payload.stepMetaPaths || {}
+    子步骤目录: stepArtifacts.stepDirs,
+    子步骤结果JSON: stepArtifacts.stepMetaPaths
   };
   if (payload.variants) {
     chineseView.候选方案 = payload.variants;
@@ -252,6 +867,227 @@ async function writeStageInfo(stageDir, payload) {
     'utf8'
   );
   return infoPath;
+}
+
+function buildPipelineStageInfoPayload(stageKey, options = {}) {
+  const stageDefinition = PIPELINE_STAGE_DEFINITIONS[stageKey];
+  if (!stageDefinition) {
+    throw new Error(`未知流水线阶段定义: ${stageKey}`);
+  }
+
+  const {
+    stageDir,
+    imagePath,
+    stageInputPath,
+    keyOutputs,
+    processChain,
+    stepDirs,
+    stepMetaPaths,
+    variants
+  } = options;
+
+  return {
+    ...stageDefinition,
+    stageDir,
+    imagePath,
+    stageInputPath,
+    keyOutputs,
+    processChain,
+    stepDirs,
+    stepMetaPaths,
+    variants
+  };
+}
+
+async function writePipelineStageInfo(stageKey, options = {}) {
+  return writeStageInfo(
+    options.stageDir,
+    buildPipelineStageInfoPayload(stageKey, options)
+  );
+}
+
+function buildPipelineLayout(outputRootDir, baseName) {
+  const fileRootDir = path.join(outputRootDir, baseName);
+  const locateDir = path.join(fileRootDir, PIPELINE_STAGE_DEFINITIONS.locate.processName);
+  const rectifyDir = path.join(fileRootDir, PIPELINE_STAGE_DEFINITIONS.rectify.processName);
+  const textRectDir = path.join(fileRootDir, PIPELINE_STAGE_DEFINITIONS.textRect.processName);
+  const gridCountDir = path.join(fileRootDir, PIPELINE_STAGE_DEFINITIONS.gridCount.processName);
+  const segmentationDir = path.join(fileRootDir, PIPELINE_STAGE_DEFINITIONS.segmentation.processName);
+  const cellLayerDir = path.join(fileRootDir, PIPELINE_STAGE_DEFINITIONS.cellLayer.processName);
+  const scoringDir = path.join(fileRootDir, PIPELINE_STAGE_DEFINITIONS.scoring.processName);
+  const scoringCellDir = path.join(scoringDir, '07_1至07_5_单格评分步骤');
+  const scoringPageRenderDir = path.join(scoringDir, '07_6_页面评分渲染');
+  const scoringResultDir = path.join(scoringDir, '07_7_页面评分结果');
+
+  return {
+    fileRootDir,
+    locateDir,
+    rectifyDir,
+    textRectDir,
+    gridCountDir,
+    segmentationDir,
+    cellLayerDir,
+    scoringDir,
+    scoringCellDir,
+    scoringPageRenderDir,
+    scoringResultDir,
+    locatePaperBoundsImagePath: path.join(locateDir, ...PIPELINE_STAGE_OUTPUT_RELATIVE_PATHS.locatePaperBoundsImagePath),
+    locatePaperCropPath: path.join(locateDir, ...PIPELINE_STAGE_OUTPUT_RELATIVE_PATHS.locatePaperCropPath),
+    locateMetaPath: path.join(locateDir, ...PIPELINE_STAGE_OUTPUT_RELATIVE_PATHS.locateMetaPath),
+    rectifyA4ConstraintImagePath: path.join(rectifyDir, ...PIPELINE_STAGE_OUTPUT_RELATIVE_PATHS.rectifyA4ConstraintImagePath),
+    rectifyA4ConstraintMetaPath: path.join(rectifyDir, ...PIPELINE_STAGE_OUTPUT_RELATIVE_PATHS.rectifyA4ConstraintMetaPath),
+    quadDebugPath: path.join(rectifyDir, ...PIPELINE_STAGE_OUTPUT_RELATIVE_PATHS.quadDebugPath),
+    quadMetaPath: path.join(rectifyDir, ...PIPELINE_STAGE_OUTPUT_RELATIVE_PATHS.quadMetaPath),
+    preprocessPath: path.join(rectifyDir, ...PIPELINE_STAGE_OUTPUT_RELATIVE_PATHS.preprocessPath),
+    preprocessWarpedPath: path.join(rectifyDir, ...PIPELINE_STAGE_OUTPUT_RELATIVE_PATHS.preprocessWarpedPath),
+    preprocessNeutralGuideRemovedPath: path.join(rectifyDir, ...PIPELINE_STAGE_OUTPUT_RELATIVE_PATHS.preprocessNeutralGuideRemovedPath),
+    preprocessMetaPath: path.join(rectifyDir, ...PIPELINE_STAGE_OUTPUT_RELATIVE_PATHS.preprocessMetaPath),
+    preprocessGridCornerAnnotatedPath: path.join(textRectDir, ...PIPELINE_STAGE_OUTPUT_RELATIVE_PATHS.preprocessGridCornerAnnotatedPath),
+    preprocessGridBackgroundMaskPath: path.join(textRectDir, ...PIPELINE_STAGE_OUTPUT_RELATIVE_PATHS.preprocessGridBackgroundMaskPath),
+    preprocessGridRectifiedPath: path.join(textRectDir, ...PIPELINE_STAGE_OUTPUT_RELATIVE_PATHS.preprocessGridRectifiedPath),
+    preprocessGridRectifiedMetaPath: path.join(textRectDir, ...PIPELINE_STAGE_OUTPUT_RELATIVE_PATHS.preprocessGridRectifiedMetaPath),
+    preprocessGridStageMetaPath: path.join(textRectDir, ...PIPELINE_STAGE_OUTPUT_RELATIVE_PATHS.preprocessGridStageMetaPath),
+    textRectBoundsMetaPath: path.join(textRectDir, ...PIPELINE_STAGE_OUTPUT_RELATIVE_PATHS.textRectBoundsMetaPath),
+    textRectAnnotatedPath: path.join(textRectDir, ...PIPELINE_STAGE_OUTPUT_RELATIVE_PATHS.textRectAnnotatedPath),
+    textRectWarpedPath: path.join(textRectDir, ...PIPELINE_STAGE_OUTPUT_RELATIVE_PATHS.textRectWarpedPath),
+    gridCountEstimatedImagePath: path.join(gridCountDir, ...PIPELINE_STAGE_OUTPUT_RELATIVE_PATHS.gridCountEstimatedImagePath),
+    gridCountAnnotatedPath: path.join(gridCountDir, ...PIPELINE_STAGE_OUTPUT_RELATIVE_PATHS.gridCountAnnotatedPath),
+    gridCountMetaPath: path.join(gridCountDir, ...PIPELINE_STAGE_OUTPUT_RELATIVE_PATHS.gridCountMetaPath),
+    gridCountCarryForwardPath: path.join(gridCountDir, ...PIPELINE_STAGE_OUTPUT_RELATIVE_PATHS.gridCountCarryForwardPath),
+    segmentationCellsDir: path.join(segmentationDir, '05_4_单格图'),
+    cellLayerOutputDir: path.join(cellLayerDir, '06_0_单格分层总览'),
+    scoringAnnotatedPath: path.join(scoringPageRenderDir, ...PIPELINE_STAGE_OUTPUT_RELATIVE_PATHS.scoringAnnotatedPath),
+    scoringSummaryPath: path.join(scoringPageRenderDir, ...PIPELINE_STAGE_OUTPUT_RELATIVE_PATHS.scoringSummaryPath),
+    scoringJsonPath: path.join(scoringResultDir, ...PIPELINE_STAGE_OUTPUT_RELATIVE_PATHS.scoringJsonPath)
+  };
+}
+
+function buildLocateStageKeyOutputs({
+  locatePaperBoundsImagePath,
+  stage01OutputImagePath,
+  locateMetaPath
+}) {
+  return {
+    paperBoundsImagePath: locatePaperBoundsImagePath,
+    paperCropImagePath: stage01OutputImagePath,
+    stageOutputImagePath: stage01OutputImagePath,
+    metaPath: locateMetaPath
+  };
+}
+
+function buildRectifyStageKeyOutputs({
+  locatePerspectiveInputPath,
+  rectifyA4ConstraintMetaPath,
+  rectifyA4ConstraintImagePath,
+  preprocessPath,
+  stage02OutputImagePath,
+  preprocessWarpedPath,
+  preprocessGuideRemovedPath,
+  preprocessNeutralGuideRemovedPath,
+  preprocessMetaPath,
+  quadMetaPath,
+  quadDebugPath
+}) {
+  return {
+    inputPath: locatePerspectiveInputPath,
+    a4ConstraintMetaPath: rectifyA4ConstraintMetaPath,
+    a4ConstraintImagePath: rectifyA4ConstraintImagePath,
+    preprocessPath,
+    stageOutputImagePath: stage02OutputImagePath,
+    warpedPath: preprocessWarpedPath,
+    guideRemovedPath: preprocessGuideRemovedPath,
+    neutralGuideRemovedPath: preprocessNeutralGuideRemovedPath,
+    metaPath: preprocessMetaPath,
+    quadMetaPath,
+    quadDebugPath
+  };
+}
+
+function buildTextRectStageKeyOutputs({
+  preprocessPath,
+  preprocessGridCornerAnnotatedPath,
+  preprocessGridBackgroundMaskPath,
+  textRectAnnotatedOutputPath,
+  textRectWarpedOutputPath,
+  textRectBoundsMetaPath
+}) {
+  return {
+    '02_3_2_1_矫正预处理图': preprocessPath,
+    '03_1_外框四角定位图': preprocessGridCornerAnnotatedPath,
+    '03_2_外框裁剪与矫正图': preprocessGridBackgroundMaskPath,
+    '03_3_内框四角定位图': textRectAnnotatedOutputPath,
+    '03_4_字帖内框裁剪与矫正图': textRectWarpedOutputPath,
+    '03_字帖外框与内框定位裁剪结果.json': textRectBoundsMetaPath
+  };
+}
+
+function buildGridCountStageKeyOutputs({
+  textRectWarpedOutputPath,
+  gridCountEstimatedImagePath,
+  gridCountMetaPath,
+  gridCount,
+  gridCountAnnotatedPath,
+  gridCountCarryForwardPath
+}) {
+  return {
+    inputPath: textRectWarpedOutputPath,
+    estimatedImagePath: gridCountEstimatedImagePath,
+    metaPath: gridCountMetaPath,
+    annotatedPath: gridCount.outputAnnotatedPath || gridCountAnnotatedPath,
+    carryForwardInputPath: gridCount.carryForwardInputPath || gridCountCarryForwardPath
+  };
+}
+
+function buildSegmentationStageKeyOutputs({
+  segmentationSelection,
+  segmentationOutputSnapshot,
+  effectiveSegmentationModePolicy
+}) {
+  return {
+    inputPath: segmentationSelection.selectedImagePath,
+    artifactLevel: segmentationOutputSnapshot.artifactLevel,
+    cellsDir: segmentationOutputSnapshot.cellsDir,
+    summaryPath: segmentationOutputSnapshot.summaryPath,
+    debugImagePath: segmentationOutputSnapshot.debugImagePath,
+    debugMetaPath: segmentationOutputSnapshot.debugMetaPath,
+    modePolicy: effectiveSegmentationModePolicy
+  };
+}
+
+function buildCellLayerStageKeyOutputs({
+  segmentationSelection,
+  cellLayerOutputSnapshot
+}) {
+  return {
+    artifactLevel: cellLayerOutputSnapshot.artifactLevel,
+    inputPath: segmentationSelection.selectedImagePath,
+    cellsDir: cellLayerOutputSnapshot.textOnlyDir,
+    backgroundDir: cellLayerOutputSnapshot.backgroundOnlyDir,
+    summaryPath: cellLayerOutputSnapshot.summaryPath
+  };
+}
+
+function buildScoringStageKeyOutputs({
+  segmentationSelection,
+  scoringOutputSnapshot,
+  scoringPageRenderDir,
+  scoringResultDir,
+  scoringAnnotatedPath,
+  scoringSummaryPath,
+  scoringJsonPath
+}) {
+  return {
+    artifactLevel: scoringOutputSnapshot.artifactLevel,
+    inputPath: segmentationSelection.selectedImagePath,
+    cellStepsDir: scoringOutputSnapshot.cellStepsDir,
+    cellsRootDir: scoringOutputSnapshot.cellsRootDir,
+    ocrDir: scoringOutputSnapshot.ocrDir,
+    pageRenderDir: scoringPageRenderDir,
+    pageResultDir: scoringResultDir,
+    annotatedImagePath: scoringAnnotatedPath,
+    summaryPath: scoringSummaryPath,
+    jsonPath: scoringJsonPath
+  };
 }
 
 async function ensureDir(dirPath) {
@@ -432,70 +1268,75 @@ class HanziPipelinePlugin {
     }
 
     const baseName = path.basename(imagePath, path.extname(imagePath));
-    const fileRootDir = path.join(outputRootDir, baseName);
-    const locateDir = path.join(fileRootDir, '01_稿纸提取');
-    const rectifyDir = path.join(fileRootDir, '02_A4纸张矫正');
-    const textRectDir = path.join(fileRootDir, '03_字帖外框与内框定位裁剪');
-    const gridCountDir = path.join(fileRootDir, '04_方格数量计算标注');
-    const segmentationDir = path.join(fileRootDir, '05_单格切分');
-    const cellLayerDir = path.join(fileRootDir, '06_单格背景文字提取');
-    const scoringDir = path.join(fileRootDir, '07_单格评分');
-    const scoringCellDir = path.join(scoringDir, '07_1至07_5_单格评分步骤');
-    const scoringPageRenderDir = path.join(scoringDir, '07_6_页面评分渲染');
-    const scoringResultDir = path.join(scoringDir, '07_7_页面评分结果');
+    const layout = buildPipelineLayout(outputRootDir, baseName);
+    const {
+      fileRootDir,
+      locateDir,
+      rectifyDir,
+      textRectDir,
+      gridCountDir,
+      segmentationDir,
+      cellLayerDir,
+      scoringDir,
+      scoringCellDir,
+      scoringPageRenderDir,
+      scoringResultDir,
+      locatePaperBoundsImagePath,
+      locatePaperCropPath,
+      locateMetaPath,
+      rectifyA4ConstraintImagePath,
+      rectifyA4ConstraintMetaPath,
+      quadDebugPath,
+      quadMetaPath,
+      preprocessPath,
+      preprocessWarpedPath,
+      preprocessNeutralGuideRemovedPath,
+      preprocessMetaPath,
+      preprocessGridCornerAnnotatedPath,
+      preprocessGridBackgroundMaskPath,
+      preprocessGridRectifiedPath,
+      preprocessGridRectifiedMetaPath,
+      preprocessGridStageMetaPath,
+      textRectBoundsMetaPath,
+      textRectAnnotatedPath,
+      textRectWarpedPath,
+      gridCountEstimatedImagePath,
+      gridCountAnnotatedPath,
+      gridCountMetaPath,
+      gridCountCarryForwardPath,
+      segmentationCellsDir,
+      cellLayerOutputDir,
+      scoringAnnotatedPath,
+      scoringSummaryPath,
+      scoringJsonPath
+    } = layout;
 
     await ensureDir(fileRootDir);
     await ensureDir(locateDir);
     await ensureDir(rectifyDir);
     await ensureDir(textRectDir);
-
-    const locatePaperCropPath = path.join(locateDir, '01_2_纸张裁切导出', '01_2_稿纸裁切图.png');
-    const locateMetaPath = path.join(locateDir, '01_稿纸提取结果.json');
-    const rectifyA4ConstraintMetaPath = path.join(rectifyDir, '02_0_A4规格约束检测', '02_0_A4规格约束检测.json');
-    const quadDebugPath = path.join(rectifyDir, '02_1_纸张角点检测', '02_1_1_纸张角点调试图.png');
-    const quadMetaPath = path.join(rectifyDir, '02_1_纸张角点检测', '02_1_纸张角点检测.json');
-    const preprocessPath = path.join(rectifyDir, '02_3_去底纹', '02_3_2_矫正预处理输出', '02_3_2_1_矫正预处理图.png');
-    const preprocessWarpedPath = path.join(rectifyDir, '02_2_透视矫正', '02_2_1_透视矫正图.png');
-    const preprocessNeutralGuideRemovedPath = path.join(rectifyDir, '02_3_去底纹', '02_3_1_去底纹输出', '02_3_1_1_检测去底纹图.png');
     const preprocessGuideRemovedPath = preprocessNeutralGuideRemovedPath;
-    const preprocessMetaPath = path.join(rectifyDir, '02_A4纸张矫正结果.json');
-    const preprocessGridCornerAnnotatedPath = path.join(textRectDir, '03_1_外框四角定位', '03_1_外框四角定位图.png');
-    const preprocessGridBackgroundMaskPath = path.join(textRectDir, '03_2_外框裁剪与矫正', '03_2_外框裁剪与矫正图.png');
-    const preprocessGridRectifiedPath = path.join(textRectDir, '03_4_字帖内框裁剪与矫正', '03_4_字帖内框裁剪与矫正图.png');
-    const preprocessGridRectifiedMetaPath = path.join(textRectDir, '03_4_字帖内框裁剪与矫正', '03_4_字帖内框裁剪与矫正.json');
-    const preprocessGridStageMetaPath = path.join(textRectDir, '03_3_内框四角定位', '03_3_内框四角定位.json');
-    const textRectBoundsMetaPath = path.join(textRectDir, '03_字帖外框与内框定位裁剪结果.json');
-    const textRectAnnotatedPath = path.join(textRectDir, '03_3_内框四角定位', '03_3_内框四角定位图.png');
-    const textRectWarpedPath = path.join(textRectDir, '03_4_字帖内框裁剪与矫正', '03_4_字帖内框裁剪与矫正图.png');
-    const gridCountAnnotatedPath = path.join(gridCountDir, '04_2_方格数量标注图.png');
-    const gridCountMetaPath = path.join(gridCountDir, '04_方格数量计算标注结果.json');
-    const gridCountCarryForwardPath = path.join(gridCountDir, '04_3_单格切分输入', '04_3_单格切分输入图.png');
-    const segmentationCellsDir = path.join(segmentationDir, '05_4_单格图');
-    const cellLayerOutputDir = path.join(cellLayerDir, '06_0_单格分层总览');
-    const scoringAnnotatedPath = path.join(scoringPageRenderDir, '07_6_页面评分标注图.png');
-    const scoringSummaryPath = path.join(scoringPageRenderDir, '07_6_页面评分摘要.txt');
-    const scoringJsonPath = path.join(scoringResultDir, '07_7_页面评分结果.json');
 
     const finish = async (payload = {}) => {
       const result = {
         imagePath,
         baseName,
-        completedStep: payload.completedStep || 0,
-        stoppedAtStep: payload.stoppedAtStep || null,
+        completedStep: payload.completedStep ?? 0,
+        stoppedAtStep: payload.stoppedAtStep ?? null,
         outputs: {
           rootDir: outputRootDir,
           fileRootDir,
           ...(payload.outputs || {})
         },
-        preprocessing: payload.preprocessing || null,
-        estimatedGrid: payload.estimatedGrid || null,
-        effectiveGrid: payload.effectiveGrid || null,
-        gridCount: payload.gridCount || null,
-        segmentation: payload.segmentation || null,
-        segmentationModePolicy: payload.segmentationModePolicy || null,
-        cellLayerExtraction: payload.cellLayerExtraction || null,
-        segmentationSelection: payload.segmentationSelection || null,
-        scoring: payload.scoring || null
+        preprocessing: payload.preprocessing ?? null,
+        estimatedGrid: payload.estimatedGrid ?? null,
+        effectiveGrid: payload.effectiveGrid ?? null,
+        gridCount: payload.gridCount ?? null,
+        segmentation: payload.segmentation ?? null,
+        segmentationModePolicy: payload.segmentationModePolicy ?? null,
+        cellLayerExtraction: payload.cellLayerExtraction ?? null,
+        segmentationSelection: payload.segmentationSelection ?? null,
+        scoring: payload.scoring ?? null
       };
       await fs.promises.writeFile(
         path.join(fileRootDir, 'pipeline_result.json'),
@@ -514,42 +1355,37 @@ class HanziPipelinePlugin {
     if (!stage01OutputImagePath || !fs.existsSync(stage01OutputImagePath)) {
       throw new Error('01阶段未产出唯一标准输出图，禁止进入02阶段');
     }
-    const locateStageInfoPath = await writeStageInfo(locateDir, {
-      processNo: '01',
-      processName: '01_稿纸提取',
-      displayName: '01 稿纸提取',
+    const locateStepArtifacts = buildStageStepArtifacts(a4Extract.stepDirs, a4Extract.stepMetaPaths);
+    const locateStageInfoPath = await writePipelineStageInfo('locate', {
       stageDir: locateDir,
       imagePath,
-      keyOutputs: {
-        paperBoundsImagePath: path.join(locateDir, '01_1_纸张范围检测', '01_1_纸张范围检测图.png'),
-        paperCropImagePath: stage01OutputImagePath,
-        stageOutputImagePath: stage01OutputImagePath,
-        metaPath: locateMetaPath
-      },
-      processChain: [
-        '原始待处理图片 -> 01_1_纸张范围检测图',
-        '01_1_纸张范围检测图 -> 01_2_稿纸裁切图'
-      ],
-      stepDirs: a4Extract.stepDirs || {},
-      stepMetaPaths: a4Extract.stepMetaPaths || {}
+      keyOutputs: buildLocateStageKeyOutputs({
+        locatePaperBoundsImagePath,
+        stage01OutputImagePath,
+        locateMetaPath
+      }),
+      processChain: PIPELINE_STAGE_PROCESS_CHAINS.locate,
+      ...locateStepArtifacts
     });
+    const { stepMetaPaths: locateStepMetaPaths, stepDirs: locateStepDirs } = locateStepArtifacts;
+    const locatePreprocessFieldMap = buildLocatePreprocessFieldMap({
+      locateDir,
+      locateImagePath: stage01OutputImagePath,
+      locateMetaPath,
+      locateStepMetaPaths,
+      locateStepDirs,
+      locateStageInfoPath,
+      stageOutputImagePath: stage01OutputImagePath
+    });
+    const preprocessOutputStep1 = buildPreprocessOutputSnapshot(locatePreprocessFieldMap, 'step1');
     if (maxStep <= 1) {
-      return finish({
-        completedStep: 1,
-        stoppedAtStep: 1,
-        preprocessing: null,
-        outputs: {
-          preprocess: {
-            locateDir,
-            locateImagePath: stage01OutputImagePath,
-            locateMetaPath,
-            locateStepMetaPaths: a4Extract.stepMetaPaths || {},
-            locateStepDirs: a4Extract.stepDirs || {},
-            locateStageInfoPath,
-            stageOutputImagePath: stage01OutputImagePath
-          }
+      return finish(createPipelineProgressPayload(
+        1,
+        'step1',
+        {
+          preprocess: preprocessOutputStep1
         }
-      });
+      ));
     }
 
     const locatePerspectiveInputPath = stage01OutputImagePath;
@@ -575,98 +1411,61 @@ class HanziPipelinePlugin {
     if (!stage02OutputImagePath || !fs.existsSync(stage02OutputImagePath)) {
       throw new Error('02阶段未产出唯一标准输出图，禁止进入03阶段');
     }
+    const {
+      stepDirs: step02Dirs,
+      stepMetaPaths: step02MetaPaths
+    } = buildStepOutputMaps(a4Rectify.outputs || {}, A4_RECTIFY_STEP_OUTPUT_FIELDS);
 
-    const rectifyStageInfoPath = await writeStageInfo(rectifyDir, {
-      processNo: '02',
-      processName: '02_A4纸张矫正',
-      displayName: '02 A4纸张矫正',
+    const rectifyStageInfoPath = await writePipelineStageInfo('rectify', {
       stageDir: rectifyDir,
       imagePath,
       stageInputPath: locatePerspectiveInputPath,
-      keyOutputs: {
-        inputPath: locatePerspectiveInputPath,
-        a4ConstraintMetaPath: rectifyA4ConstraintMetaPath,
-        a4ConstraintImagePath: path.join(rectifyDir, '02_0_A4规格约束检测', '02_0_2_A4规格约束检测图.png'),
+      keyOutputs: buildRectifyStageKeyOutputs({
+        locatePerspectiveInputPath,
+        rectifyA4ConstraintMetaPath,
+        rectifyA4ConstraintImagePath,
         preprocessPath,
-        stageOutputImagePath: stage02OutputImagePath,
-        warpedPath: preprocessWarpedPath,
-        guideRemovedPath: preprocessGuideRemovedPath,
-        neutralGuideRemovedPath: preprocessNeutralGuideRemovedPath,
-        metaPath: preprocessMetaPath,
+        stage02OutputImagePath,
+        preprocessWarpedPath,
+        preprocessGuideRemovedPath,
+        preprocessNeutralGuideRemovedPath,
+        preprocessMetaPath,
         quadMetaPath,
         quadDebugPath
-      },
-      stepDirs: {
-        step02_0: a4Rectify.outputs.step02_0Dir,
-        step02_1: a4Rectify.outputs.step02_1Dir,
-        step02_2: a4Rectify.outputs.step02_2Dir,
-        step02_3: a4Rectify.outputs.step02_3Dir,
-        step02_3_1: a4Rectify.outputs.step02_3_1Dir,
-        step02_3_2: a4Rectify.outputs.step02_3_2Dir
-      },
-      stepMetaPaths: {
-        step02_0: a4Rectify.outputs.step02_0MetaPath,
-        step02_1: a4Rectify.outputs.step02_1MetaPath,
-        step02_2: a4Rectify.outputs.step02_2MetaPath,
-        step02_3: a4Rectify.outputs.step02_3MetaPath,
-        step02_3_1: a4Rectify.outputs.step02_3_1MetaPath,
-        step02_3_2: a4Rectify.outputs.step02_3_2MetaPath
-      },
-      processChain: [
-        '01_2_稿纸裁切图 -> 02 阶段单图输入',
-        '02 阶段单图输入 -> 02_0_1_A4内切清边图',
-        '02 阶段单图输入 -> 02_0_2_A4规格约束检测图',
-        '02 阶段单图输入 -> 02_1_1_纸张角点调试图',
-        '02 阶段单图输入 -> 02_2_1_透视矫正图',
-        '02 阶段单图输入 -> 02_3_1_1_检测去底纹图',
-        '02 阶段单图输入 -> 02_3_2_1_矫正预处理图'
-      ]
+      }),
+      stepDirs: step02Dirs,
+      stepMetaPaths: step02MetaPaths,
+      processChain: PIPELINE_STAGE_PROCESS_CHAINS.rectify
     });
+    const rectifyPreprocessFieldMap = buildRectifyPreprocessFieldMap({
+      locateFieldMap: locatePreprocessFieldMap,
+      quadDebugPath,
+      quadMetaPath,
+      rectifyDir,
+      paperCropImagePath: stage01OutputImagePath,
+      preprocessPath,
+      rectifyA4ConstraintMetaPath,
+      preprocessWarpedPath,
+      preprocessGuideRemovedPath,
+      preprocessNeutralGuideRemovedPath,
+      stageOutputImagePath: stage02OutputImagePath,
+      preprocessMetaPath,
+      rectifyStageInfoPath,
+      step02MetaPaths,
+      step02Dirs
+    });
+    const preprocessOutputStep2 = buildPreprocessOutputSnapshot(rectifyPreprocessFieldMap, 'step2');
     if (maxStep <= 2) {
-      return finish({
-        completedStep: 2,
-        stoppedAtStep: 2,
-        preprocessing,
-        outputs: {
-          preprocess: {
-            locateDir,
-            locateImagePath: stage01OutputImagePath,
-            locateMetaPath,
-            locateStepMetaPaths: a4Extract.stepMetaPaths || {},
-            locateStepDirs: a4Extract.stepDirs || {},
-            locateStageInfoPath,
-            quadDebugImagePath: quadDebugPath,
-            quadMetaPath,
-            rectifyDir,
-            imagePath: preprocessPath,
-            paperCropImagePath: stage01OutputImagePath,
-            rectifyA4ConstraintMetaPath,
-            warpedImagePath: preprocessWarpedPath,
-            guideRemovedImagePath: preprocessGuideRemovedPath,
-            neutralGuideRemovedImagePath: preprocessNeutralGuideRemovedPath,
-            stageOutputImagePath: stage02OutputImagePath,
-            metaPath: preprocessMetaPath,
-            debugImagePath: quadDebugPath,
-            rectifyStageInfoPath,
-            step02MetaPaths: {
-              step02_0: a4Rectify.outputs.step02_0MetaPath,
-              step02_1: a4Rectify.outputs.step02_1MetaPath,
-              step02_2: a4Rectify.outputs.step02_2MetaPath,
-              step02_3: a4Rectify.outputs.step02_3MetaPath,
-              step02_3_1: a4Rectify.outputs.step02_3_1MetaPath,
-              step02_3_2: a4Rectify.outputs.step02_3_2MetaPath
-            },
-            step02Dirs: {
-              step02_0: a4Rectify.outputs.step02_0Dir,
-              step02_1: a4Rectify.outputs.step02_1Dir,
-              step02_2: a4Rectify.outputs.step02_2Dir,
-              step02_3: a4Rectify.outputs.step02_3Dir,
-              step02_3_1: a4Rectify.outputs.step02_3_1Dir,
-              step02_3_2: a4Rectify.outputs.step02_3_2Dir
-            }
-          }
+      return finish(createPipelineProgressPayload(
+        2,
+        'step2',
+        {
+          preprocess: preprocessOutputStep2
+        },
+        {
+          preprocessing
         }
-      });
+      ));
     }
 
     const textRectMeta = await gridOuterRectExtractPlugin.execute({
@@ -686,6 +1485,7 @@ class HanziPipelinePlugin {
     const localizedBoundaryGuides = textRectMeta.localizedBoundaryGuides || null;
     const preferredBoundaryGuides = pickPreferredBoundaryGuides(textRectMeta, gridRows, gridCols);
     const patternProfile = resolvePatternProfile(textRectMeta);
+    const runtimeScoringOptions = buildGridTypeScopedScoringOptions(scoringOptions, patternProfile, gridType);
     let rectifiedBoundaryGuides = null;
     if (preprocessGridRectifiedPath) {
       const rectifiedMeta = await sharp(preprocessGridRectifiedPath).metadata();
@@ -705,72 +1505,65 @@ class HanziPipelinePlugin {
     ) {
       throw new Error('03阶段未完整产出后续所需文件，禁止回退到预设默认路径');
     }
-    const textRectStageInfoPath = await writeStageInfo(textRectDir, {
-      processNo: '03',
-      processName: '03_字帖外框与内框定位裁剪',
-      displayName: '03 字帖外框与内框定位裁剪',
+    const textRectStepArtifacts = buildStageStepArtifacts(textRectMeta.stepDirs, textRectMeta.stepMetaPaths);
+    const textRectStageInfoPath = await writePipelineStageInfo('textRect', {
       stageDir: textRectDir,
       imagePath,
       stageInputPath: stage02OutputImagePath,
-      keyOutputs: {
-          '02_3_2_1_矫正预处理图': preprocessPath,
-          '03_1_外框四角定位图': preprocessGridCornerAnnotatedPath,
-          '03_2_外框裁剪与矫正图': preprocessGridBackgroundMaskPath,
-          '03_3_内框四角定位图': textRectAnnotatedOutputPath,
-          '03_4_字帖内框裁剪与矫正图': textRectWarpedOutputPath,
-          '03_字帖外框与内框定位裁剪结果.json': textRectBoundsMetaPath
-      },
-      processChain: [
-        '02_3_2_1_矫正预处理图 -> 03 阶段单图输入',
-        '03 阶段单图输入 -> 03_1_外框四角定位图',
-        '03 阶段单图输入 -> 03_2_外框裁剪与矫正图(仅外框存在时输出)',
-        '03 阶段单图输入 -> 03_3_内框四角定位图',
-        '03 阶段单图输入 -> 03_4_字帖内框裁剪与矫正图'
-      ],
-      stepDirs: textRectMeta.stepDirs || {},
-      stepMetaPaths: textRectMeta.stepMetaPaths || {}
+      keyOutputs: buildTextRectStageKeyOutputs({
+        preprocessPath,
+        preprocessGridCornerAnnotatedPath,
+        preprocessGridBackgroundMaskPath,
+        textRectAnnotatedOutputPath,
+        textRectWarpedOutputPath,
+        textRectBoundsMetaPath
+      }),
+      processChain: PIPELINE_STAGE_PROCESS_CHAINS.textRect,
+      ...textRectStepArtifacts
     });
-    if (maxStep <= 3) {
-      return finish({
-        completedStep: 3,
-        stoppedAtStep: 3,
-        preprocessing,
-        outputs: {
-          preprocess: {
-            locateDir,
-            locateImagePath: stage01OutputImagePath,
-            locateMetaPath,
-            locateStepMetaPaths: a4Extract.stepMetaPaths || {},
-            locateStepDirs: a4Extract.stepDirs || {},
-            locateStageInfoPath,
-            quadDebugImagePath: quadDebugPath,
-            quadMetaPath,
-            rectifyDir,
-            textRectDir,
-            textRectMetaPath: textRectBoundsMetaPath,
-            textRectStepMetaPaths: textRectMeta.stepMetaPaths || {},
-            textRectStepDirs: textRectMeta.stepDirs || {},
-            textRectStageInfoPath,
-            textRectAnnotatedPath: textRectAnnotatedOutputPath,
-            textRectWarpedPath: textRectWarpedOutputPath,
-            gridSegmentationInputPath: gridSegmentationInputOutputPath,
-            imagePath: preprocessPath,
-            paperCropImagePath: stage01OutputImagePath,
-            rectifyA4ConstraintMetaPath,
-            warpedImagePath: preprocessWarpedPath,
-            guideRemovedImagePath: preprocessNeutralGuideRemovedPath,
-            guideRemovedDisplayImagePath: preprocessGuideRemovedPath,
-            stageOutputImagePath: stage02OutputImagePath,
-            gridBackgroundMaskImagePath: preprocessGridBackgroundMaskPath,
-            gridRectifiedImagePath: preprocessGridRectifiedPath,
-            gridRectifiedMetaPath: preprocessGridRectifiedMetaPath,
-            gridStageMetaPath: preprocessGridStageMetaPath,
-            metaPath: preprocessMetaPath,
-            debugImagePath: quadDebugPath,
-            rectifyStageInfoPath
-          }
+    const { stepMetaPaths: textRectStepMetaPaths, stepDirs: textRectStepDirs } = textRectStepArtifacts;
+    const textRectPreprocessFieldMap = buildTextRectPreprocessFieldMap({
+      rectifyFieldMap: rectifyPreprocessFieldMap,
+      textRectDir,
+      textRectBoundsMetaPath,
+      textRectStepMetaPaths,
+      textRectStepDirs,
+      textRectStageInfoPath,
+      textRectAnnotatedOutputPath,
+      textRectWarpedOutputPath,
+      gridSegmentationInputOutputPath,
+      preprocessGuideRemovedPath,
+      preprocessNeutralGuideRemovedPath,
+      preprocessGridBackgroundMaskPath,
+      preprocessGridRectifiedPath,
+      preprocessGridRectifiedMetaPath,
+      preprocessGridStageMetaPath
+    });
+    const preprocessSnapshots = buildPreprocessProfileSnapshots(
+      textRectPreprocessFieldMap,
+      ['step3', 'step4', 'step5', 'step6', 'final'],
+      {
+        step6: {
+          locateImagePath: a4Extract.paperCropOutputPath || locatePaperCropPath
         }
-      });
+      }
+    );
+    const preprocessOutputStep3 = preprocessSnapshots.step3;
+    const preprocessOutputStep4 = preprocessSnapshots.step4;
+    const preprocessOutputStep5 = preprocessSnapshots.step5;
+    const preprocessOutputStep6 = preprocessSnapshots.step6;
+    const preprocessOutputFinal = preprocessSnapshots.final;
+    if (maxStep <= 3) {
+      return finish(createPipelineProgressPayload(
+        3,
+        'step3',
+        {
+          preprocess: preprocessOutputStep3
+        },
+        {
+          preprocessing
+        }
+      ));
     }
 
     let estimatedGrid = null;
@@ -804,72 +1597,44 @@ class HanziPipelinePlugin {
       source: effectiveGrid.sourceLabel,
       processNo: '04'
     });
-    const gridCountStageInfoPath = await writeStageInfo(gridCountDir, {
-      processNo: '04',
-      processName: '04_方格数量计算标注',
-      displayName: '04 总方格数量计算与标注',
+    const gridCountStepArtifacts = buildStageStepArtifacts(gridCount.stepDirs, gridCount.stepMetaPaths);
+    const gridCountStageInfoPath = await writePipelineStageInfo('gridCount', {
       stageDir: gridCountDir,
       imagePath,
       stageInputPath: textRectWarpedOutputPath,
-      keyOutputs: {
-        inputPath: textRectWarpedOutputPath,
-        estimatedImagePath: path.join(gridCountDir, '04_1_方格数量估计', '04_1_方格数量估计图.png'),
-        metaPath: gridCountMetaPath,
-        annotatedPath: gridCount.outputAnnotatedPath || gridCountAnnotatedPath,
-        carryForwardInputPath: gridCount.carryForwardInputPath || gridCountCarryForwardPath
-      },
-      processChain: [
-        '03_4_字帖内框裁剪与矫正图 -> 04_1_方格数量估计图',
-        '04_1_方格数量估计图 -> 04_2_方格数量标注图',
-        '03_4_字帖内框裁剪与矫正图 -> 04_3_单格切分输入图'
-      ],
-      stepDirs: gridCount.stepDirs || {},
-      stepMetaPaths: gridCount.stepMetaPaths || {}
+      keyOutputs: buildGridCountStageKeyOutputs({
+        textRectWarpedOutputPath,
+        gridCountEstimatedImagePath,
+        gridCountMetaPath,
+        gridCount,
+        gridCountAnnotatedPath,
+        gridCountCarryForwardPath
+      }),
+      processChain: PIPELINE_STAGE_PROCESS_CHAINS.gridCount,
+      ...gridCountStepArtifacts
+    });
+    const gridCountOutputSnapshot = buildGridCountOutputSnapshot(gridCount, {
+      dir: gridCountDir,
+      annotatedPath: gridCountAnnotatedPath,
+      carryForwardInputPath: gridCountCarryForwardPath,
+      metaPath: gridCountMetaPath,
+      stageInfoPath: gridCountStageInfoPath
     });
     if (maxStep <= 4) {
-      return finish({
-        completedStep: 4,
-        stoppedAtStep: 4,
-        preprocessing,
-        estimatedGrid,
-        effectiveGrid,
-        gridCount,
-        outputs: {
-          preprocess: {
-            locateDir,
-            locateImagePath: stage01OutputImagePath,
-            locateMetaPath,
-            locateStageInfoPath,
-            rectifyDir,
-            textRectDir,
-            textRectMetaPath: textRectBoundsMetaPath,
-            textRectStepMetaPaths: textRectMeta.stepMetaPaths || {},
-            textRectStepDirs: textRectMeta.stepDirs || {},
-            textRectStageInfoPath,
-            textRectAnnotatedPath: textRectAnnotatedOutputPath,
-            textRectWarpedPath: textRectWarpedOutputPath,
-            gridSegmentationInputPath: gridSegmentationInputOutputPath,
-            imagePath: preprocessPath,
-            stageOutputImagePath: stage02OutputImagePath,
-            rectifyA4ConstraintMetaPath,
-            guideRemovedImagePath: preprocessNeutralGuideRemovedPath,
-            guideRemovedDisplayImagePath: preprocessGuideRemovedPath,
-            gridBackgroundMaskImagePath: preprocessGridBackgroundMaskPath,
-            gridRectifiedImagePath: preprocessGridRectifiedPath,
-            gridRectifiedMetaPath: preprocessGridRectifiedMetaPath,
-            gridStageMetaPath: preprocessGridStageMetaPath,
-            metaPath: preprocessMetaPath
-          },
-          gridCount: {
-            dir: gridCountDir,
-            annotatedPath: gridCount.outputAnnotatedPath || gridCountAnnotatedPath,
-            metaPath: gridCountMetaPath,
-            stageInfoPath: gridCountStageInfoPath,
-            stepMetaPaths: gridCount.stepMetaPaths || {},
-            stepDirs: gridCount.stepDirs || {}
-          }
+      return finish(createPipelineProgressPayload(
+        4,
+        'step4',
+        {
+          preprocess: preprocessOutputStep4,
+          gridCount: gridCountOutputSnapshot
+        },
+        {
+          preprocessing,
+          estimatedGrid,
+          effectiveGrid,
+          gridCount
         }
-      });
+      ));
     }
 
     const segmentationInputImagePath = gridCount.carryForwardInputPath || gridCountCarryForwardPath;
@@ -1021,74 +1786,41 @@ class HanziPipelinePlugin {
     };
     const segmentationOutputSnapshot = buildSegmentationOutputSnapshot(segmentation);
 
-    const segmentationStageInfoPath = await writeStageInfo(segmentationDir, {
-      processNo: '05',
-      processName: '05_单格切分',
-      displayName: '05 单个方格切分',
+    const segmentationStageInfoPath = await writePipelineStageInfo('segmentation', {
       stageDir: segmentationDir,
       imagePath,
       stageInputPath: segmentationSelection.selectedImagePath,
-      keyOutputs: {
-        inputPath: segmentationSelection.selectedImagePath,
-        artifactLevel: segmentationOutputSnapshot.artifactLevel,
-        cellsDir: segmentationOutputSnapshot.cellsDir,
-        summaryPath: segmentationOutputSnapshot.summaryPath,
-        debugImagePath: segmentationOutputSnapshot.debugImagePath,
-        debugMetaPath: segmentationOutputSnapshot.debugMetaPath,
-        modePolicy: effectiveSegmentationModePolicy
-      },
+      keyOutputs: buildSegmentationStageKeyOutputs({
+        segmentationSelection,
+        segmentationOutputSnapshot,
+        effectiveSegmentationModePolicy
+      }),
       stepDirs: segmentationOutputSnapshot.stepDirs,
       stepMetaPaths: segmentationOutputSnapshot.stepMetaPaths
     });
+    const segmentationStageOutputSnapshot = buildSegmentationStageOutputSnapshot(segmentation, {
+      dir: segmentationDir,
+      stageInfoPath: segmentationStageInfoPath
+    });
     if (maxStep <= 5) {
-      return finish({
-        completedStep: 5,
-        stoppedAtStep: 5,
-        preprocessing,
-        estimatedGrid,
-        effectiveGrid,
-        gridCount,
-        segmentation,
-        segmentationModePolicy: effectiveSegmentationModePolicy,
-        segmentationSelection,
-        outputs: {
-          preprocess: {
-            locateDir,
-            locateImagePath: stage01OutputImagePath,
-            locateMetaPath,
-            locateStageInfoPath,
-            rectifyDir,
-            textRectDir,
-            textRectMetaPath: textRectBoundsMetaPath,
-            textRectStepMetaPaths: textRectMeta.stepMetaPaths || {},
-            textRectStepDirs: textRectMeta.stepDirs || {},
-            textRectStageInfoPath,
-            textRectAnnotatedPath: textRectAnnotatedOutputPath,
-            textRectWarpedPath: textRectWarpedOutputPath,
-            gridSegmentationInputPath: gridSegmentationInputOutputPath,
-            imagePath: preprocessPath,
-            stageOutputImagePath: stage02OutputImagePath,
-            rectifyA4ConstraintMetaPath,
-            guideRemovedImagePath: preprocessNeutralGuideRemovedPath,
-            guideRemovedDisplayImagePath: preprocessGuideRemovedPath,
-            gridBackgroundMaskImagePath: preprocessGridBackgroundMaskPath,
-            metaPath: preprocessMetaPath
-          },
-          gridCount: {
-            dir: gridCountDir,
-            annotatedPath: gridCount.outputAnnotatedPath || gridCountAnnotatedPath,
-            carryForwardInputPath: gridCount.carryForwardInputPath || gridCountCarryForwardPath,
-            metaPath: gridCountMetaPath,
-            stageInfoPath: gridCountStageInfoPath,
-            stepMetaPaths: gridCount.stepMetaPaths || {},
-            stepDirs: gridCount.stepDirs || {}
-          },
-          segmentation: {
-            ...segmentationOutputSnapshot,
-            stageInfoPath: segmentationStageInfoPath
-          }
+      return finish(createPipelineProgressPayload(
+        5,
+        'step5',
+        {
+          preprocess: preprocessOutputStep5,
+          gridCount: gridCountOutputSnapshot,
+          segmentation: segmentationStageOutputSnapshot
+        },
+        {
+          preprocessing,
+          estimatedGrid,
+          effectiveGrid,
+          gridCount,
+          segmentation,
+          segmentationModePolicy: effectiveSegmentationModePolicy,
+          segmentationSelection
         }
-      });
+      ));
     }
 
     await ensureDir(cellLayerDir);
@@ -1098,106 +1830,44 @@ class HanziPipelinePlugin {
       outputDir: cellLayerOutputDir,
       outputPrefix: '06',
       patternProfile,
-      options: scoringOptions
-        ? {
-            ...scoringOptions,
-            patternProfile,
-            config: {
-              ...(scoringOptions.config || {}),
-              image: {
-                ...((scoringOptions.config && scoringOptions.config.image) || {}),
-                grid_type: gridType
-              }
-            }
-          }
-        : {
-            patternProfile,
-            config: {
-              image: {
-                grid_type: gridType
-              }
-            }
-          }
+      options: runtimeScoringOptions
     });
     const cellLayerOutputSnapshot = buildCellLayerOutputSnapshot(cellLayerExtraction);
-    const cellLayerStageInfoPath = await writeStageInfo(cellLayerDir, {
-      processNo: '06',
-      processName: '06_单格背景文字提取',
-      displayName: '06 单个方格背景与文字提取',
+    const cellLayerStageInfoPath = await writePipelineStageInfo('cellLayer', {
       stageDir: cellLayerDir,
       imagePath,
       stageInputPath: segmentationSelection.selectedImagePath,
-      keyOutputs: {
-        artifactLevel: cellLayerOutputSnapshot.artifactLevel,
-        inputPath: segmentationSelection.selectedImagePath,
-        cellsDir: cellLayerOutputSnapshot.textOnlyDir,
-        backgroundDir: cellLayerOutputSnapshot.backgroundOnlyDir,
-        summaryPath: cellLayerOutputSnapshot.summaryPath
-      },
+      keyOutputs: buildCellLayerStageKeyOutputs({
+        segmentationSelection,
+        cellLayerOutputSnapshot
+      }),
       stepDirs: cellLayerOutputSnapshot.stepDirs
     });
+    const cellLayerStageOutputSnapshot = buildCellLayerStageOutputSnapshot(cellLayerExtraction, {
+      dir: cellLayerDir,
+      stageInfoPath: cellLayerStageInfoPath
+    });
     if (maxStep <= 6) {
-      return finish({
-        completedStep: 6,
-        stoppedAtStep: 6,
-        preprocessing,
-        estimatedGrid,
-        effectiveGrid,
-        gridCount,
-        segmentation,
-        segmentationModePolicy: effectiveSegmentationModePolicy,
-        cellLayerExtraction,
-        segmentationSelection,
-        outputs: {
-          preprocess: {
-            locateDir,
-            locateImagePath: a4Extract.paperCropOutputPath || locatePaperCropPath,
-            locateMetaPath,
-            locateStageInfoPath,
-            rectifyDir,
-            textRectDir,
-            textRectMetaPath: textRectBoundsMetaPath,
-            textRectStepMetaPaths: textRectMeta.stepMetaPaths || {},
-            textRectStepDirs: textRectMeta.stepDirs || {},
-            textRectStageInfoPath,
-            textRectAnnotatedPath: textRectAnnotatedOutputPath,
-            textRectWarpedPath: textRectWarpedOutputPath,
-            gridSegmentationInputPath: gridSegmentationInputOutputPath,
-            imagePath: preprocessPath,
-            rectifyA4ConstraintMetaPath,
-            guideRemovedImagePath: preprocessNeutralGuideRemovedPath,
-            guideRemovedDisplayImagePath: preprocessGuideRemovedPath,
-            gridBackgroundMaskImagePath: preprocessGridBackgroundMaskPath,
-            gridRectifiedImagePath: preprocessGridRectifiedPath,
-            gridRectifiedMetaPath: preprocessGridRectifiedMetaPath,
-            gridStageMetaPath: preprocessGridStageMetaPath,
-            metaPath: preprocessMetaPath
-          },
-          segmentation: {
-            dir: segmentationDir,
-            ...segmentationOutputSnapshot,
-            stageInfoPath: segmentationStageInfoPath
-          },
-          gridCount: {
-            dir: gridCountDir,
-            annotatedPath: gridCount.outputAnnotatedPath || gridCountAnnotatedPath,
-            carryForwardInputPath: gridCount.carryForwardInputPath || gridCountCarryForwardPath,
-            metaPath: gridCountMetaPath,
-            stageInfoPath: gridCountStageInfoPath,
-            stepMetaPaths: gridCount.stepMetaPaths || {},
-            stepDirs: gridCount.stepDirs || {}
-          },
-          cellLayerExtraction: {
-            dir: cellLayerDir,
-            artifactLevel: cellLayerOutputSnapshot.artifactLevel,
-            cellsDir: cellLayerOutputSnapshot.textOnlyDir,
-            backgroundDir: cellLayerOutputSnapshot.backgroundOnlyDir,
-            summaryPath: cellLayerOutputSnapshot.summaryPath,
-            stageInfoPath: cellLayerStageInfoPath,
-            stepDirs: cellLayerOutputSnapshot.stepDirs
-          }
+      return finish(createPipelineProgressPayload(
+        6,
+        'step6',
+        {
+          preprocess: preprocessOutputStep6,
+          segmentation: segmentationStageOutputSnapshot,
+          gridCount: gridCountOutputSnapshot,
+          cellLayerExtraction: cellLayerStageOutputSnapshot
+        },
+        {
+          preprocessing,
+          estimatedGrid,
+          effectiveGrid,
+          gridCount,
+          segmentation,
+          segmentationModePolicy: effectiveSegmentationModePolicy,
+          cellLayerExtraction,
+          segmentationSelection
         }
-      });
+      ));
     }
 
     await ensureDir(scoringPageRenderDir);
@@ -1213,152 +1883,59 @@ class HanziPipelinePlugin {
       recognized_chars,
       segmentation,
       cellLayerExtraction,
-      options: scoringOptions
-        ? {
-            ...scoringOptions,
-            patternProfile,
-            config: {
-              ...(scoringOptions.config || {}),
-              image: {
-                ...((scoringOptions.config && scoringOptions.config.image) || {}),
-                grid_type: gridType
-              }
-            }
-          }
-        : {
-            patternProfile,
-            config: {
-              image: {
-                grid_type: gridType
-              }
-            }
-          }
+      options: runtimeScoringOptions
     });
     const scoringOutputSnapshot = buildScoringOutputSnapshot(scoring);
 
     await fs.promises.writeFile(scoringJsonPath, JSON.stringify(scoring, null, 2), 'utf8');
-    const scoringStageInfoPath = await writeStageInfo(scoringDir, {
-      processNo: '07',
-      processName: '07_单格评分',
-      displayName: '07 单个方格文字评分',
+    const scoringStageInfoPath = await writePipelineStageInfo('scoring', {
       stageDir: scoringDir,
       imagePath,
       stageInputPath: segmentationSelection.selectedImagePath,
-      keyOutputs: {
-        artifactLevel: scoringOutputSnapshot.artifactLevel,
-        inputPath: segmentationSelection.selectedImagePath,
-        cellStepsDir: scoringOutputSnapshot.cellStepsDir,
-        cellsRootDir: scoringOutputSnapshot.cellsRootDir,
-        ocrDir: scoringOutputSnapshot.ocrDir,
-        pageRenderDir: scoringPageRenderDir,
-        pageResultDir: scoringResultDir,
-        annotatedImagePath: scoringAnnotatedPath,
-        summaryPath: scoringSummaryPath,
-        jsonPath: scoringJsonPath
-      }
+      keyOutputs: buildScoringStageKeyOutputs({
+        segmentationSelection,
+        scoringOutputSnapshot,
+        scoringPageRenderDir,
+        scoringResultDir,
+        scoringAnnotatedPath,
+        scoringSummaryPath,
+        scoringJsonPath
+      })
     });
-
-    return finish({
-      completedStep: 7,
-      outputs: {
-        rootDir: outputRootDir,
-        fileRootDir,
-        preprocess: {
-          locateDir,
-          locateImagePath: stage01OutputImagePath,
-          locateMetaPath,
-          locateStepMetaPaths: a4Extract.stepMetaPaths || {},
-          locateStepDirs: a4Extract.stepDirs || {},
-          locateStageInfoPath,
-          quadDebugImagePath: quadDebugPath,
-          quadMetaPath,
-          rectifyDir,
-          textRectDir,
-          textRectMetaPath: textRectBoundsMetaPath,
-          textRectStepMetaPaths: textRectMeta.stepMetaPaths || {},
-          textRectStepDirs: textRectMeta.stepDirs || {},
-          textRectStageInfoPath,
-          textRectAnnotatedPath: textRectAnnotatedOutputPath,
-          textRectWarpedPath: textRectWarpedOutputPath,
-          gridSegmentationInputPath: gridSegmentationInputOutputPath,
-          imagePath: preprocessPath,
-          paperCropImagePath: stage01OutputImagePath,
-          stageOutputImagePath: stage02OutputImagePath,
-          rectifyA4ConstraintMetaPath,
-          warpedImagePath: preprocessWarpedPath,
-          guideRemovedImagePath: preprocessNeutralGuideRemovedPath,
-          guideRemovedDisplayImagePath: preprocessGuideRemovedPath,
-          gridBackgroundMaskImagePath: preprocessGridBackgroundMaskPath,
-          gridRectifiedImagePath: preprocessGridRectifiedPath,
-          gridRectifiedMetaPath: preprocessGridRectifiedMetaPath,
-          gridStageMetaPath: preprocessGridStageMetaPath,
-          metaPath: preprocessMetaPath,
-          debugImagePath: quadDebugPath,
-          rectifyStageInfoPath,
-          step02MetaPaths: {
-            step02_0: a4Rectify.outputs.step02_0MetaPath,
-            step02_1: a4Rectify.outputs.step02_1MetaPath,
-            step02_2: a4Rectify.outputs.step02_2MetaPath,
-            step02_3: a4Rectify.outputs.step02_3MetaPath,
-            step02_3_1: a4Rectify.outputs.step02_3_1MetaPath,
-            step02_3_2: a4Rectify.outputs.step02_3_2MetaPath
-          },
-          step02Dirs: {
-            step02_0: a4Rectify.outputs.step02_0Dir,
-            step02_1: a4Rectify.outputs.step02_1Dir,
-            step02_2: a4Rectify.outputs.step02_2Dir,
-            step02_3: a4Rectify.outputs.step02_3Dir,
-            step02_3_1: a4Rectify.outputs.step02_3_1Dir,
-            step02_3_2: a4Rectify.outputs.step02_3_2Dir
-          }
-        },
-        segmentation: {
-          ...segmentationOutputSnapshot,
-          stageInfoPath: segmentationStageInfoPath
-        },
-        gridCount: {
-          dir: gridCountDir,
-          annotatedPath: gridCount.outputAnnotatedPath || gridCountAnnotatedPath,
-          carryForwardInputPath: gridCount.carryForwardInputPath || gridCountCarryForwardPath,
-          metaPath: gridCountMetaPath,
-          stageInfoPath: gridCountStageInfoPath,
-          stepMetaPaths: gridCount.stepMetaPaths || {},
-          stepDirs: gridCount.stepDirs || {}
-        },
-        cellLayerExtraction: {
-          dir: cellLayerDir,
-          artifactLevel: cellLayerOutputSnapshot.artifactLevel,
-          cellsDir: cellLayerOutputSnapshot.textOnlyDir,
-          backgroundDir: cellLayerOutputSnapshot.backgroundOnlyDir,
-          summaryPath: cellLayerOutputSnapshot.summaryPath,
-          stageInfoPath: cellLayerStageInfoPath,
-          stepDirs: cellLayerOutputSnapshot.stepDirs
-        },
-        scoring: {
-          dir: scoringDir,
-          artifactLevel: scoringOutputSnapshot.artifactLevel,
-          cellStepsDir: scoringOutputSnapshot.cellStepsDir,
-          ocrDir: scoringOutputSnapshot.ocrDir,
-          pageRenderDir: scoringPageRenderDir,
-          pageResultDir: scoringResultDir,
-          annotatedImagePath: scoringAnnotatedPath,
-          summaryPath: scoringSummaryPath,
-          jsonPath: scoringJsonPath,
-          stageInfoPath: scoringStageInfoPath,
-          cellsRootDir: scoringOutputSnapshot.cellsRootDir,
-          ocr: scoringOutputSnapshot.ocr
-        }
+    const scoringStageOutputSnapshot = buildScoringStageOutputSnapshot(scoring, {
+      dir: scoringDir,
+      pageRenderDir: scoringPageRenderDir,
+      pageResultDir: scoringResultDir,
+      annotatedImagePath: scoringAnnotatedPath,
+      summaryPath: scoringSummaryPath,
+      jsonPath: scoringJsonPath,
+      stageInfoPath: scoringStageInfoPath
+    });
+    return finish(createPipelineProgressPayload(
+      7,
+      'final',
+      {
+        preprocess: preprocessOutputFinal,
+        segmentation: segmentationStageOutputSnapshot,
+        gridCount: gridCountOutputSnapshot,
+        cellLayerExtraction: cellLayerStageOutputSnapshot,
+        scoring: scoringStageOutputSnapshot
       },
-      preprocessing,
-      estimatedGrid,
-      effectiveGrid,
-      gridCount,
-      segmentation,
-      segmentationModePolicy: effectiveSegmentationModePolicy,
-      cellLayerExtraction,
-      segmentationSelection,
-      scoring
-    });
+      {
+        preprocessing,
+        estimatedGrid,
+        effectiveGrid,
+        gridCount,
+        segmentation,
+        segmentationModePolicy: effectiveSegmentationModePolicy,
+        cellLayerExtraction,
+        segmentationSelection,
+        scoring
+      },
+      {
+        stoppedAtStep: null
+      }
+    ));
   }
 }
 

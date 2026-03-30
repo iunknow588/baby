@@ -1,0 +1,16 @@
+{
+  "processNo": "04_2",
+  "processName": "04_2_方格数量标注",
+  "sourceStep": "04_1_方格数量估计",
+  "inputPath": "/home/lc/luckee_dao/baby/coze/插件/04_方格数量计算标注插件/test/fixtures/grid_count_fixture.png",
+  "imagePath": "/home/lc/luckee_dao/baby/coze/插件/04_方格数量计算标注插件/test/fixtures/grid_count_fixture.png",
+  "gridRows": 7,
+  "gridCols": 10,
+  "totalCells": 70,
+  "source": "指定值",
+  "imageSize": {
+    "width": 1200,
+    "height": 1600
+  },
+  "outputAnnotatedPath": "/home/lc/luckee_dao/baby/coze/插件/04_方格数量计算标注插件/test/output/04_2_wrapper/annotated.png"
+}

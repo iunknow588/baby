@@ -18,6 +18,7 @@ const {
   levelFromScore,
   buildAliasSemantics
 } = require('../domain/rule_scoring');
+const { CELL_STEP_DEFINITIONS } = require('../step_definitions');
 
 async function executeCellFeatureExtractionStep(params) {
   const { cellImage, options = {} } = params || {};
@@ -27,8 +28,8 @@ async function executeCellFeatureExtractionStep(params) {
 
   const features = await extractFeatures(cellImage, options);
   return {
-    processNo: '07_1',
-    processName: '07_1_单格特征提取',
+    processNo: CELL_STEP_DEFINITIONS.step07_1.processNo,
+    processName: CELL_STEP_DEFINITIONS.step07_1.processName,
     features
   };
 }
@@ -41,8 +42,8 @@ function executeBlankCellJudgeStep(params) {
 
   const blankResult = detectBlank(features, config);
   return {
-    processNo: '07_2',
-    processName: '07_2_空白格判定',
+    processNo: CELL_STEP_DEFINITIONS.step07_2.processNo,
+    processName: CELL_STEP_DEFINITIONS.step07_2.processName,
     blankResult,
     blankReason: blankReasonFromFeatures(features)
   };
@@ -52,8 +53,8 @@ async function executeCellStructureScoreStep(params) {
   const { cellImage, targetChar, options = {} } = params || {};
   const structure = await calculateStructureScore(cellImage, targetChar, options);
   return {
-    processNo: '07_3',
-    processName: '07_3_单格结构评分',
+    processNo: CELL_STEP_DEFINITIONS.step07_3.processNo,
+    processName: CELL_STEP_DEFINITIONS.step07_3.processName,
     structure
   };
 }
@@ -62,8 +63,8 @@ async function executeCellSimilarityScoreStep(params) {
   const { cellImage, targetChar, options = {} } = params || {};
   const similarity = await calculateSimilarityScore(cellImage, targetChar, options);
   return {
-    processNo: '07_4',
-    processName: '07_4_单格相似度评分',
+    processNo: CELL_STEP_DEFINITIONS.step07_4.processNo,
+    processName: CELL_STEP_DEFINITIONS.step07_4.processName,
     similarity
   };
 }
@@ -91,8 +92,8 @@ function executeCellFinalScoreStep(params) {
       );
 
   return {
-    processNo: '07_5',
-    processName: '07_5_单格总评分',
+    processNo: CELL_STEP_DEFINITIONS.step07_5.processNo,
+    processName: CELL_STEP_DEFINITIONS.step07_5.processName,
     total,
     scoreLevel: levelFromScore(total),
     subScores: {

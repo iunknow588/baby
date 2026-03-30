@@ -1,33 +1,10 @@
 const fs = require('fs');
 const path = require('path');
-
-const CELL_STEP_DIR_NAMES = {
-  step07_1: '07_1_单格特征提取',
-  step07_2: '07_2_空白格判定',
-  step07_3: '07_3_单格结构评分',
-  step07_4: '07_4_单格相似度评分',
-  step07_5: '07_5_单格总评分'
-};
-
-function createEmptyStepMetaPaths() {
-  return {
-    step07_1: null,
-    step07_2: null,
-    step07_3: null,
-    step07_4: null,
-    step07_5: null
-  };
-}
-
-function buildCellStepDirs(outputDir) {
-  if (!outputDir) {
-    return {};
-  }
-
-  return Object.fromEntries(
-    Object.entries(CELL_STEP_DIR_NAMES).map(([stepKey, dirName]) => [stepKey, path.join(outputDir, dirName)])
-  );
-}
+const {
+  CELL_STEP_DEFINITIONS,
+  buildCellStepDirs,
+  createEmptyStepMetaPaths
+} = require('../step_definitions');
 
 async function prepareCellStepArtifacts(outputDir) {
   const stepDirs = buildCellStepDirs(outputDir);
@@ -43,12 +20,12 @@ async function prepareCellStepArtifacts(outputDir) {
     }
 
     const dirPath = stepDirs[stepKey];
-    const fileBaseName = CELL_STEP_DIR_NAMES[stepKey];
-    if (!dirPath || !fileBaseName) {
+    const stepDefinition = CELL_STEP_DEFINITIONS[stepKey];
+    if (!dirPath || !stepDefinition) {
       throw new Error(`未知的单格步骤键: ${stepKey}`);
     }
 
-    const metaPath = path.join(dirPath, `${fileBaseName}.json`);
+    const metaPath = path.join(dirPath, `${stepDefinition.dirName}.json`);
     await fs.promises.writeFile(metaPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
     stepMetaPaths[stepKey] = metaPath;
     return metaPath;
@@ -62,6 +39,6 @@ async function prepareCellStepArtifacts(outputDir) {
 }
 
 module.exports = {
-  CELL_STEP_DIR_NAMES,
+  CELL_STEP_DEFINITIONS,
   prepareCellStepArtifacts
 };

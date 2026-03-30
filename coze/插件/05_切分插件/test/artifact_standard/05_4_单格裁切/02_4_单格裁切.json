@@ -4,6 +4,7 @@
   "sourceStep": "05_2_边界引导切分",
   "inputPath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/fixtures/test_a4.png",
   "stageInputPath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/fixtures/test_a4.png",
+  "stageInputMetaPath": null,
   "totalCells": 70,
   "gridRows": 7,
   "gridCols": 10,
@@ -14,6 +15,7 @@
       "row": 0,
       "col": 0,
       "cellFileName": "05_单格_row01_col01.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row01_col01.png",
       "pageBox": {
         "left": 180,
         "top": 221,
@@ -25,6 +27,7 @@
       "row": 0,
       "col": 1,
       "cellFileName": "05_单格_row01_col02.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row01_col02.png",
       "pageBox": {
         "left": 268,
         "top": 221,
@@ -36,6 +39,7 @@
       "row": 0,
       "col": 2,
       "cellFileName": "05_单格_row01_col03.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row01_col03.png",
       "pageBox": {
         "left": 356,
         "top": 221,
@@ -47,6 +51,7 @@
       "row": 0,
       "col": 3,
       "cellFileName": "05_单格_row01_col04.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row01_col04.png",
       "pageBox": {
         "left": 444,
         "top": 221,
@@ -58,6 +63,7 @@
       "row": 0,
       "col": 4,
       "cellFileName": "05_单格_row01_col05.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row01_col05.png",
       "pageBox": {
         "left": 532,
         "top": 221,
@@ -69,6 +75,7 @@
       "row": 0,
       "col": 5,
       "cellFileName": "05_单格_row01_col06.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row01_col06.png",
       "pageBox": {
         "left": 621,
         "top": 221,
@@ -80,6 +87,7 @@
       "row": 0,
       "col": 6,
       "cellFileName": "05_单格_row01_col07.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row01_col07.png",
       "pageBox": {
         "left": 709,
         "top": 221,
@@ -91,6 +99,7 @@
       "row": 0,
       "col": 7,
       "cellFileName": "05_单格_row01_col08.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row01_col08.png",
       "pageBox": {
         "left": 797,
         "top": 221,
@@ -102,6 +111,7 @@
       "row": 0,
       "col": 8,
       "cellFileName": "05_单格_row01_col09.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row01_col09.png",
       "pageBox": {
         "left": 885,
         "top": 221,
@@ -113,6 +123,7 @@
       "row": 0,
       "col": 9,
       "cellFileName": "05_单格_row01_col10.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row01_col10.png",
       "pageBox": {
         "left": 973,
         "top": 221,
@@ -124,6 +135,7 @@
       "row": 1,
       "col": 0,
       "cellFileName": "05_单格_row02_col01.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row02_col01.png",
       "pageBox": {
         "left": 180,
         "top": 409,
@@ -135,6 +147,7 @@
       "row": 1,
       "col": 1,
       "cellFileName": "05_单格_row02_col02.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row02_col02.png",
       "pageBox": {
         "left": 268,
         "top": 409,
@@ -146,6 +159,7 @@
       "row": 1,
       "col": 2,
       "cellFileName": "05_单格_row02_col03.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row02_col03.png",
       "pageBox": {
         "left": 356,
         "top": 409,
@@ -157,6 +171,7 @@
       "row": 1,
       "col": 3,
       "cellFileName": "05_单格_row02_col04.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row02_col04.png",
       "pageBox": {
         "left": 444,
         "top": 409,
@@ -168,6 +183,7 @@
       "row": 1,
       "col": 4,
       "cellFileName": "05_单格_row02_col05.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row02_col05.png",
       "pageBox": {
         "left": 532,
         "top": 409,
@@ -179,6 +195,7 @@
       "row": 1,
       "col": 5,
       "cellFileName": "05_单格_row02_col06.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row02_col06.png",
       "pageBox": {
         "left": 621,
         "top": 409,
@@ -190,6 +207,7 @@
       "row": 1,
       "col": 6,
       "cellFileName": "05_单格_row02_col07.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row02_col07.png",
       "pageBox": {
         "left": 709,
         "top": 409,
@@ -201,6 +219,7 @@
       "row": 1,
       "col": 7,
       "cellFileName": "05_单格_row02_col08.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row02_col08.png",
       "pageBox": {
         "left": 797,
         "top": 409,
@@ -212,6 +231,7 @@
       "row": 1,
       "col": 8,
       "cellFileName": "05_单格_row02_col09.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row02_col09.png",
       "pageBox": {
         "left": 885,
         "top": 409,
@@ -223,6 +243,7 @@
       "row": 1,
       "col": 9,
       "cellFileName": "05_单格_row02_col10.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row02_col10.png",
       "pageBox": {
         "left": 973,
         "top": 409,
@@ -234,6 +255,7 @@
       "row": 2,
       "col": 0,
       "cellFileName": "05_单格_row03_col01.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row03_col01.png",
       "pageBox": {
         "left": 180,
         "top": 596,
@@ -245,6 +267,7 @@
       "row": 2,
       "col": 1,
       "cellFileName": "05_单格_row03_col02.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row03_col02.png",
       "pageBox": {
         "left": 268,
         "top": 596,
@@ -256,6 +279,7 @@
       "row": 2,
       "col": 2,
       "cellFileName": "05_单格_row03_col03.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row03_col03.png",
       "pageBox": {
         "left": 356,
         "top": 596,
@@ -267,6 +291,7 @@
       "row": 2,
       "col": 3,
       "cellFileName": "05_单格_row03_col04.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row03_col04.png",
       "pageBox": {
         "left": 444,
         "top": 596,
@@ -278,6 +303,7 @@
       "row": 2,
       "col": 4,
       "cellFileName": "05_单格_row03_col05.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row03_col05.png",
       "pageBox": {
         "left": 532,
         "top": 596,
@@ -289,6 +315,7 @@
       "row": 2,
       "col": 5,
       "cellFileName": "05_单格_row03_col06.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row03_col06.png",
       "pageBox": {
         "left": 621,
         "top": 596,
@@ -300,6 +327,7 @@
       "row": 2,
       "col": 6,
       "cellFileName": "05_单格_row03_col07.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row03_col07.png",
       "pageBox": {
         "left": 709,
         "top": 596,
@@ -311,6 +339,7 @@
       "row": 2,
       "col": 7,
       "cellFileName": "05_单格_row03_col08.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row03_col08.png",
       "pageBox": {
         "left": 797,
         "top": 596,
@@ -322,6 +351,7 @@
       "row": 2,
       "col": 8,
       "cellFileName": "05_单格_row03_col09.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row03_col09.png",
       "pageBox": {
         "left": 885,
         "top": 596,
@@ -333,6 +363,7 @@
       "row": 2,
       "col": 9,
       "cellFileName": "05_单格_row03_col10.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row03_col10.png",
       "pageBox": {
         "left": 973,
         "top": 596,
@@ -344,6 +375,7 @@
       "row": 3,
       "col": 0,
       "cellFileName": "05_单格_row04_col01.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row04_col01.png",
       "pageBox": {
         "left": 180,
         "top": 784,
@@ -355,6 +387,7 @@
       "row": 3,
       "col": 1,
       "cellFileName": "05_单格_row04_col02.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row04_col02.png",
       "pageBox": {
         "left": 268,
         "top": 784,
@@ -366,6 +399,7 @@
       "row": 3,
       "col": 2,
       "cellFileName": "05_单格_row04_col03.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row04_col03.png",
       "pageBox": {
         "left": 356,
         "top": 784,
@@ -377,6 +411,7 @@
       "row": 3,
       "col": 3,
       "cellFileName": "05_单格_row04_col04.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row04_col04.png",
       "pageBox": {
         "left": 444,
         "top": 784,
@@ -388,6 +423,7 @@
       "row": 3,
       "col": 4,
       "cellFileName": "05_单格_row04_col05.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row04_col05.png",
       "pageBox": {
         "left": 532,
         "top": 784,
@@ -399,6 +435,7 @@
       "row": 3,
       "col": 5,
       "cellFileName": "05_单格_row04_col06.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row04_col06.png",
       "pageBox": {
         "left": 621,
         "top": 784,
@@ -410,6 +447,7 @@
       "row": 3,
       "col": 6,
       "cellFileName": "05_单格_row04_col07.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row04_col07.png",
       "pageBox": {
         "left": 709,
         "top": 784,
@@ -421,6 +459,7 @@
       "row": 3,
       "col": 7,
       "cellFileName": "05_单格_row04_col08.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row04_col08.png",
       "pageBox": {
         "left": 797,
         "top": 784,
@@ -432,6 +471,7 @@
       "row": 3,
       "col": 8,
       "cellFileName": "05_单格_row04_col09.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row04_col09.png",
       "pageBox": {
         "left": 885,
         "top": 784,
@@ -443,6 +483,7 @@
       "row": 3,
       "col": 9,
       "cellFileName": "05_单格_row04_col10.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row04_col10.png",
       "pageBox": {
         "left": 973,
         "top": 784,
@@ -454,6 +495,7 @@
       "row": 4,
       "col": 0,
       "cellFileName": "05_单格_row05_col01.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row05_col01.png",
       "pageBox": {
         "left": 180,
         "top": 971,
@@ -465,6 +507,7 @@
       "row": 4,
       "col": 1,
       "cellFileName": "05_单格_row05_col02.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row05_col02.png",
       "pageBox": {
         "left": 268,
         "top": 971,
@@ -476,6 +519,7 @@
       "row": 4,
       "col": 2,
       "cellFileName": "05_单格_row05_col03.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row05_col03.png",
       "pageBox": {
         "left": 356,
         "top": 971,
@@ -487,6 +531,7 @@
       "row": 4,
       "col": 3,
       "cellFileName": "05_单格_row05_col04.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row05_col04.png",
       "pageBox": {
         "left": 444,
         "top": 971,
@@ -498,6 +543,7 @@
       "row": 4,
       "col": 4,
       "cellFileName": "05_单格_row05_col05.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row05_col05.png",
       "pageBox": {
         "left": 532,
         "top": 971,
@@ -509,6 +555,7 @@
       "row": 4,
       "col": 5,
       "cellFileName": "05_单格_row05_col06.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row05_col06.png",
       "pageBox": {
         "left": 621,
         "top": 971,
@@ -520,6 +567,7 @@
       "row": 4,
       "col": 6,
       "cellFileName": "05_单格_row05_col07.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row05_col07.png",
       "pageBox": {
         "left": 709,
         "top": 971,
@@ -531,6 +579,7 @@
       "row": 4,
       "col": 7,
       "cellFileName": "05_单格_row05_col08.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row05_col08.png",
       "pageBox": {
         "left": 797,
         "top": 971,
@@ -542,6 +591,7 @@
       "row": 4,
       "col": 8,
       "cellFileName": "05_单格_row05_col09.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row05_col09.png",
       "pageBox": {
         "left": 885,
         "top": 971,
@@ -553,6 +603,7 @@
       "row": 4,
       "col": 9,
       "cellFileName": "05_单格_row05_col10.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row05_col10.png",
       "pageBox": {
         "left": 973,
         "top": 971,
@@ -564,6 +615,7 @@
       "row": 5,
       "col": 0,
       "cellFileName": "05_单格_row06_col01.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row06_col01.png",
       "pageBox": {
         "left": 180,
         "top": 1159,
@@ -575,6 +627,7 @@
       "row": 5,
       "col": 1,
       "cellFileName": "05_单格_row06_col02.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row06_col02.png",
       "pageBox": {
         "left": 268,
         "top": 1159,
@@ -586,6 +639,7 @@
       "row": 5,
       "col": 2,
       "cellFileName": "05_单格_row06_col03.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row06_col03.png",
       "pageBox": {
         "left": 356,
         "top": 1159,
@@ -597,6 +651,7 @@
       "row": 5,
       "col": 3,
       "cellFileName": "05_单格_row06_col04.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row06_col04.png",
       "pageBox": {
         "left": 444,
         "top": 1159,
@@ -608,6 +663,7 @@
       "row": 5,
       "col": 4,
       "cellFileName": "05_单格_row06_col05.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row06_col05.png",
       "pageBox": {
         "left": 532,
         "top": 1159,
@@ -619,6 +675,7 @@
       "row": 5,
       "col": 5,
       "cellFileName": "05_单格_row06_col06.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row06_col06.png",
       "pageBox": {
         "left": 621,
         "top": 1159,
@@ -630,6 +687,7 @@
       "row": 5,
       "col": 6,
       "cellFileName": "05_单格_row06_col07.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row06_col07.png",
       "pageBox": {
         "left": 709,
         "top": 1159,
@@ -641,6 +699,7 @@
       "row": 5,
       "col": 7,
       "cellFileName": "05_单格_row06_col08.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row06_col08.png",
       "pageBox": {
         "left": 797,
         "top": 1159,
@@ -652,6 +711,7 @@
       "row": 5,
       "col": 8,
       "cellFileName": "05_单格_row06_col09.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row06_col09.png",
       "pageBox": {
         "left": 885,
         "top": 1159,
@@ -663,6 +723,7 @@
       "row": 5,
       "col": 9,
       "cellFileName": "05_单格_row06_col10.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row06_col10.png",
       "pageBox": {
         "left": 973,
         "top": 1159,
@@ -674,6 +735,7 @@
       "row": 6,
       "col": 0,
       "cellFileName": "05_单格_row07_col01.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row07_col01.png",
       "pageBox": {
         "left": 180,
         "top": 1346,
@@ -685,6 +747,7 @@
       "row": 6,
       "col": 1,
       "cellFileName": "05_单格_row07_col02.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row07_col02.png",
       "pageBox": {
         "left": 268,
         "top": 1346,
@@ -696,6 +759,7 @@
       "row": 6,
       "col": 2,
       "cellFileName": "05_单格_row07_col03.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row07_col03.png",
       "pageBox": {
         "left": 356,
         "top": 1346,
@@ -707,6 +771,7 @@
       "row": 6,
       "col": 3,
       "cellFileName": "05_单格_row07_col04.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row07_col04.png",
       "pageBox": {
         "left": 444,
         "top": 1346,
@@ -718,6 +783,7 @@
       "row": 6,
       "col": 4,
       "cellFileName": "05_单格_row07_col05.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row07_col05.png",
       "pageBox": {
         "left": 532,
         "top": 1346,
@@ -729,6 +795,7 @@
       "row": 6,
       "col": 5,
       "cellFileName": "05_单格_row07_col06.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row07_col06.png",
       "pageBox": {
         "left": 621,
         "top": 1346,
@@ -740,6 +807,7 @@
       "row": 6,
       "col": 6,
       "cellFileName": "05_单格_row07_col07.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row07_col07.png",
       "pageBox": {
         "left": 709,
         "top": 1346,
@@ -751,6 +819,7 @@
       "row": 6,
       "col": 7,
       "cellFileName": "05_单格_row07_col08.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row07_col08.png",
       "pageBox": {
         "left": 797,
         "top": 1346,
@@ -762,6 +831,7 @@
       "row": 6,
       "col": 8,
       "cellFileName": "05_单格_row07_col09.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row07_col09.png",
       "pageBox": {
         "left": 885,
         "top": 1346,
@@ -773,6 +843,7 @@
       "row": 6,
       "col": 9,
       "cellFileName": "05_单格_row07_col10.png",
+      "imagePath": "/home/lc/luckee_dao/baby/coze/插件/05_切分插件/test/artifact_standard/05_4_单格裁切/05_4_单格图/05_单格_row07_col10.png",
       "pageBox": {
         "left": 973,
         "top": 1346,

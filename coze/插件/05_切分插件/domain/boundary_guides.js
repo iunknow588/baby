@@ -445,241 +445,246 @@ function summarizeGuideMode(boundaryGuides, xGuide, yGuide) {
   };
 }
 
-class BoundaryGuideSegmentationPlugin {
-  constructor() {
-    this.name = '05_2_边界引导切分';
-    this.version = '1.0.0';
-    this.processNo = '05_2';
+function executeBoundaryGuideSegmentation(params = {}) {
+  const {
+    boundaryGuides,
+    gridRows,
+    gridCols,
+    width,
+    height,
+    segmentationProfile = null,
+    processNo = '05_2',
+    processName = '05_2_边界引导切分'
+  } = params;
+
+  if (!boundaryGuides || !gridRows || !gridCols || !width || !height) {
+    return null;
   }
 
-  execute(params) {
-    const { boundaryGuides, gridRows, gridCols, width, height, segmentationProfile = null } = params || {};
-    if (!boundaryGuides || !gridRows || !gridCols || !width || !height) {
-      return null;
-    }
-    const rawXPeaks = Array.isArray(boundaryGuides.xPeaks) ? boundaryGuides.xPeaks : [];
-    const rawYPeaks = Array.isArray(boundaryGuides.yPeaks) ? boundaryGuides.yPeaks : [];
-    const normalizedX = normalizeGuideAxis(rawXPeaks, boundaryGuides.left ?? 0, boundaryGuides.right ?? width, width);
-    const normalizedY = normalizeGuideAxis(rawYPeaks, boundaryGuides.top ?? 0, boundaryGuides.bottom ?? height, height);
-    const forceUniformGuideBounds = Boolean(segmentationProfile?.preferUniform);
-    const xPreferUniformPatternFallback = shouldPreferUniformPatternFallback(
-      boundaryGuides?.xPattern || null,
-      boundaryGuides?.xPatternDiagnostics || null,
-      normalizedX.values,
-      gridCols
-    ) || forceUniformGuideBounds;
-    const yPreferUniformPatternFallback = shouldPreferUniformPatternFallback(
-      boundaryGuides?.yPattern || null,
-      boundaryGuides?.yPatternDiagnostics || null,
-      normalizedY.values,
-      gridRows
-    ) || forceUniformGuideBounds;
-    const xSpan = resolveGuideAxisSpan(normalizedX, gridCols, {
-      preferPeakEnvelope: Boolean(segmentationProfile?.preferPeakEnvelope),
-      axis: 'x',
-      profileMode: segmentationProfile?.profileMode || boundaryGuides?.patternProfile?.profileMode || null
-    });
-    const ySpan = resolveGuideAxisSpan(normalizedY, gridRows, {
-      preferPeakEnvelope: Boolean(segmentationProfile?.preferPeakEnvelope),
-      axis: 'y',
-      profileMode: segmentationProfile?.profileMode || boundaryGuides?.patternProfile?.profileMode || null
-    });
-    const xUsesExplicitOuterBounds = (
-      normalizedX.min <= 1
-      && normalizedX.max >= width - 1
-      && normalizedX.values.length >= Math.max(gridCols - 1, 1)
-      && normalizedX.values.length <= gridCols
-    );
-    const yUsesExplicitOuterBounds = (
-      normalizedY.min <= 1
-      && normalizedY.max >= height - 1
-      && normalizedY.values.length >= Math.max(gridRows - 1, 1)
-      && normalizedY.values.length <= gridRows
-    );
-    const guideLeft = (xPreferUniformPatternFallback || xUsesExplicitOuterBounds) ? normalizedX.min : xSpan.min;
-    const guideRight = Math.max(guideLeft + 1, (xPreferUniformPatternFallback || xUsesExplicitOuterBounds) ? normalizedX.max : xSpan.max);
-    const guideTop = (yPreferUniformPatternFallback || yUsesExplicitOuterBounds) ? normalizedY.min : ySpan.min;
-    const guideBottom = Math.max(guideTop + 1, (yPreferUniformPatternFallback || yUsesExplicitOuterBounds) ? normalizedY.max : ySpan.max);
-    const profileMode = segmentationProfile?.profileMode || boundaryGuides?.patternProfile?.profileMode || null;
-    let xGuide = resolveGuideAxisPeaks(normalizedX.values, guideLeft, guideRight, gridCols, {
-      axis: 'x',
-      profileMode,
-      forceUniformBoundaries: xPreferUniformPatternFallback,
-      preferExplicitOuterBounds: xUsesExplicitOuterBounds
-    });
-    let yGuide = resolveGuideAxisPeaks(normalizedY.values, guideTop, guideBottom, gridRows, {
-      axis: 'y',
-      profileMode,
-      forceUniformBoundaries: yPreferUniformPatternFallback,
-      preferExplicitOuterBounds: yUsesExplicitOuterBounds
-    });
-    const xExplicitCenterFallback = shouldFallbackExplicitBoundCenterMatchToUniform(
-      normalizedX.values,
-      guideLeft,
-      guideRight,
-      gridCols,
-      {
-        explicitOuterBounds: xUsesExplicitOuterBounds,
-        resolvedPeakMode: xGuide.peakMode
-      }
-    );
-    const yExplicitCenterFallback = shouldFallbackExplicitBoundCenterMatchToUniform(
-      normalizedY.values,
-      guideTop,
-      guideBottom,
-      gridRows,
-      {
-        explicitOuterBounds: yUsesExplicitOuterBounds,
-        resolvedPeakMode: yGuide.peakMode
-      }
-    );
-    if (xExplicitCenterFallback) {
-      xGuide = {
-        peakMode: '显式外边界异常回退均分',
-        peaks: buildUniformPeaks(guideLeft, guideRight, gridCols)
-      };
-    }
-    if (yExplicitCenterFallback) {
-      yGuide = {
-        peakMode: '显式外边界异常回退均分',
-        peaks: buildUniformPeaks(guideTop, guideBottom, gridRows)
-      };
-    }
-    const xResolvedPeakFallback = shouldFallbackResolvedPeaksToUniform(xGuide.peaks, gridCols, {
-      patternName: boundaryGuides?.xPattern || null,
+  const rawXPeaks = Array.isArray(boundaryGuides.xPeaks) ? boundaryGuides.xPeaks : [];
+  const rawYPeaks = Array.isArray(boundaryGuides.yPeaks) ? boundaryGuides.yPeaks : [];
+  const normalizedX = normalizeGuideAxis(rawXPeaks, boundaryGuides.left ?? 0, boundaryGuides.right ?? width, width);
+  const normalizedY = normalizeGuideAxis(rawYPeaks, boundaryGuides.top ?? 0, boundaryGuides.bottom ?? height, height);
+  const forceUniformGuideBounds = Boolean(segmentationProfile?.preferUniform);
+  const xPreferUniformPatternFallback = shouldPreferUniformPatternFallback(
+    boundaryGuides?.xPattern || null,
+    boundaryGuides?.xPatternDiagnostics || null,
+    normalizedX.values,
+    gridCols
+  ) || forceUniformGuideBounds;
+  const yPreferUniformPatternFallback = shouldPreferUniformPatternFallback(
+    boundaryGuides?.yPattern || null,
+    boundaryGuides?.yPatternDiagnostics || null,
+    normalizedY.values,
+    gridRows
+  ) || forceUniformGuideBounds;
+  const xSpan = resolveGuideAxisSpan(normalizedX, gridCols, {
+    preferPeakEnvelope: Boolean(segmentationProfile?.preferPeakEnvelope),
+    axis: 'x',
+    profileMode: segmentationProfile?.profileMode || boundaryGuides?.patternProfile?.profileMode || null
+  });
+  const ySpan = resolveGuideAxisSpan(normalizedY, gridRows, {
+    preferPeakEnvelope: Boolean(segmentationProfile?.preferPeakEnvelope),
+    axis: 'y',
+    profileMode: segmentationProfile?.profileMode || boundaryGuides?.patternProfile?.profileMode || null
+  });
+  const xUsesExplicitOuterBounds = (
+    normalizedX.min <= 1
+    && normalizedX.max >= width - 1
+    && normalizedX.values.length >= Math.max(gridCols - 1, 1)
+    && normalizedX.values.length <= gridCols
+  );
+  const yUsesExplicitOuterBounds = (
+    normalizedY.min <= 1
+    && normalizedY.max >= height - 1
+    && normalizedY.values.length >= Math.max(gridRows - 1, 1)
+    && normalizedY.values.length <= gridRows
+  );
+  const guideLeft = (xPreferUniformPatternFallback || xUsesExplicitOuterBounds) ? normalizedX.min : xSpan.min;
+  const guideRight = Math.max(guideLeft + 1, (xPreferUniformPatternFallback || xUsesExplicitOuterBounds) ? normalizedX.max : xSpan.max);
+  const guideTop = (yPreferUniformPatternFallback || yUsesExplicitOuterBounds) ? normalizedY.min : ySpan.min;
+  const guideBottom = Math.max(guideTop + 1, (yPreferUniformPatternFallback || yUsesExplicitOuterBounds) ? normalizedY.max : ySpan.max);
+  const profileMode = segmentationProfile?.profileMode || boundaryGuides?.patternProfile?.profileMode || null;
+  let xGuide = resolveGuideAxisPeaks(normalizedX.values, guideLeft, guideRight, gridCols, {
+    axis: 'x',
+    profileMode,
+    forceUniformBoundaries: xPreferUniformPatternFallback,
+    preferExplicitOuterBounds: xUsesExplicitOuterBounds
+  });
+  let yGuide = resolveGuideAxisPeaks(normalizedY.values, guideTop, guideBottom, gridRows, {
+    axis: 'y',
+    profileMode,
+    forceUniformBoundaries: yPreferUniformPatternFallback,
+    preferExplicitOuterBounds: yUsesExplicitOuterBounds
+  });
+  const xExplicitCenterFallback = shouldFallbackExplicitBoundCenterMatchToUniform(
+    normalizedX.values,
+    guideLeft,
+    guideRight,
+    gridCols,
+    {
       explicitOuterBounds: xUsesExplicitOuterBounds,
-      peakMode: xGuide.peakMode
-    });
-    const yResolvedPeakFallback = shouldFallbackResolvedPeaksToUniform(yGuide.peaks, gridRows, {
-      patternName: boundaryGuides?.yPattern || null,
+      resolvedPeakMode: xGuide.peakMode
+    }
+  );
+  const yExplicitCenterFallback = shouldFallbackExplicitBoundCenterMatchToUniform(
+    normalizedY.values,
+    guideTop,
+    guideBottom,
+    gridRows,
+    {
       explicitOuterBounds: yUsesExplicitOuterBounds,
-      peakMode: yGuide.peakMode
-    });
-    if (xResolvedPeakFallback) {
-      xGuide = {
-        peakMode: '异常边界回退均分',
-        peaks: buildUniformPeaks(guideLeft, guideRight, gridCols)
-      };
+      resolvedPeakMode: yGuide.peakMode
     }
-    if (yResolvedPeakFallback) {
-      yGuide = {
-        peakMode: '异常边界回退均分',
-        peaks: buildUniformPeaks(guideTop, guideBottom, gridRows)
-      };
-    }
-    const xCountRelation = forceUniformGuideBounds
-      ? 'guide-bounds-uniform'
-      : classifyGuideCountRelation(normalizedX.values.length, gridCols);
-    const yCountRelation = forceUniformGuideBounds
-      ? 'guide-bounds-uniform'
-      : classifyGuideCountRelation(normalizedY.values.length, gridRows);
-    if (xGuide.peakMode === '外边界均分' && xSpan.spanMode.includes('peak-envelope')) {
-      xGuide.peakMode = '峰值包络均分';
-    }
-    if (yGuide.peakMode === '外边界均分' && ySpan.spanMode.includes('peak-envelope')) {
-      yGuide.peakMode = '峰值包络均分';
-    }
-    const xPeaks = xGuide.peaks;
-    const yPeaks = yGuide.peaks;
-    const hasExactPeaks = xGuide.peakMode === '精确边界峰值' && yGuide.peakMode === '精确边界峰值';
-    const guideMode = summarizeGuideMode(boundaryGuides, xGuide, yGuide);
-
-    const xBoundaries = Array.from(
-      { length: gridCols },
-      (_, index) => [xPeaks[index], Math.max(xPeaks[index] + 1, xPeaks[index + 1])]
-    );
-    const yBoundaries = Array.from(
-      { length: gridRows },
-      (_, index) => [yPeaks[index], Math.max(yPeaks[index] + 1, yPeaks[index + 1])]
-    );
-
-    return {
-      processNo: this.processNo,
-      processName: '05_2_边界引导切分',
-      mode: '边界引导',
-      xBoundaries,
-      yBoundaries,
-      debug: {
-        verticalCandidates: [],
-        verticalLines: xPeaks,
-        outerRectVerticalLines: [xPeaks[0], xPeaks[xPeaks.length - 1]],
-        selectedBoundaryMode: '边界引导',
-        directBoundaryQuality: null,
-        outerRectBoundaryQuality: {
-          source: hasExactPeaks ? '边界引导' : `${guideMode.axisMode}`,
-          left: xPeaks[0],
-          right: xPeaks[xPeaks.length - 1],
-          top: yPeaks[0],
-          bottom: yPeaks[yPeaks.length - 1],
-          xSpanMode: xSpan.spanMode,
-          ySpanMode: ySpan.spanMode,
-          xSpanPadding: xSpan.padding,
-          ySpanPadding: ySpan.padding,
-          xStartPadding: xSpan.startPadding,
-          xEndPadding: xSpan.endPadding,
-          yStartPadding: ySpan.startPadding,
-          yEndPadding: ySpan.endPadding
-        },
-        horizontalLinesBeforeAnomalousCorrection: yPeaks,
-        horizontalLinesBeforeCorrection: yPeaks,
-        horizontalLines: yPeaks,
-        outerRectHorizontalLines: [yPeaks[0], yPeaks[yPeaks.length - 1]],
-        leftHorizontalLines: [],
-        rightHorizontalLines: [],
-        sideConsensusHorizontalLines: [],
-        anomalousHorizontalCorrection: { lines: [], corrections: [] },
-        fallbackUsed: false,
-        profileVerticalLines: [],
-        profileHorizontalLines: [],
-        guidePeakMode: guideMode.axisMode,
-        guideAxisModes: {
-          x: xGuide.peakMode,
-          y: yGuide.peakMode
-        },
-        guideCountRelations: {
-          x: xCountRelation,
-          y: yCountRelation
-        },
-        guidePatternProfile: guideMode.profileMode,
-        guideAnchorPreference: {
-          x: guideMode.xAnchorPreference,
-          y: guideMode.yAnchorPreference
-        },
-        guideSpanModes: {
-          x: xSpan.spanMode,
-          y: ySpan.spanMode
-        },
-        guideSpanPadding: {
-          x: xSpan.padding,
-          y: ySpan.padding
-        },
-        guideSpanPaddingDetail: {
-          xStart: xSpan.startPadding,
-          xEnd: xSpan.endPadding,
-          yStart: ySpan.startPadding,
-          yEnd: ySpan.endPadding
-        },
-        guidePatternFallback: {
-          x: xPreferUniformPatternFallback,
-          y: yPreferUniformPatternFallback
-        },
-        guideResolvedPeakFallback: {
-          x: xResolvedPeakFallback,
-          y: yResolvedPeakFallback
-        },
-        guideExplicitCenterFallback: {
-          x: xExplicitCenterFallback,
-          y: yExplicitCenterFallback
-        },
-        guideExplicitOuterBounds: {
-          x: xUsesExplicitOuterBounds,
-          y: yUsesExplicitOuterBounds
-        },
-        xPattern: guideMode.xPattern,
-        yPattern: guideMode.yPattern
-      }
+  );
+  if (xExplicitCenterFallback) {
+    xGuide = {
+      peakMode: '显式外边界异常回退均分',
+      peaks: buildUniformPeaks(guideLeft, guideRight, gridCols)
     };
   }
+  if (yExplicitCenterFallback) {
+    yGuide = {
+      peakMode: '显式外边界异常回退均分',
+      peaks: buildUniformPeaks(guideTop, guideBottom, gridRows)
+    };
+  }
+  const xResolvedPeakFallback = shouldFallbackResolvedPeaksToUniform(xGuide.peaks, gridCols, {
+    patternName: boundaryGuides?.xPattern || null,
+    explicitOuterBounds: xUsesExplicitOuterBounds,
+    peakMode: xGuide.peakMode
+  });
+  const yResolvedPeakFallback = shouldFallbackResolvedPeaksToUniform(yGuide.peaks, gridRows, {
+    patternName: boundaryGuides?.yPattern || null,
+    explicitOuterBounds: yUsesExplicitOuterBounds,
+    peakMode: yGuide.peakMode
+  });
+  if (xResolvedPeakFallback) {
+    xGuide = {
+      peakMode: '异常边界回退均分',
+      peaks: buildUniformPeaks(guideLeft, guideRight, gridCols)
+    };
+  }
+  if (yResolvedPeakFallback) {
+    yGuide = {
+      peakMode: '异常边界回退均分',
+      peaks: buildUniformPeaks(guideTop, guideBottom, gridRows)
+    };
+  }
+  const xCountRelation = forceUniformGuideBounds
+    ? 'guide-bounds-uniform'
+    : classifyGuideCountRelation(normalizedX.values.length, gridCols);
+  const yCountRelation = forceUniformGuideBounds
+    ? 'guide-bounds-uniform'
+    : classifyGuideCountRelation(normalizedY.values.length, gridRows);
+  if (xGuide.peakMode === '外边界均分' && xSpan.spanMode.includes('peak-envelope')) {
+    xGuide.peakMode = '峰值包络均分';
+  }
+  if (yGuide.peakMode === '外边界均分' && ySpan.spanMode.includes('peak-envelope')) {
+    yGuide.peakMode = '峰值包络均分';
+  }
+  const xPeaks = xGuide.peaks;
+  const yPeaks = yGuide.peaks;
+  const hasExactPeaks = xGuide.peakMode === '精确边界峰值' && yGuide.peakMode === '精确边界峰值';
+  const guideMode = summarizeGuideMode(boundaryGuides, xGuide, yGuide);
+
+  const xBoundaries = Array.from(
+    { length: gridCols },
+    (_, index) => [xPeaks[index], Math.max(xPeaks[index] + 1, xPeaks[index + 1])]
+  );
+  const yBoundaries = Array.from(
+    { length: gridRows },
+    (_, index) => [yPeaks[index], Math.max(yPeaks[index] + 1, yPeaks[index + 1])]
+  );
+
+  return {
+    processNo,
+    processName,
+    mode: '边界引导',
+    xBoundaries,
+    yBoundaries,
+    debug: {
+      verticalCandidates: [],
+      verticalLines: xPeaks,
+      outerRectVerticalLines: [xPeaks[0], xPeaks[xPeaks.length - 1]],
+      selectedBoundaryMode: '边界引导',
+      directBoundaryQuality: null,
+      outerRectBoundaryQuality: {
+        source: hasExactPeaks ? '边界引导' : `${guideMode.axisMode}`,
+        left: xPeaks[0],
+        right: xPeaks[xPeaks.length - 1],
+        top: yPeaks[0],
+        bottom: yPeaks[yPeaks.length - 1],
+        xSpanMode: xSpan.spanMode,
+        ySpanMode: ySpan.spanMode,
+        xSpanPadding: xSpan.padding,
+        ySpanPadding: ySpan.padding,
+        xStartPadding: xSpan.startPadding,
+        xEndPadding: xSpan.endPadding,
+        yStartPadding: ySpan.startPadding,
+        yEndPadding: ySpan.endPadding
+      },
+      horizontalLinesBeforeAnomalousCorrection: yPeaks,
+      horizontalLinesBeforeCorrection: yPeaks,
+      horizontalLines: yPeaks,
+      outerRectHorizontalLines: [yPeaks[0], yPeaks[yPeaks.length - 1]],
+      leftHorizontalLines: [],
+      rightHorizontalLines: [],
+      sideConsensusHorizontalLines: [],
+      anomalousHorizontalCorrection: { lines: [], corrections: [] },
+      fallbackUsed: false,
+      profileVerticalLines: [],
+      profileHorizontalLines: [],
+      guidePeakMode: guideMode.axisMode,
+      guideAxisModes: {
+        x: xGuide.peakMode,
+        y: yGuide.peakMode
+      },
+      guideCountRelations: {
+        x: xCountRelation,
+        y: yCountRelation
+      },
+      guidePatternProfile: guideMode.profileMode,
+      guideAnchorPreference: {
+        x: guideMode.xAnchorPreference,
+        y: guideMode.yAnchorPreference
+      },
+      guideSpanModes: {
+        x: xSpan.spanMode,
+        y: ySpan.spanMode
+      },
+      guideSpanPadding: {
+        x: xSpan.padding,
+        y: ySpan.padding
+      },
+      guideSpanPaddingDetail: {
+        xStart: xSpan.startPadding,
+        xEnd: xSpan.endPadding,
+        yStart: ySpan.startPadding,
+        yEnd: ySpan.endPadding
+      },
+      guidePatternFallback: {
+        x: xPreferUniformPatternFallback,
+        y: yPreferUniformPatternFallback
+      },
+      guideResolvedPeakFallback: {
+        x: xResolvedPeakFallback,
+        y: yResolvedPeakFallback
+      },
+      guideExplicitCenterFallback: {
+        x: xExplicitCenterFallback,
+        y: yExplicitCenterFallback
+      },
+      guideExplicitOuterBounds: {
+        x: xUsesExplicitOuterBounds,
+        y: yUsesExplicitOuterBounds
+      },
+      xPattern: guideMode.xPattern,
+      yPattern: guideMode.yPattern
+    }
+  };
 }
 
-module.exports = new BoundaryGuideSegmentationPlugin();
+module.exports = {
+  executeBoundaryGuideSegmentation
+};

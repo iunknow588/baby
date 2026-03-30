@@ -3,6 +3,11 @@ const path = require('path');
 const { requireSharp } = require('../utils/require_sharp');
 const { estimateGridCount } = require('./domain/grid_count');
 const { renderGridCountAnnotation } = require('./presentation/grid_count_annotation');
+const {
+  GRID_COUNT_STAGE_DEFINITION,
+  GRID_COUNT_STEP_DEFINITIONS,
+  GRID_COUNT_SOURCE_STEPS
+} = require('./step_definitions');
 
 const sharp = requireSharp();
 
@@ -22,7 +27,7 @@ class GridCountAnnotatePlugin {
       gridRows,
       gridCols,
       source = 'provided',
-      processNo = '04'
+      processNo = GRID_COUNT_STAGE_DEFINITION.processNo
     } = params || {};
 
     if (!imagePath) {
@@ -36,17 +41,20 @@ class GridCountAnnotatePlugin {
     }
 
     const outputDir = path.dirname(outputMetaPath);
-    const step04_1Dir = path.join(outputDir, '04_1_方格数量估计');
-    const step04_2Dir = path.join(outputDir, '04_2_方格数量标注');
-    const step04_3Dir = path.join(outputDir, '04_3_单格切分输入');
+    const step04_1Definition = GRID_COUNT_STEP_DEFINITIONS.step04_1;
+    const step04_2Definition = GRID_COUNT_STEP_DEFINITIONS.step04_2;
+    const step04_3Definition = GRID_COUNT_STEP_DEFINITIONS.step04_3;
+    const step04_1Dir = path.join(outputDir, step04_1Definition.dirName);
+    const step04_2Dir = path.join(outputDir, step04_2Definition.dirName);
+    const step04_3Dir = path.join(outputDir, step04_3Definition.dirName);
     await fs.promises.mkdir(step04_1Dir, { recursive: true });
     await fs.promises.mkdir(step04_2Dir, { recursive: true });
     await fs.promises.mkdir(step04_3Dir, { recursive: true });
-    const step04_1MetaPath = path.join(step04_1Dir, '04_1_方格数量估计.json');
-    const step04_2MetaPath = path.join(step04_2Dir, '04_2_方格数量标注.json');
-    const step04_3MetaPath = path.join(step04_3Dir, '04_3_单格切分输入.json');
-    const step04_1ImagePath = path.join(step04_1Dir, '04_1_方格数量估计图.png');
-    const step04_3ImagePath = outputCarryForwardPath || path.join(step04_3Dir, '04_3_单格切分输入图.png');
+    const step04_1MetaPath = path.join(step04_1Dir, step04_1Definition.metaFileName);
+    const step04_2MetaPath = path.join(step04_2Dir, step04_2Definition.metaFileName);
+    const step04_3MetaPath = path.join(step04_3Dir, step04_3Definition.metaFileName);
+    const step04_1ImagePath = path.join(step04_1Dir, step04_1Definition.imageFileName);
+    const step04_3ImagePath = outputCarryForwardPath || path.join(step04_3Dir, step04_3Definition.imageFileName);
 
     const step04_1 = await estimateGridCount({
       imagePath,
@@ -69,9 +77,9 @@ class GridCountAnnotatePlugin {
 
     await sharp(imagePath).png().toFile(step04_3ImagePath);
     const step04_3 = {
-      processNo: '04_3',
-      processName: '04_3_单格切分输入',
-      sourceStep: '04_2_方格数量标注',
+      processNo: step04_3Definition.processNo,
+      processName: step04_3Definition.processName,
+      sourceStep: GRID_COUNT_SOURCE_STEPS.step04_3,
       inputPath: step04_2.outputAnnotatedPath,
       stageInputPath: imagePath,
       carryForwardImagePath: step04_3ImagePath,
@@ -81,8 +89,8 @@ class GridCountAnnotatePlugin {
 
     const payload = {
       processNo,
-      processName: '04_方格数量计算标注',
-      sourceStep: '03_4_字帖内框裁剪与矫正',
+      processName: GRID_COUNT_STAGE_DEFINITION.processName,
+      sourceStep: GRID_COUNT_SOURCE_STEPS.stageInput,
       stageInputPath: imagePath,
       gridRows,
       gridCols,
@@ -117,7 +125,7 @@ class GridCountAnnotatePlugin {
       },
       显示信息: {
         阶段编号: processNo,
-        阶段名称: '04_方格数量计算标注',
+        阶段名称: GRID_COUNT_STAGE_DEFINITION.processName,
         阶段输入图: imagePath,
         行数: gridRows,
         列数: gridCols,

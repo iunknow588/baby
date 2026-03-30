@@ -1,6 +1,10 @@
 const fs = require('fs');
 const path = require('path');
 const { requireSharp } = require('../../utils/require_sharp');
+const {
+  GRID_COUNT_STEP_DEFINITIONS,
+  GRID_COUNT_SOURCE_STEPS
+} = require('../step_definitions');
 
 const sharp = requireSharp();
 
@@ -13,9 +17,9 @@ async function renderGridCountAnnotation(params) {
     gridCols,
     totalCells,
     source = '指定值',
-    sourceStep = '04_1_方格数量估计',
-    processNo = '04_2',
-    processName = '04_2_方格数量标注'
+    sourceStep = GRID_COUNT_SOURCE_STEPS.step04_2,
+    processNo = GRID_COUNT_STEP_DEFINITIONS.step04_2.processNo,
+    processName = GRID_COUNT_STEP_DEFINITIONS.step04_2.processName
   } = params || {};
 
   if (!imagePath) {

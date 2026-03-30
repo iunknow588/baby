@@ -1,0 +1,9 @@
+{
+  "processNo": "04_3",
+  "processName": "04_3_单格切分输入",
+  "sourceStep": "04_2_方格数量标注",
+  "inputPath": "/home/lc/luckee_dao/baby/coze/插件/04_方格数量计算标注插件/test/output/04_方格数量计算标注/04_2_方格数量标注/04_2_方格数量标注图.png",
+  "stageInputPath": "/home/lc/luckee_dao/baby/coze/插件/04_方格数量计算标注插件/test/fixtures/grid_count_fixture.png",
+  "carryForwardImagePath": "/home/lc/luckee_dao/baby/coze/插件/04_方格数量计算标注插件/test/output/04_方格数量计算标注/04_3_单格切分输入/04_3_单格切分输入图.png",
+  "note": "输出无标注单格切分输入图，供05阶段作为唯一上游输入"
+}

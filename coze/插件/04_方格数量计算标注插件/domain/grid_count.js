@@ -1,6 +1,10 @@
 const fs = require('fs');
 const path = require('path');
 const { requireSharp } = require('../../utils/require_sharp');
+const {
+  GRID_COUNT_STEP_DEFINITIONS,
+  GRID_COUNT_SOURCE_STEPS
+} = require('../step_definitions');
 
 const sharp = requireSharp();
 
@@ -12,9 +16,9 @@ async function estimateGridCount(params) {
     source = '指定值',
     outputMetaPath,
     outputImagePath = null,
-    sourceStep = '03_4_字帖内框裁剪与矫正',
-    processNo = '04_1',
-    processName = '04_1_方格数量估计'
+    sourceStep = GRID_COUNT_SOURCE_STEPS.stageInput,
+    processNo = GRID_COUNT_STEP_DEFINITIONS.step04_1.processNo,
+    processName = GRID_COUNT_STEP_DEFINITIONS.step04_1.processName
   } = params || {};
 
   if (!imagePath) {

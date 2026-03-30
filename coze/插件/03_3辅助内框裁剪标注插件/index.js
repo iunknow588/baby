@@ -4,13 +4,8 @@ const {
   resolveSingleImageInput,
   buildStageImageHandoffContract
 } = require('../utils/stage_image_contract');
-let sharp;
-
-try {
-  sharp = require('sharp');
-} catch (error) {
-  sharp = require('../05_切分插件/node_modules/sharp');
-}
+const { requireSharp } = require('../utils/require_sharp');
+const sharp = requireSharp();
 
 class GridRectCropAnnotatePlugin {
   constructor() {

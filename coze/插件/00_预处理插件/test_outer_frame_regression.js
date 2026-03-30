@@ -3,13 +3,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const pipelinePlugin = require('../00_流水线插件/index');
-let sharp;
-
-try {
-  sharp = require('sharp');
-} catch (error) {
-  sharp = require('../05_切分插件/node_modules/sharp');
-}
+const { requireSharp } = require('../utils/require_sharp');
+const sharp = requireSharp();
 
 if (sharp && typeof sharp.cache === 'function') {
   sharp.cache({ memory: 64, items: 32, files: 0 });

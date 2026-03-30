@@ -1,13 +1,8 @@
 const fs = require('fs');
 const path = require('path');
 const { clamp, buildPaperBorderOverlaySvg } = require('../utils/paper_edge_cleanup');
-let sharp;
-
-try {
-  sharp = require('sharp');
-} catch (error) {
-  sharp = require('../05_切分插件/node_modules/sharp');
-}
+const { requireSharp } = require('../utils/require_sharp');
+const sharp = requireSharp();
 
 const DEFAULT_NEUTRAL_PAPER_COLOR = {
   r: 216,

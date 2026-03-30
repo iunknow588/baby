@@ -1,10 +1,5 @@
-let sharp;
-
-try {
-  sharp = require('sharp');
-} catch (error) {
-  sharp = require('../05_切分插件/node_modules/sharp');
-}
+const { requireSharp } = require('./require_sharp');
+const sharp = requireSharp();
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));

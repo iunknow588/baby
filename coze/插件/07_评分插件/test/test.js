@@ -832,33 +832,37 @@ async function testScoringArtifactLevelStandardSuppressesCellStepArtifacts() {
   await fs.promises.mkdir(fixtureDir, { recursive: true });
   await fs.promises.rm(outputDir, { recursive: true, force: true });
 
-  const result = await scoringPlugin.execute({
-    task_id: 'cell-step-policy-standard',
-    image_id: 'cell-step-policy-standard-page',
-    outputDir,
-    artifactLevel: 'standard',
-    target_chars: [['永']],
-    segmentation: {
-      gridRows: 1,
-      gridCols: 1,
-      cells: [
-        { row: 0, col: 0, pageBox: { left: 0, top: 0, width: 200, height: 200 }, contentBox: { left: 40, top: 40, width: 120, height: 120 } }
-      ],
-      matrix: [[cellImage]]
-    }
-  });
+  try {
+    const result = await scoringPlugin.execute({
+      task_id: 'cell-step-policy-standard',
+      image_id: 'cell-step-policy-standard-page',
+      outputDir,
+      artifactLevel: 'standard',
+      target_chars: [['永']],
+      segmentation: {
+        gridRows: 1,
+        gridCols: 1,
+        cells: [
+          { row: 0, col: 0, pageBox: { left: 0, top: 0, width: 200, height: 200 }, contentBox: { left: 40, top: 40, width: 120, height: 120 } }
+        ],
+        matrix: [[cellImage]]
+      }
+    });
 
-  const first = result.results[0];
-  assert.strictEqual(result.artifactLevel, 'standard', '应回显 standard artifactLevel');
-  assert.strictEqual(result.outputDir, null, 'standard 模式不应保留单格步骤输出根目录');
-  assert.strictEqual(result.cellsRootDir, null, 'standard 模式不应保留单格评分详情目录');
-  assert.strictEqual(result.ocrOutputDir, null, '未启用 OCR 时不应返回 OCR 输出目录');
-  assert.deepStrictEqual(first.stepDirs, {}, 'standard 模式不应返回步骤目录');
-  assert.strictEqual(first.stepMetaPaths.step07_1, null, 'standard 模式不应输出步骤 JSON');
-  assert.strictEqual(first.stepMetaPaths.step07_5, null, 'standard 模式不应输出总评分步骤 JSON');
-  assert.strictEqual(await pathExists(outputDir), false, 'standard 模式不应在磁盘落盘单格步骤目录');
+    const first = result.results[0];
+    assert.strictEqual(result.artifactLevel, 'standard', '应回显 standard artifactLevel');
+    assert.strictEqual(result.outputDir, null, 'standard 模式不应保留单格步骤输出根目录');
+    assert.strictEqual(result.cellsRootDir, null, 'standard 模式不应保留单格评分详情目录');
+    assert.strictEqual(result.ocrOutputDir, null, '未启用 OCR 时不应返回 OCR 输出目录');
+    assert.deepStrictEqual(first.stepDirs, {}, 'standard 模式不应返回步骤目录');
+    assert.strictEqual(first.stepMetaPaths.step07_1, null, 'standard 模式不应输出步骤 JSON');
+    assert.strictEqual(first.stepMetaPaths.step07_5, null, 'standard 模式不应输出总评分步骤 JSON');
+    assert.strictEqual(await pathExists(outputDir), false, 'standard 模式不应在磁盘落盘单格步骤目录');
 
-  console.log('测试通过：评分插件在 standard 模式下可抑制单格步骤产物。');
+    console.log('测试通过：评分插件在 standard 模式下可抑制单格步骤产物。');
+  } finally {
+    await fs.promises.rm(fixtureDir, { recursive: true, force: true });
+  }
 }
 
 async function testPageScoringConcurrencyPreservesOrder() {
